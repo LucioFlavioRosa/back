@@ -26,7 +26,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, status
 
 from app.dominio import run_id as rid
-from app.infra.repositorios import resultado
+from app.infra.repositorios import niveis, resultado
 
 router = APIRouter(tags=["resultados"])
 
@@ -65,16 +65,63 @@ async def excluir(run_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# PENDENTE — os niveis fundos da cascata
+# A cascata: global -> cidade -> sistema -> sub-bacia -> elemento
 # ---------------------------------------------------------------------------
-# Faltam §3.4 painel, §3.5 ebitda, §3.6/§3.7 cidades, §3.8 topologia, §3.9
-# sub-bacia e §3.10 obra. Nenhum deles e incerto: as consultas saem das mesmas
-# tabelas e a forma da resposta esta escrita no `CONTRATO.md` com exemplo de JSON
-# e no `src/resultado/domain/resultado.ts` do front com os tipos.
-#
-# Estao de fora desta leva por uma razao so — sao 7 endpoints com montagem de
-# payload aninhado (a topologia monta nos, componentes e ETE a partir de
-# `otim_dependencia` + `otim_obra` + `otim_sistema`), e entrega-los pela metade
-# seria pior que declarar o que falta. O `leitor_v2.py` ja tem a logica de
-# agregacao de cada um, em pandas: e dele que as consultas devem sair, e nao de
-# uma leitura nova do esquema.
+# Todos seguem a mesma forma: valida o `run_id`, delega a consulta e devolve 404
+# quando o recorte nao existe naquela rodada. O 404 importa: sem ele, uma cidade
+# que nao pertence a rodada devolveria um objeto vazio, e a tela mostraria zeros
+# como se fossem dado.
+
+
+async def _ou_404(valor, o_que: str):
+    if valor is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"{o_que} não encontrado nesta rodada.")
+    return valor
+
+
+@router.get("/runs/{run_id}/painel")
+async def painel(run_id: str) -> dict[str, Any]:
+    """Os 6 quadros do nivel global numa requisicao so.
+
+    Desvio consciente do handoff, que sugeria `/ano`, `/mes`, `/obras/agregado` e
+    `/subbacias/histograma` separados: sao quadros que aparecem sempre juntos, e o
+    backend le as tabelas da mesma rodada de qualquer jeito.
+    """
+    rid.exigir_valido(run_id)
+    return await niveis.painel(run_id)
+
+
+@router.get("/runs/{run_id}/ebitda")
+async def ebitda(run_id: str, cidade: str | None = Query(None)) -> dict[str, Any]:
+    rid.exigir_valido(run_id)
+    return await niveis.ebitda(run_id, cidade=cidade)
+
+
+@router.get("/runs/{run_id}/cidades")
+async def cidades(run_id: str) -> list[dict[str, Any]]:
+    rid.exigir_valido(run_id)
+    return await niveis.cidades(run_id)
+
+
+@router.get("/runs/{run_id}/cidades/{cidade_id}")
+async def cidade(run_id: str, cidade_id: str) -> dict[str, Any]:
+    rid.exigir_valido(run_id)
+    return await _ou_404(await niveis.cidade(run_id, cidade_id), "Cidade")
+
+
+@router.get("/runs/{run_id}/sistemas/{sistema_id}/topologia")
+async def topologia(run_id: str, sistema_id: str) -> dict[str, Any]:
+    rid.exigir_valido(run_id)
+    return await _ou_404(await niveis.topologia(run_id, sistema_id), "Sistema")
+
+
+@router.get("/runs/{run_id}/subbacias/{sub_id}")
+async def subbacia(run_id: str, sub_id: str) -> dict[str, Any]:
+    rid.exigir_valido(run_id)
+    return await _ou_404(await niveis.subbacia(run_id, sub_id), "Sub-bacia")
+
+
+@router.get("/runs/{run_id}/obras/{obra_id}")
+async def obra(run_id: str, obra_id: str) -> dict[str, Any]:
+    rid.exigir_valido(run_id)
+    return await _ou_404(await niveis.obra(run_id, obra_id), "Obra")

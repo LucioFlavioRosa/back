@@ -26,7 +26,7 @@ app/
   api/               ── OS ENDPOINTS ──
     saude.py         /healthz e /readyz (fora do /api: quem chama é o kubelet)
     simulacao.py     disparar, acompanhar, reexecutar        CONTRATO.md §4
-    resultados.py    histórico e leitura de uma rodada       CONTRATO.md §3
+    resultados.py    os 11 endpoints de leitura             CONTRATO.md §3
     erros.py         todo erro sai como {"erro": "mensagem"} CONTRATO.md §1.1
     deps.py          usuário do token — quem assina a simulação
   dominio/           ── AS REGRAS, sem framework ──
@@ -36,7 +36,9 @@ app/
   infra/             ── O MUNDO DE FORA ──
     db.py            pool asyncpg
     fila.py          Service Bus
-    repositorios/    SQL, uma classe de assunto por arquivo
+    repositorios/    controle.py (run_request/status) · resultado.py (histórico
+                     e meta) · niveis.py (a cascata de cinco níveis)
+tests/               a superfície da API não pode derivar do contrato do front
 ```
 
 Para entender o serviço, leia `app/dominio/` primeiro: são três arquivos sem
@@ -76,10 +78,11 @@ Declarado em vez de escondido — cada item tem o motivo e o caminho:
 
 - **Cadastro (`input.*`)**: nenhum endpoint ainda. São 16 tabelas e a escrita é por
   ficha, com trilha de override; o contrato está em `DEPLOY.md` §3 do front.
-- **Sete endpoints de resultado**: `painel`, `ebitda`, `cidades`, `cidade`,
-  `topologia`, `subbacia` e `obra`. As consultas saem das mesmas
-  `public.otim_*`, e a lógica de agregação de cada um já existe em pandas no
-  `leitor_v2.py` — é de lá que devem sair, não de uma releitura do esquema.
+- **Faixas de paridade** (`cidade.paridade.faixas`): vêm de `input.fator_esgoto`,
+  e o job publica só a paridade REALIZADA por ano, não a tabela de faixas que a
+  produziu. A tela precisa das faixas para explicar a causalidade do degrau. Ou o
+  job passa a publicá-las na rodada, ou este endpoint lê o cadastro — e aí o
+  número deixa de ser o daquela rodada, o que é pior.
 - **Validação do token do Entra ID** (`app/api/deps.py`): falta o JWKS do tenant.
   Está levantando erro em vez de decodificar sem verificar, de propósito.
 - **`pendencias_do_cadastro`** devolve 0, o que hoje deixa qualquer rodada passar.
