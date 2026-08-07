@@ -60,3 +60,22 @@ Cada um espera o banco recem-semeado e altera dados. Rodar `smoke_seguranca` ant
 de `smoke_conflito`, por exemplo, faz o segundo falhar por sujeira e nao por bug.
 Entre um e outro, reaplique os DDLs e o seed. Esta declarado porque ja custou
 diagnostico duas vezes.
+
+## Dado de verdade, em vez de seed
+
+`dev/seed.sql` é o mínimo para os endpoints responderem — não é dado realista, e
+foi justamente por isso que três defeitos passaram (`otim_obra.sistema` NULL,
+componente como código curto, obra de ETE sem `no`).
+
+Para navegar com uma simulação DE VERDADE:
+
+```bash
+python dev/rodar_simulacao_real.py uA1 90
+```
+
+Carrega a planilha do pacote em `input.*`, roda o motor (OR-Tools) sobre a unidade
+e publica o resultado em `public.otim_*` — é o mesmo caminho do Colab. Precisa de
+`ortools`, `openpyxl` e `psycopg2-binary` no host, e do pacote em
+`.../Otimizador_CAPEX_v62_pacote_rev11/`.
+
+Unidades: `uA1` (5 cidades, 142 sub-bacias — a mais rápida) até `uB2` (27/1116).

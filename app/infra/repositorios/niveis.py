@@ -28,9 +28,27 @@ from typing import Any
 from app.config import config
 from app.infra import db
 
-#: Ordem canônica dos componentes, de montante para jusante. O contrato é
-#: explícito: Tronco, EEE e Linha de recalque NUNCA são agrupados num
-#: "Transporte" — agrupar esconde justamente o elo que costuma travar a cadeia.
+#: `otim_obra.componente` guarda o CÓDIGO (`lig`, `rede`, `tro`...), e o contrato
+#: mostra o nome por extenso. Descobri isso rodando uma simulação de verdade: com
+#: dado semeado à mão eu tinha escrito o nome longo direto na tabela, e a tradução
+#: nunca foi exercitada.
+#:
+#: A ordem é a canônica, de montante para jusante — e ela também dá o índice do
+#: override de obra, que o front indexa por posição.
+NOME_DO_COMPONENTE = {
+    "lig": "Ligação de esgoto",
+    "rede": "Rede coletora",
+    "cts": "Coletor de tempo seco",
+    "tro": "Tronco",
+    "eee": "EEE",
+    "lr": "Linha de recalque",
+    "ete": "ETE",
+    "ete_mod": "ETE (módulo)",
+}
+
+#: Ordem canônica, de montante para jusante. O contrato é explícito: Tronco, EEE e
+#: Linha de recalque NUNCA são agrupados num "Transporte" — agrupar esconde
+#: justamente o elo que costuma travar a cadeia.
 ORDEM_COMPONENTES = [
     "Ligação de esgoto",
     "Rede coletora",
@@ -38,8 +56,15 @@ ORDEM_COMPONENTES = [
     "Tronco",
     "EEE",
     "Linha de recalque",
+    "ETE",
     "ETE (módulo)",
 ]
+
+
+def nome_componente(codigo: str | None) -> str:
+    """Código -> nome de tela. Código desconhecido passa como veio: é melhor a tela
+    mostrar `xyz` do que um vazio que parece dado faltando."""
+    return NOME_DO_COMPONENTE.get(codigo or "", codigo or "")
 
 
 def _p() -> str:
@@ -175,7 +200,7 @@ async def painel(run_id: str) -> dict[str, Any]:
     por_ano: dict[int, list[dict[str, Any]]] = {}
     for o in obras_ano:
         por_ano.setdefault(o["ano"], []).append(
-            {"componente": o["componente"], "quantidade": o["quantidade"]}
+            {"componente": nome_componente(o["componente"]), "quantidade": o["quantidade"]}
         )
 
     return {
@@ -201,7 +226,7 @@ async def painel(run_id: str) -> dict[str, Any]:
         "capexPorComponente": sorted(
             (
                 {
-                    "componente": c["componente"],
+                    "componente": nome_componente(c["componente"]),
                     "capex": c["capex"],
                     "pctDoTotal": _pct(c["capex"], total_capex),
                 }
@@ -416,17 +441,32 @@ async def topologia(run_id: str, sistema_id: str) -> dict[str, Any] | None:
         run_id,
         sistema_id,
     )
+    # As obras saem pelos NÓS do sistema, e não por `otim_obra.sistema`: numa
+    # rodada real essa coluna vem NULL em 395 de 480 obras, e o filtro por ela
+    # devolvia ZERO componentes — a topologia desenhava caixas vazias enquanto a
+    # ficha da sub-bacia listava as quatro obras dela. Com dado semeado à mão eu
+    # preenchia `sistema`, então o defeito só apareceu na primeira simulação de
+    # verdade. `no` é confiável: é a chave que liga a obra ao seu nó.
+    # As obras da ETE nao tem `no`: elas se identificam pelo proprio `obra_id`,
+    # que e o id da ETE (ou dele derivado, no caso dos modulos). Entao o filtro
+    # olha os dois lados — `no` para os nos da rede, `obra_id` para a ETE.
+    ete_id = sistema["ete_id"]
     obras = await db.buscar(
         f"""SELECT obra_id, no, componente, capex, preco_unitario, quantidade,
                    unidade, data_inicio, prazo_meses, construida, responsavel
               FROM {_p()}.otim_obra
-             WHERE run_id = $1 AND sistema = $2""",
+             WHERE run_id = $1
+               AND (no = ANY($2::text[])
+                    OR ($3::text IS NOT NULL
+                        AND (obra_id = $3 OR obra_id LIKE $3 || '_' || '%')))""",
         run_id,
-        sistema_id,
+        [n["sub_bacia"] for n in nos],
+        ete_id,
     )
     por_no: dict[str, list[dict[str, Any]]] = {}
     for o in obras:
-        por_no.setdefault(o["no"], []).append(o)
+        # obra sem `no` e obra da ETE — agrupada sob o id dela.
+        por_no.setdefault(o["no"] or ete_id, []).append(o)
 
     ids = {n["sub_bacia"] for n in nos}
     # A CTS é pareada 1:1 com a sub-bacia; o pareamento vive no cadastro, mas o
@@ -474,7 +514,7 @@ def _componente(o: dict[str, Any]) -> dict[str, Any]:
     if o.get("data_inicio"):
         ano = int(str(o["data_inicio"])[:4])
     return {
-        "nome": o["componente"],
+        "nome": nome_componente(o["componente"]),
         "obraId": o["obra_id"],
         "situacao": _situacao(o),
         "capex": o["capex"],
@@ -578,7 +618,7 @@ async def subbacia(run_id: str, sub_id: str) -> dict[str, Any] | None:
         "elementos": [
             {
                 "obraId": e["obra_id"],
-                "componente": e["componente"],
+                "componente": nome_componente(e["componente"]),
                 "situacao": _situacao(e),
                 "quantidade": e["quantidade"],
                 "unidade": e["unidade"],
@@ -623,7 +663,7 @@ async def obra(run_id: str, obra_id: str) -> dict[str, Any] | None:
 
     return {
         "obraId": obra_id,
-        "componente": o["componente"],
+        "componente": nome_componente(o["componente"]),
         "rotulo": f"{obra_id} (CTS)" if o["is_cts"] else obra_id,
         "situacao": _situacao(o),
         "cidadeId": o["cidade"],
