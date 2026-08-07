@@ -39,7 +39,8 @@ app/
     fila.py          Service Bus
     repositorios/    controle.py (run_request/status) · resultado.py (histórico
                      e meta) · niveis.py (a cascata) · cadastro.py (leitura) ·
-                     cadastro_escrita.py (ficha + trilha)
+                     cadastro_escrita.py (ficha + trilha) ·
+                     pendencias.py (a mesma conta que a tela faz)
 migracoes/           001_override.sql — a trilha de auditoria do cadastro
 tests/               a superfície da API não pode derivar do contrato do front
 ```
@@ -79,8 +80,6 @@ Este serviço não inventa contrato. Onde a dúvida se resolve:
 
 Declarado em vez de escondido — cada item tem o motivo e o caminho:
 
-- **`completude` da unidade** devolve 0, pelo mesmo motivo de `pendencias`: a capa
-  afirma "0% preenchido" para um cadastro que pode estar completo.
 - **Faixas de paridade** (`cidade.paridade.faixas`): vêm de `input.fator_esgoto`,
   e o job publica só a paridade REALIZADA por ano, não a tabela de faixas que a
   produziu. A tela precisa das faixas para explicar a causalidade do degrau. Ou o
@@ -96,8 +95,6 @@ Declarado em vez de escondido — cada item tem o motivo e o caminho:
   vira um PATCH sem que nada acuse.
 - **Validação do token do Entra ID** (`app/api/deps.py`): falta o JWKS do tenant.
   Está levantando erro em vez de decodificar sem verificar, de propósito.
-- **`pendencias_do_cadastro`** devolve 0, o que hoje deixa qualquer rodada passar.
-  É a mesma conta que o front faz em `cadastro/domain`, e precisa virar SQL.
 - **Cancelar rodada**: bloqueado por migração (ver abaixo).
 - **Nome da rodada**: perdido até a coluna `rotulo` existir (ver abaixo).
 - **`progresso` do status** é sempre 0: `controle.run_status` não tem essa coluna.

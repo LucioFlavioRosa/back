@@ -9,6 +9,7 @@ from typing import Any
 from app.config import config
 from app.dominio.status import Status
 from app.infra import db
+from app.infra.repositorios import pendencias
 
 
 def _c() -> str:
@@ -30,18 +31,11 @@ async def unidade(unidade_id: str) -> dict[str, Any] | None:
 async def pendencias_do_cadastro(unidade_id: str) -> int:
     """Quantos campos obrigatorios do cadastro ainda estao vazios.
 
-    PENDENTE — hoje devolve 0, o que deixa QUALQUER rodada passar.
-
-    A conta de verdade e a mesma que o front faz em `cadastro/domain` (é ela que
-    acende os contadores do hub), e precisa ser reproduzida aqui em SQL, ficha por
-    ficha: sub-bacias sem ligações/receita/vazão, ETEs sem capacidade, CTS sem
-    componente, cidade sem régua de cobertura, metas sem alvo.
-
-    Está explicito como zero em vez de "esquecido" porque o efeito de errar aqui é
-    invisível: a rodada roda, o solver aceita cadastro incompleto, e o plano sai
-    com números que ninguém sabe que estão errados.
+    A conta vive em `repositorios/pendencias.py`, porque ela e a mesma da tela e
+    precisa dar o MESMO numero: divergir faria o usuario ver "completo", apertar
+    Iniciar e o servidor recusar sem dizer o que falta.
     """
-    return 0
+    return (await pendencias.contar(unidade_id))["pendencias"]
 
 
 async def abrir_rodada(

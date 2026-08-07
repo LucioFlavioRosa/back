@@ -24,7 +24,7 @@ from app.dominio import run_id as rid
 from app.dominio import status as st
 from app.dominio.parametros import montar_params
 from app.infra import fila
-from app.infra.repositorios import controle
+from app.infra.repositorios import controle, pendencias
 
 router = APIRouter(tags=["simulação"])
 
@@ -40,10 +40,15 @@ async def prontidao(unidade_id: str) -> dict[str, Any]:
     unidade = await controle.unidade(unidade_id)
     if not unidade:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Unidade não encontrada.")
+    conta = await pendencias.contar(unidade_id)
     return {
         "unidadeId": unidade_id,
         "unidadeNome": unidade["nome"],
-        "pendencias": await controle.pendencias_do_cadastro(unidade_id),
+        "pendencias": conta["pendencias"],
+        # `porGrupo` alem do contrato, de proposito: com so o total, a tela diz
+        # "faltam 12 campos" e o usuario tem de procurar em cinco grupos. O front
+        # ignora campo que nao conhece, entao acrescentar nao quebra nada.
+        "porGrupo": conta["porGrupo"],
     }
 
 

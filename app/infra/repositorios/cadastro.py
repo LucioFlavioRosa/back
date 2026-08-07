@@ -21,6 +21,7 @@ from typing import Any
 
 from app.config import config
 from app.infra import db
+from app.infra.repositorios import pendencias
 
 
 def _i() -> str:
@@ -104,10 +105,7 @@ async def unidade(unidade_id: str) -> dict[str, Any] | None:
             # 5 obras por sub-bacia, 4 por CTS — a mesma conta que a tela faz.
             "obras": (c.get("sub_bacias", 0) or 0) * 5,
         },
-        # PENDENTE — a completude é a mesma conta de `pendencias_do_cadastro`, e
-        # tem o mesmo problema: enquanto não for calculada, a capa afirma 0%
-        # (nada preenchido) para um cadastro que pode estar completo.
-        "completude": 0,
+        "completude": (await pendencias.contar(unidade_id))["completude"],
         "databricksConectado": True,
     }
 
