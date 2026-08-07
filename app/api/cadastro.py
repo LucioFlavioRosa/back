@@ -2,9 +2,9 @@
 
 São dois lados com naturezas diferentes:
 
-    LEITURA   8 endpoints, um por grupo de fichas. É o que esta leva entrega.
-    ESCRITA   6 endpoints, uma ficha por vez (o corpo é a ficha inteira, não um
-              patch). BLOQUEADA — ver o final deste módulo.
+    LEITURA   8 endpoints, um por grupo de fichas.
+    ESCRITA   6 endpoints, uma ficha por vez — o corpo é a ficha inteira, não um
+              patch, e a trilha de override viaja junto na mesma transação.
 
 A ficha de coleta (sub-bacia e CTS, que são iguais) tem dois blocos de origem
 diferente, e isso atravessa todo o cadastro:
@@ -18,11 +18,12 @@ enviados. É de propósito: trocar a régua de uma cidade não pode apagar o que
 alguém já preencheu.
 """
 
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Body, HTTPException, status
 
-from app.infra.repositorios import cadastro
+from app.api.deps import Usuario
+from app.infra.repositorios import cadastro, cadastro_escrita
 
 router = APIRouter(tags=["cadastro"])
 
@@ -98,22 +99,67 @@ async def cts(unidade_id: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# ESCRITA — bloqueada, e não esquecida
+# ESCRITA — uma ficha por vez, e o corpo e a ficha inteira
 # ---------------------------------------------------------------------------
-# Faltam os 6: PUT de sub-bacia, contrato, ETE e CTS, mais POST e DELETE de CTS.
-# O que impede não é o volume: é que **não existe tabela para a trilha de
-# override**.
+# O `autor` sai do TOKEN, nunca do corpo. Ele vai para a trilha de override, e
+# aceita-lo do cliente seria aceitar que alguem assinasse a correcao de outro —
+# numa trilha de auditoria isso e o defeito que a anula inteira.
 #
-# O contrato manda `overrides` junto com toda ficha (campo, valor antigo, valor
-# novo, autor, timestamp) e é explícito sobre o porquê: "gravar na mesma transação
-# do dado evita dado corrigido sem trilha". O `ddl_input.sql` tem 16 tabelas e
-# nenhuma delas guarda isso.
-#
-# As saídas são duas, e a escolha não é minha:
-#   (a) migração criando `input.override` (ficha, campo, valor_antigo, valor_novo,
-#       autor, gravado_em) — a trilha vira consultável e a promessa se cumpre;
-#   (b) aceitar a ficha e DESCARTAR o override — e aí o contrato precisa parar de
-#       prometer trilha, porque prometer auditoria que não existe é pior que não
-#       ter auditoria: alguém vai confiar nela numa discussão sobre um número.
-#
-# Escrever os PUTs agora significaria escolher (b) em silêncio. Está no README.
+# A resposta traz `overridesGravados` de proposito: e o unico jeito de quem chamou
+# conferir que a trilha foi junto, sem consultar o banco.
+
+Corpo = Annotated[dict[str, Any], Body()]
+
+
+@router.put("/unidades/{unidade_id}/sub-bacias/{sub_id}")
+async def salvar_sub_bacia(
+    unidade_id: str, sub_id: str, corpo: Corpo, usuario: Usuario
+) -> dict[str, Any]:
+    return await cadastro_escrita.salvar_coleta(
+        unidade_id=unidade_id, ficha_id=sub_id, corpo=corpo, autor=usuario, e_cts=False
+    )
+
+
+@router.put("/unidades/{unidade_id}/cts/{cts_id}")
+async def salvar_cts(
+    unidade_id: str, cts_id: str, corpo: Corpo, usuario: Usuario
+) -> dict[str, Any]:
+    return await cadastro_escrita.salvar_coleta(
+        unidade_id=unidade_id, ficha_id=cts_id, corpo=corpo, autor=usuario, e_cts=True
+    )
+
+
+@router.put("/unidades/{unidade_id}/contrato/{cidade_id}")
+async def salvar_contrato(
+    unidade_id: str, cidade_id: str, corpo: Corpo, usuario: Usuario
+) -> dict[str, Any]:
+    return await cadastro_escrita.salvar_contrato(
+        unidade_id=unidade_id, cidade_id=cidade_id, corpo=corpo, autor=usuario
+    )
+
+
+@router.put("/unidades/{unidade_id}/etes/{ete_id}")
+async def salvar_ete(
+    unidade_id: str, ete_id: str, corpo: Corpo, usuario: Usuario
+) -> dict[str, Any]:
+    return await cadastro_escrita.salvar_ete(
+        unidade_id=unidade_id, ete_id=ete_id, corpo=corpo, autor=usuario
+    )
+
+
+@router.post("/unidades/{unidade_id}/cts", status_code=status.HTTP_201_CREATED)
+async def criar_cts(unidade_id: str, corpo: Corpo) -> dict[str, Any]:
+    """Devolve a CTS CRIADA — e e essa versao que o front adota, nao a que enviou."""
+    sub_id, cts = corpo.get("subId"), corpo.get("cts") or {}
+    if not sub_id or not cts.get("id"):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "Informe a sub-bacia pareada e o identificador da CTS.",
+        )
+    return await cadastro_escrita.criar_cts(sub_id=sub_id, cts=cts)
+
+
+@router.delete("/unidades/{unidade_id}/cts/{cts_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def apagar_cts(unidade_id: str, cts_id: str) -> None:
+    if not await cadastro_escrita.apagar_cts(cts_id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "CTS não encontrada.")

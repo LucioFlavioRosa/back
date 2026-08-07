@@ -26,7 +26,7 @@ app/
   api/               ── OS ENDPOINTS ──
     saude.py         /healthz e /readyz (fora do /api: quem chama é o kubelet)
     simulacao.py     disparar, acompanhar, reexecutar        CONTRATO.md §4
-    cadastro.py      leitura do cadastro da unidade          DEPLOY.md §3
+    cadastro.py      cadastro da unidade, leitura e escrita  DEPLOY.md §3
     resultados.py    os 11 endpoints de leitura             CONTRATO.md §3
     erros.py         todo erro sai como {"erro": "mensagem"} CONTRATO.md §1.1
     deps.py          usuário do token — quem assina a simulação
@@ -38,7 +38,9 @@ app/
     db.py            pool asyncpg
     fila.py          Service Bus
     repositorios/    controle.py (run_request/status) · resultado.py (histórico
-                     e meta) · niveis.py (a cascata de cinco níveis)
+                     e meta) · niveis.py (a cascata) · cadastro.py (leitura) ·
+                     cadastro_escrita.py (ficha + trilha)
+migracoes/           001_override.sql — a trilha de auditoria do cadastro
 tests/               a superfície da API não pode derivar do contrato do front
 ```
 
@@ -77,13 +79,6 @@ Este serviço não inventa contrato. Onde a dúvida se resolve:
 
 Declarado em vez de escondido — cada item tem o motivo e o caminho:
 
-- **ESCRITA do cadastro** (4 PUT + POST/DELETE de CTS): bloqueada porque **não
-  existe tabela para a trilha de override**. O contrato manda `overrides` junto de
-  toda ficha e é explícito sobre o porquê ("gravar na mesma transação do dado evita
-  dado corrigido sem trilha"), mas nenhuma das 16 tabelas de `input` guarda isso.
-  Escrever os PUTs agora seria escolher, em silêncio, descartar a trilha — e
-  prometer auditoria que não existe é pior que não ter auditoria, porque alguém vai
-  confiar nela numa discussão sobre um número. Ver a migração 4.
 - **Recorte das ETEs e das CTS**: `ete_capex`, `cts_operacional` e `subbacia_cts`
   não têm coluna de unidade nem FK que chegue até ela — o vínculo é por convenção
   de nome do `ete_id`/`cts`. Hoje esses três endpoints trazem TUDO que está no
@@ -120,9 +115,9 @@ Duas, no banco do pacote de produção:
    mostrou o estrago: o job valida `params` contra `MAPA_PARAMS` + `CHAVES_DO_JOB`
    e `ROTULO` não está em nenhum dos dois — **toda rodada com nome morreria em
    `ERRO`**. Hoje o nome se perde no caminho; a alternativa era perder a rodada.
-3. **`input.override`** — a trilha de auditoria: ficha, campo, valor antigo, valor
-   novo, autor, timestamp. Sem ela a escrita do cadastro não pode cumprir o que o
-   contrato promete.
+3. ~~**`input.override`**~~ — **feita** (`migracoes/001_override.sql`). Precisa ser
+   aplicada nos bancos existentes e dobrada no `ddl_input.sql` do repositório do
+   otimizador, que é quem é dono do esquema.
 4. **`reprocessa_de` em `controle.run_request`.** Decidido junto da regra de
    imutabilidade do `run_id` (`CONTRATO.md` §2.1): a reexecução depois de um
    `SUCESSO` gera id novo, e sem esse campo o histórico vira uma lista de rodadas
