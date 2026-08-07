@@ -357,6 +357,9 @@ _DO_DATABRICKS = {
 #: O que a ficha de coleta DEVE trazer em cada bloco. É o contrato do front
 #: (`SubBaciaDb` / `SubBaciaParams`), e é o que torna o PUT uma substituição de
 #: ficha inteira em vez de um patch — ver `cadastro_escrita._exigir_ficha_inteira`.
+#: `ticket` fica de FORA: ele e derivado (receita/ligacoes), nao tem coluna, e o
+#: PUT nao o grava. Exigi-lo no corpo obrigaria o cliente a devolver uma conta que
+#: o servidor mesmo fez.
 CAMPOS_DB = sorted(_DO_DATABRICKS)
 CAMPOS_PARAMS = ["preco", "tarr", "ramp", "vaz", "vazInd", "pot", "popU", "popA"]
 
@@ -367,11 +370,31 @@ CAMPOS_PARAMS = ["preco", "tarr", "ramp", "vaz", "vazInd", "pot", "popU", "popA"
 NAO_MODELADOS = {"popN"}
 
 
+def _ticket(linha: dict[str, Any]) -> str:
+    """Receita media mensal por ligacao — o `ticket` do bloco `db`.
+
+    NAO e coluna: e conta, e por isso eu a tinha esquecido. O tipo `SubBaciaDb` do
+    front declara `ticket: string` e a tela o mostra entre as medidas do
+    Databricks; sem ele o campo chega `undefined` e vira um input sem valor.
+
+    Base ARRECADADA, e nao faturada: e o que de fato entrou, ja refletindo
+    inadimplencia — a mesma escolha que o notebook chama de recomendada. Sem
+    ligacoes atuais nao ha divisao, e o campo sai vazio (nunca zero, que afirmaria
+    ticket nulo onde a conta nao existe).
+    """
+    receita = linha.get("receita_arrecadada_media_mensal")
+    ligacoes = linha.get("ligacoes_atuais")
+    if receita is None or not ligacoes:
+        return ""
+    return pt_br(round(float(receita) / float(ligacoes), 2))
+
+
 def _ficha_coleta(linha: dict[str, Any], chave: str) -> dict[str, Any]:
     # Todo número sai em pt-BR — o mesmo formato que o `PUT` exige de volta. Ver
     # `pt_br`: a ficha lida tem de poder ser reenviada sem tradução no meio.
     db_bloco = {v: pt_br(linha[k]) for k, v in _COLETA.items() if v in _DO_DATABRICKS}
     params = {v: pt_br(linha[k]) for k, v in _COLETA.items() if v not in _DO_DATABRICKS}
+    db_bloco["ticket"] = _ticket(linha)
     return {"id": linha[chave], "db": db_bloco, "params": params}
 
 

@@ -222,6 +222,26 @@ _OBRA = {
 #: E copia de outra fonte, e copia envelhece: se a base mudar la e nao aqui, a
 #: ficha salva com valores de ontem, sem nenhum sinal. Esta na lista de riscos do
 #: README, e o certo e o backend servir a base para a tela, e nao o contrario.
+#: A CTS tem base PROPRIA: 4 obras, comecando pelo coletor de tempo seco. Usar a
+#: base da sub-bacia para ela — como este arquivo fazia — regravava a CTS com 5
+#: obras, com os nomes errados e os valores da outra base. Nao dava erro: so
+#: destruia a ficha, em silencio, a cada salvamento.
+_BASE_CTS = [
+    {"nome": "Coletor de tempo seco", "un": "m", "qtd": "0", "preco": "1.480,00",
+     "opex": "0", "tPred": "0", "dur": "0", "anoObrig": "0", "proibAte": "0", "wacc": "0,091"},
+    # Os NOMES aqui sao os do BANCO, e nao os da base do front: `Tronco` e nao
+    # `Coletor tronco`, `EEE` e nao `Estacao elevatoria (EEE)`. A leitura tolera as
+    # duas grafias, mas a escrita tem de gravar a que o MOTOR le — reescrever a
+    # tabela com o vocabulario do front faria a simulacao deixar de reconhecer os
+    # componentes da CTS, sem erro nenhum no caminho.
+    {"nome": "Tronco", "un": "m", "qtd": "0", "preco": "1.200,00",
+     "opex": "0", "tPred": "0", "dur": "0", "anoObrig": "0", "proibAte": "0", "wacc": "0,091"},
+    {"nome": "EEE", "un": "un", "qtd": "0", "preco": "0",
+     "opex": "0", "tPred": "0", "dur": "0", "anoObrig": "0", "proibAte": "0", "wacc": ""},
+    {"nome": "Linha de recalque", "un": "m", "qtd": "0", "preco": "900,00",
+     "opex": "0", "tPred": "0", "dur": "15", "anoObrig": "0", "proibAte": "0", "wacc": "0,067"},
+]
+
 _BASE_SUBBACIA = [
     {"nome": "Ligacao de esgoto", "un": "ligacao", "qtd": "244", "preco": "2.497,70",
      "opex": "2.738", "tPred": "11", "dur": "9", "anoObrig": "0", "proibAte": "0", "wacc": "0,091"},
@@ -488,7 +508,7 @@ async def salvar_coleta(
                 chave=chave,
                 ficha_id=ficha_id,
                 obras=_obras_da_ficha(
-                    corpo.get("obrasOverride"), _BASE_SUBBACIA
+                    corpo.get("obrasOverride"), _BASE_CTS if e_cts else _BASE_SUBBACIA
                 ),
             )
         n = await _gravar_overrides(
@@ -678,8 +698,16 @@ async def criar_cts(*, unidade_id: str, sub_id: str, cts: dict[str, Any]) -> dic
     # `GET` ganhar um campo, este `POST` ganha junto.
     from app.infra.repositorios import cadastro
 
+    # Devolve a CTS DIRETA, sem envelope. O front faz `api.post<Cts>` e passa o que
+    # voltou para `ADD_CTS` — com `{par, cts}` ele guardava o envelope em
+    # `ctss[undefined]`, e o objeto resultante nao tinha `obrasOverride`. O crash
+    # aparecia depois, longe daqui: `derive()` chamava `mkObrasCts(undefined)` e
+    # `override[String(i)]` estourava em `undefined['0']`.
+    #
+    # O par nao se perde: ele ja foi gravado em `subbacia_cts` acima, e a proxima
+    # leitura de `GET /cts` o traz na lista `pares`.
     todas = (await cadastro.cts(unidade_id))["ctss"]
-    return {"par": {"sub": sub_id, "cts": cts_id}, "cts": todas.get(cts_id)}
+    return todas.get(cts_id) or {}
 
 
 async def apagar_cts(*, unidade_id: str, cts_id: str) -> bool:

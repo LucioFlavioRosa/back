@@ -24,6 +24,8 @@ U = os.environ.get("UNIDADE", "u1")
 
 # Transcrito de `src/cadastro/domain/` — contrato.ts, subbacia.ts, cts.ts, ete.ts.
 ESPERADO = {
+    "db":      ["fat","arr","ligU","ligA","ligN","ligUInd","ligAInd","fatInd","arrInd",
+                "ecoU","ecoA","ecoN","ticket"],
     "unidReg": ["rid","rnome","uid","unome","waccMedio"],
     "supH":    ["id","nome"],
     "cidadeH": ["id","nome","supId"],
@@ -66,6 +68,8 @@ async def main():
                 ck("sub-bacia tem os campos do front", falta==[], f"faltam {falta}")
                 nao_txt = [f"{b}.{k}" for b in ("db","params") for k,v in s[b].items() if not isinstance(v,str)]
                 ck("db e params sao todos string", nao_txt==[], str(nao_txt[:5]))
+                falta_db = [k for k in ESPERADO["db"] if k not in s["db"]]
+                ck("o bloco db tem todos os campos do tipo", falta_db==[], f"faltam {falta_db}")
 
             ctss = (await c.get(f"/api/unidades/{U}/cts")).json()
             ck("ctss e mapa por id", isinstance(ctss["ctss"], dict), type(ctss["ctss"]).__name__)
@@ -114,6 +118,11 @@ async def main():
             falta = [k for k in ESPERADO["cts"] if k not in nova]
             ck("POST /cts devolve a ficha COMPLETA", r.status_code==201 and falta==[],
                f"{r.status_code} faltam {falta}")
+            # O front faz `api.post<Cts>`: a resposta e a CTS, sem envelope. Com
+            # `{par, cts}` ele guardava o envelope em `ctss[undefined]` e a tela caia.
+            ck("POST /cts nao devolve envelope",
+               "par" not in (r.json() or {}) and "cts" not in (r.json() or {}),
+               str(sorted(r.json() or {})[:4]))
             ck("a CTS criada tem obrasOverride", isinstance(nova.get("obrasOverride"), dict),
                type(nova.get("obrasOverride")).__name__)
 
