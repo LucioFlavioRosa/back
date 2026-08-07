@@ -174,13 +174,27 @@ async def unidade(unidade_id: str) -> dict[str, Any] | None:
 
 # ------------------------------------------------------------------- fichas
 async def hierarquia(unidade_id: str) -> dict[str, Any]:
-    """Grupo 01 — a árvore inteira, cinco níveis."""
-    unid = await db.buscar_um(
-        f"""SELECT unidade_id AS id, unidade_name AS nome, regional_id AS "regionalId",
-                   regional_name AS "regionalNome", wacc_medio AS "waccMedio"
+    """Grupo 01 — a arvore inteira, cinco niveis.
+
+    Os nomes sao os do front (`cadastro/domain/hierarquia.ts`) e sao CURTOS:
+    `rid`/`uid`/`supId`/`cidId`/`sis`/`jus`. Eu tinha usado `regionalId`,
+    `superintendenciaId`, `cidadeId`, `sistemaId`, `jusante` — e a tela do Grupo 01
+    renderizava em branco, porque cada campo que ela procura vinha `undefined`.
+
+    Tudo string: o front trata como texto e chama `.trim()`.
+    """
+    u = await db.buscar_um(
+        f"""SELECT regional_id, regional_name, unidade_id, unidade_name, wacc_medio
               FROM {_i()}.unidade_regional WHERE unidade_id = $1""",
         unidade_id,
-    )
+    ) or {}
+    unid = {
+        "rid": u.get("regional_id") or "",
+        "rnome": u.get("regional_name") or "",
+        "uid": u.get("unidade_id") or "",
+        "unome": u.get("unidade_name") or "",
+        "waccMedio": pt_br(u.get("wacc_medio")),
+    }
     supers = await db.buscar(
         f"""SELECT superintendencia_id AS id, superintendencia_name AS nome
               FROM {_i()}.regional_superintendencia WHERE unidade_id = $1
@@ -189,31 +203,37 @@ async def hierarquia(unidade_id: str) -> dict[str, Any]:
     )
     cidades = await db.buscar(
         f"""SELECT cidade_id AS id, cidade_name AS nome,
-                   superintendencia_id AS "superintendenciaId"
+                   superintendencia_id AS "supId"
               FROM ({_cidades_cte()}) c ORDER BY cidade_name""",
         unidade_id,
     )
     sistemas = await db.buscar(
-        f"""SELECT s.sistema_id AS id, s.sistema_name AS nome, s.cidade_id AS "cidadeId"
+        f"""SELECT s.sistema_id AS id, s.sistema_name AS nome, s.cidade_id AS "cidId"
               FROM {_i()}.cidade_sistema s
               JOIN ({_cidades_cte()}) c ON c.cidade_id = s.cidade_id
              ORDER BY s.sistema_name""",
         unidade_id,
     )
     topo = await db.buscar(
-        f"""SELECT t.componente_sistema_id AS id, t.sistema_id AS "sistemaId",
-                   t.componente_sistema_id_jusante AS jusante
+        f"""SELECT t.sistema_id AS sis, t.componente_sistema_id AS id,
+                   t.componente_sistema_nome AS nome,
+                   t.componente_sistema_id_jusante AS jus
               FROM {_i()}.sistema_topologia t
               JOIN {_i()}.cidade_sistema s USING (sistema_id)
-              JOIN ({_cidades_cte()}) c ON c.cidade_id = s.cidade_id""",
+              JOIN ({_cidades_cte()}) c ON c.cidade_id = s.cidade_id
+             ORDER BY t.sistema_id, t.componente_sistema_id""",
         unidade_id,
     )
+
+    def txt(linhas):
+        return [{k: ("" if v is None else str(v)) for k, v in l.items()} for l in linhas]
+
     return {
         "unidReg": unid,
-        "superintendencias": supers,
-        "cidades": cidades,
-        "sistemas": sistemas,
-        "topo": topo,
+        "superintendencias": txt(supers),
+        "cidades": txt(cidades),
+        "sistemas": txt(sistemas),
+        "topo": txt(topo),
     }
 
 
@@ -518,21 +538,24 @@ async def _obras_por_ficha(
 async def etes(unidade_id: str) -> dict[str, Any]:
     """As ETEs da unidade.
 
-    O recorte passa por `sistema_topologia`: a ETE é um componente do sistema como
-    a sub-bacia, e o que a distingue é ter ficha em `ete_capex` — é assim que o
-    motor a identifica (`otimizador_capex_v62.py:1111`). Esta consulta já trouxe
-    TODAS as ETEs do banco, porque eu tinha concluído que o esquema não ligava a
-    ETE à unidade. Ligava.
+    Os nomes sao os do tipo `Ete` do front (`cadastro/domain/ete.ts`): `tExec`,
+    `capNom`, `vazOp` — e nao `tempoExec`, `capAtual`, `vazaoAtual`, que foi o que
+    eu tinha escrito. E TUDO vai como string, `""` no lugar de NULL: o tipo declara
+    todo campo como `string`, e um `null` chegando ali derruba a tela inteira com
+    `Cannot read properties of null (reading 'trim')` — nao so o campo.
+
+    `sub` e `cidId` situam a ETE na arvore: ela e um componente de
+    `sistema_topologia` como a sub-bacia, e a cidade vem do sistema dela.
+
+    O recorte passa por `sistema_topologia`: e por ela que a ETE chega a uma
+    unidade — o motor a identifica assim (`otimizador_capex_v62.py:1111`).
     """
     linhas = await db.buscar(
-        f"""SELECT e.ete_id AS id, capacidade_por_modulo AS "capMod",
-                   capex_por_modulo AS "capexMod", opex_por_modulo AS "opexMod",
-                   tempo_predecessoras AS "tempoPred", tempo_de_execucao AS "tempoExec",
-                   capacidade_nominal_atual AS "capAtual",
-                   vazao_de_operacao_atual AS "vazaoAtual",
-                   capacidade_ociosa AS ociosa, obra_obrigatoria_ano AS "obrigAno",
-                   obra_proibida_ate AS "proibidaAte", nova, capex_terreno AS terreno,
-                   modulos, wacc
+        f"""SELECT e.ete_id, t.componente_sistema_id AS sub, s.cidade_id,
+                   e.capacidade_por_modulo, e.capex_por_modulo, e.opex_por_modulo,
+                   e.tempo_de_execucao, e.capacidade_nominal_atual,
+                   e.vazao_de_operacao_atual, e.capex_terreno, e.modulos, e.wacc,
+                   e.nova
               FROM {_i()}.ete_capex e
               JOIN {_i()}.sistema_topologia t ON t.componente_sistema_id = e.ete_id
               JOIN {_i()}.cidade_sistema s USING (sistema_id)
@@ -540,9 +563,29 @@ async def etes(unidade_id: str) -> dict[str, Any]:
              ORDER BY e.ete_id""",
         unidade_id,
     )
+
+    #: coluna -> nome do front. `nova` e texto ("Sim"/"Nao"), nao numero.
+    MAPA = {
+        "capacidade_por_modulo": "capMod",
+        "capex_por_modulo": "capexMod",
+        "opex_por_modulo": "opexMod",
+        "tempo_de_execucao": "tExec",
+        "capacidade_nominal_atual": "capNom",
+        "vazao_de_operacao_atual": "vazOp",
+        "capex_terreno": "terreno",
+        "modulos": "modulos",
+        "wacc": "wacc",
+    }
+
     etes = []
     for l in linhas:
-        e = dict(l)
+        e = {
+            "id": l["ete_id"],
+            "sub": l["sub"] or "",
+            "cidId": l["cidade_id"] or "",
+            "nova": (l["nova"] or "Nao"),
+            **{destino: pt_br(l[col]) for col, destino in MAPA.items()},
+        }
         e["versao"] = versao({k: v for k, v in e.items() if k != "id"})
         etes.append(e)
     return {"etes": etes}

@@ -18,8 +18,19 @@ sys.path.insert(0,".")
 import logging, httpx; logging.disable(logging.WARNING)
 from main import app
 
+# Unidade a conferir: use uma com DADO REAL (dev/rodar_simulacao_real.py) — o seed
+# nao tem null em lugar nenhum, e foi por isso que essa classe de defeito passou.
+U = os.environ.get("UNIDADE", "u1")
+
 # Transcrito de `src/cadastro/domain/` — contrato.ts, subbacia.ts, cts.ts, ete.ts.
 ESPERADO = {
+    "unidReg": ["rid","rnome","uid","unome","waccMedio"],
+    "supH":    ["id","nome"],
+    "cidadeH": ["id","nome","supId"],
+    "sistemaH":["id","nome","cidId"],
+    "topo":    ["sis","id","nome","jus"],
+    "ete":     ["id","sub","cidId","nova","capMod","capexMod","opexMod","tExec",
+                "capNom","vazOp","terreno","modulos","wacc"],
     "cidade": ["id","nome","fim","cob"],
     "meta":   ["cid","ano","pct"],
     "fator":  ["cid","cob","par"],
@@ -38,7 +49,7 @@ def ck(n,c,d=""):
 async def main():
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c:
-            ct = (await c.get("/api/unidades/u1/contrato")).json()
+            ct = (await c.get(f"/api/unidades/{U}/contrato")).json()
             for rot, lista in (("cidade", ct["cidades"]), ("meta", ct["metas"]), ("fator", ct["fator"])):
                 if not lista:
                     ck(f"{rot}: ha ao menos um para conferir", False, "lista vazia"); continue
@@ -47,7 +58,7 @@ async def main():
                 nao_texto = [k for k in TEXTO[rot] if not isinstance(lista[0].get(k), str)]
                 ck(f"{rot}: campos de ficha sao string", nao_texto==[], str(nao_texto))
 
-            sb = (await c.get("/api/unidades/u1/sub-bacias")).json()
+            sb = (await c.get(f"/api/unidades/{U}/sub-bacias")).json()
             ck("subs e mapa por id", isinstance(sb["subs"], dict), type(sb["subs"]).__name__)
             if sb["subs"]:
                 s = next(iter(sb["subs"].values()))
@@ -56,13 +67,40 @@ async def main():
                 nao_txt = [f"{b}.{k}" for b in ("db","params") for k,v in s[b].items() if not isinstance(v,str)]
                 ck("db e params sao todos string", nao_txt==[], str(nao_txt[:5]))
 
-            ctss = (await c.get("/api/unidades/u1/cts")).json()
+            ctss = (await c.get(f"/api/unidades/{U}/cts")).json()
             ck("ctss e mapa por id", isinstance(ctss["ctss"], dict), type(ctss["ctss"]).__name__)
             if ctss["pares"]:
                 falta = [k for k in ESPERADO["par"] if k not in ctss["pares"][0]]
                 ck("par de CTS tem sub e cts", falta==[], str(falta))
 
-            et = (await c.get("/api/unidades/u1/etes")).json()["etes"]
-            ck("etes vem como lista com id", bool(et) and "id" in et[0], str(sorted(et[0]) if et else "vazio"))
+            et = (await c.get(f"/api/unidades/{U}/etes")).json()["etes"]
+            if et:
+                falta = [k for k in ESPERADO["ete"] if k not in et[0]]
+                ck("ETE tem os campos do front", falta==[], f"faltam {falta}")
+                nao_str = [k for k,v in et[0].items() if k!="versao" and not isinstance(v,str)]
+                ck("ETE: todo campo e string", nao_str==[], str(nao_str))
+
+            h = (await c.get(f"/api/unidades/{U}/hierarquia")).json()
+            falta = [k for k in ESPERADO["unidReg"] if k not in h["unidReg"]]
+            ck("unidReg tem os campos do front", falta==[], f"faltam {falta} — tem {sorted(h['unidReg'])}")
+            for rot, chave in (("supH","superintendencias"),("cidadeH","cidades"),
+                               ("sistemaH","sistemas"),("topo","topo")):
+                if not h[chave]:
+                    ck(f"{chave}: ha ao menos um", False, "vazio"); continue
+                falta = [k for k in ESPERADO[rot] if k not in h[chave][0]]
+                ck(f"{chave} tem os campos do front", falta==[], f"faltam {falta} — tem {sorted(h[chave][0])}")
+
+            # NENHUM null em NENHUM payload: o front declara todo campo de ficha
+            # como string e chama .trim(); `null` derruba a tela inteira.
+            def nulos(o, cam=""):
+                if isinstance(o, dict):
+                    return [f"{cam}.{k}" for k,v in o.items() if v is None] +                            [x for k,v in o.items() if v is not None for x in nulos(v, f"{cam}.{k}")]
+                if isinstance(o, list):
+                    return [x for i,v in enumerate(o[:5]) for x in nulos(v, f"{cam}[{i}]")]
+                return []
+            achados = []
+            for p in ("hierarquia","contrato","sub-bacias","etes","cts"):
+                achados += nulos((await c.get(f"/api/unidades/{U}/{p}")).json(), p)
+            ck("nenhum campo volta null", achados==[], str(sorted(set(achados))[:5]))
     print("\nFALHAS:", f or "nenhuma"); raise SystemExit(1 if f else 0)
 asyncio.run(main())

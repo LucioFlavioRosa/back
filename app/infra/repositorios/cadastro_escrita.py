@@ -569,22 +569,22 @@ async def salvar_contrato(
     return {"id": cidade_id, "overridesGravados": n}
 
 
+#: Nomes do tipo `Ete` do front -> colunas. Tem de casar com o que `cadastro.etes`
+#: devolve, senao a ficha lida nao pode ser salva de volta.
 _ETE = {
     "capMod": "capacidade_por_modulo",
     "capexMod": "capex_por_modulo",
     "opexMod": "opex_por_modulo",
-    "tempoPred": "tempo_predecessoras",
-    "tempoExec": "tempo_de_execucao",
-    "capAtual": "capacidade_nominal_atual",
-    "vazaoAtual": "vazao_de_operacao_atual",
-    "ociosa": "capacidade_ociosa",
-    "obrigAno": "obra_obrigatoria_ano",
-    "proibidaAte": "obra_proibida_ate",
+    "tExec": "tempo_de_execucao",
+    "capNom": "capacidade_nominal_atual",
+    "vazOp": "vazao_de_operacao_atual",
     "nova": "nova",
     "terreno": "capex_terreno",
     "modulos": "modulos",
     "wacc": "wacc",
 }
+#: Colunas de ETE que sao numero — as demais (`nova`) sao texto.
+_ETE_NUM = {"capMod","capexMod","opexMod","tExec","capNom","vazOp","terreno","modulos","wacc"}
 
 
 def _nova_para_texto(v: Any) -> Any:
@@ -624,7 +624,10 @@ async def salvar_ete(
                     VALUES ($1, {marc})
                     ON CONFLICT (ete_id) DO UPDATE SET {sets}""",
                 ete_id,
-                *[ete[k] for k in presentes],
+                *[
+                    _numerico(ete[k], f"ete.{k}") if k in _ETE_NUM else ete[k]
+                    for k in presentes
+                ],
             )
         n = await _gravar_overrides(
             con,
