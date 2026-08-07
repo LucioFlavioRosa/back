@@ -17,7 +17,7 @@ Se a ordem fosse 4-3, o job poderia acordar antes do commit e nao encontrar a
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Body, HTTPException, status
+from fastapi import APIRouter, Body, HTTPException, Response, status
 
 from app.api.deps import Usuario
 from app.dominio import run_id as rid
@@ -53,7 +53,9 @@ async def prontidao(unidade_id: str) -> dict[str, Any]:
 
 
 @router.post("/runs", status_code=status.HTTP_201_CREATED)
-async def criar(usuario: Usuario, corpo: Annotated[dict[str, Any], Body()]) -> dict[str, str]:
+async def criar(
+    usuario: Usuario, corpo: Annotated[dict[str, Any], Body()], resposta: Response
+) -> dict[str, str]:
     unidade_id = corpo.get("unidade_id")
     if not unidade_id:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Informe a unidade.")
@@ -74,14 +76,25 @@ async def criar(usuario: Usuario, corpo: Annotated[dict[str, Any], Body()]) -> d
     # destinada a morrer em ERRO.
     params = montar_params(corpo, unidade_id=unidade_id, usuario=usuario)
 
-    run = rid.novo()
-    await controle.abrir_rodada(
-        run_id=run,
+    pedido = rid.novo()
+    run = await controle.abrir_rodada(
+        run_id=pedido,
         unidade_id=unidade_id,
         params=params,
         usuario=usuario,
         rotulo=corpo.get("nome"),
     )
+    if run != pedido:
+        # Pedido IDENTICO ja em voo — duplo clique, retry do navegador, ou duas
+        # pessoas pedindo a mesma coisa. Devolve a rodada que ja existe, e o front
+        # navega para ela: para o usuario, o segundo clique leva ao mesmo lugar.
+        #
+        # 200 e nao 201, porque nada foi criado. E nao 409: nao ha conflito a
+        # resolver, ha uma rodada pronta para acompanhar. Rodar a mesma unidade com
+        # parametros DIFERENTES continua livre — comparar cenarios e o uso normal.
+        resposta.status_code = status.HTTP_200_OK
+        return {"runId": run, "status": st.Status.PENDENTE}
+
     try:
         await fila.pedir_execucao(run, unidade_id=unidade_id, usuario=usuario)
     except fila.FilaIndisponivel as e:

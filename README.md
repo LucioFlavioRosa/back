@@ -89,10 +89,6 @@ Declarado em vez de escondido — cada item tem o motivo e o caminho:
   O corpo manda só o que difere da base, por índice, então sem ela não há o que
   gravar — mas cópia envelhece: se a base mudar lá e não aqui, a ficha salva com
   valores de ontem sem nenhum sinal. O certo é o backend servir a base para a tela.
-- **Uma rodada em voo por unidade não é imposta**: dois `POST /runs` simultâneos da
-  mesma unidade geram dois `run_id` e duas execuções do mesmo cadastro. Custa
-  cluster e duplica o histórico. Falta lock por unidade, ou chave de idempotência
-  vinda do front.
 - **`PUT` concorrente é last-write-wins**, sem 409 — o `DEPLOY.md` §6 já antecipa
   que falta versão/ETag por ficha. E um `PUT` simultâneo a um `DELETE` de CTS pode
   deixar trilha de override apontando para ficha que não existe mais.
