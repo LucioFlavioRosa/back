@@ -5,6 +5,22 @@ os.environ["SERVICE_BUS_CONN"] = ""
 sys.path.insert(0, ".")
 import httpx, logging; logging.disable(logging.INFO)
 from main import app
+
+# `params` e `db` viajam INTEIROS (contrato, e agora `_exigir_ficha_inteira`):
+# campo vazio vai como string vazia, nunca ausente. Este helper monta a ficha
+# completa para o teste nao repetir as 20 chaves em cada chamada — que e
+# exatamente o que o `fichas.ts` do front faz num lugar so.
+_DB = ["arr", "arrInd", "ecoA", "ecoN", "ecoU", "fat", "fatInd",
+       "ligA", "ligAInd", "ligN", "ligU", "ligUInd"]
+_PARAMS = ["preco", "tarr", "ramp", "vaz", "vazInd", "pot", "popU", "popA"]
+
+
+def ficha(params=None, db=None, **resto):
+    corpo = {"params": {**{k: "" for k in _PARAMS}, **(params or {})},
+             "db": {**{k: "" for k in _DB}, **(db or {})}}
+    corpo.update(resto)
+    return corpo
+
 from app.infra import db
 
 U, SUB, CID, ETE = "u1", "b38_1", "c_rio", "ete_s38"
@@ -14,14 +30,14 @@ async def main():
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c:
             # 1. PUT sub-bacia com override e obras
-            r = await c.put(f"/api/unidades/{U}/sub-bacias/{SUB}", json={
+            r = await c.put(f"/api/unidades/{U}/sub-bacias/{SUB}", json=ficha(**{
                 "params": {"preco": 1900, "pot": 0.05, "popU": 1200, "popA": 400},
                 "db": {"ligU": 350, "ligA": 120},
                 "obrasOverride": [{"nome": "Ligação de esgoto", "qtd": 80, "un": "un",
                                    "preco": 1850, "opex": 5580, "tPred": 0, "dur": 6,
                                    "anoObrig": 0, "proibAte": 0, "wacc": None}],
                 "overrides": [{"campo": "ligU", "valorAntigo": 300, "valorNovo": 350}],
-            })
+            }))
             print(f"  {r.status_code}  PUT sub-bacia -> {r.text[:80]}")
             if r.status_code >= 400: falhas.append("PUT sub-bacia")
 
@@ -44,20 +60,20 @@ async def main():
             if r.status_code >= 400: falhas.append("PUT ETE")
 
             # 4. POST CTS -> 201 com a CTS criada
-            r = await c.post(f"/api/unidades/{U}/cts", json={
+            r = await c.post(f"/api/unidades/{U}/cts", json=ficha(**{
                 "subId": SUB, "cts": {"id": "cts_b38_1", "params": {"preco": 1700}, "db": {"ligU": 90}},
-            })
+            }))
             print(f"  {r.status_code}  POST CTS      -> {r.text[:110]}")
             if r.status_code >= 400: falhas.append("POST CTS")
 
             # 5. idempotencia: reenviar a MESMA ficha nao pode acumular
             for _ in range(2):
-                await c.put(f"/api/unidades/{U}/sub-bacias/{SUB}", json={
+                await c.put(f"/api/unidades/{U}/sub-bacias/{SUB}", json=ficha(**{
                     "params": {"preco": 1900}, "db": {"ligU": 350},
                     "obrasOverride": [{"nome": "Tronco", "qtd": 10, "un": "m", "preco": 100,
                                        "opex": 0, "tPred": 0, "dur": 3, "anoObrig": 0, "proibAte": 0}],
                     "overrides": [{"campo": "ligU", "valorAntigo": 300, "valorNovo": 350}],
-                })
+                }))
 
             # 6. DELETE CTS
             r = await c.delete(f"/api/unidades/{U}/cts/cts_b38_1")

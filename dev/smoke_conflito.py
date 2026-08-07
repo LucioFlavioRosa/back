@@ -9,6 +9,22 @@ os.environ["POSTGRES_URL"]="postgresql://otim:otim@localhost:55432/otimizador"; 
 sys.path.insert(0,".")
 import logging, httpx; logging.disable(logging.WARNING)
 from main import app
+
+# `params` e `db` viajam INTEIROS (contrato, e agora `_exigir_ficha_inteira`):
+# campo vazio vai como string vazia, nunca ausente. Este helper monta a ficha
+# completa para o teste nao repetir as 20 chaves em cada chamada — que e
+# exatamente o que o `fichas.ts` do front faz num lugar so.
+_DB = ["arr", "arrInd", "ecoA", "ecoN", "ecoU", "fat", "fatInd",
+       "ligA", "ligAInd", "ligN", "ligU", "ligUInd"]
+_PARAMS = ["preco", "tarr", "ramp", "vaz", "vazInd", "pot", "popU", "popA"]
+
+
+def ficha(params=None, db=None, **resto):
+    corpo = {"params": {**{k: "" for k in _PARAMS}, **(params or {})},
+             "db": {**{k: "" for k in _DB}, **(db or {})}}
+    corpo.update(resto)
+    return corpo
+
 f=[]
 def ck(n,c,d=""):
     print(f"  {'ok  ' if c else 'FALHA'} {n}{'' if c else '  <- '+d}"); (f.append(n) if not c else None)
@@ -20,28 +36,28 @@ async def main():
             ck("a ficha vem com versao", bool(v1), str(v1))
 
             r=await c.put("/api/unidades/u1/sub-bacias/b38_1",
-                json={"versao":v1,"params":{"preco":"1.900,00"},"overrides":[]})
+                json=ficha(**{"versao":v1,"params":{"preco":"1.900,00"},"overrides":[]}))
             ck("versao correta grava", r.status_code==200, f"{r.status_code} {r.text[:70]}")
 
             r=await c.put("/api/unidades/u1/sub-bacias/b38_1",
-                json={"versao":v1,"params":{"preco":"2.500,00"},"overrides":[]})
+                json=ficha(**{"versao":v1,"params":{"preco":"2.500,00"},"overrides":[]}))
             ck("versao velha da 409", r.status_code==409, f"{r.status_code} {r.text[:90]}")
 
             v2=(await c.get("/api/unidades/u1/sub-bacias")).json()["subs"]["b38_1"]["versao"]
             ck("a versao mudou apos gravar", v2!=v1, f"{v1} -> {v2}")
             r=await c.put("/api/unidades/u1/sub-bacias/b38_1",
-                json={"versao":v2,"params":{"preco":"2.500,00"},"overrides":[]})
+                json=ficha(**{"versao":v2,"params":{"preco":"2.500,00"},"overrides":[]}))
             ck("com a versao nova, grava", r.status_code==200, f"{r.status_code}")
 
             r=await c.put("/api/unidades/u1/sub-bacias/b38_1",
-                json={"params":{"preco":"2.600,00"},"overrides":[]})
+                json=ficha(**{"params":{"preco":"2.600,00"},"overrides":[]}))
             ck("cliente sem versao continua passando", r.status_code==200, f"{r.status_code}")
 
             # duas gravacoes SIMULTANEAS com a mesma versao: so uma pode vencer
             v3=(await c.get("/api/unidades/u1/sub-bacias")).json()["subs"]["b38_1"]["versao"]
             r1,r2=await asyncio.gather(
-                c.put("/api/unidades/u1/sub-bacias/b38_1", json={"versao":v3,"params":{"preco":"1.111,00"},"overrides":[]}),
-                c.put("/api/unidades/u1/sub-bacias/b38_1", json={"versao":v3,"params":{"preco":"2.222,00"},"overrides":[]}))
+                c.put("/api/unidades/u1/sub-bacias/b38_1", json=ficha(**{"versao":v3,"params":{"preco":"1.111,00"},"overrides":[]})),
+                c.put("/api/unidades/u1/sub-bacias/b38_1", json=ficha(**{"versao":v3,"params":{"preco":"2.222,00"},"overrides":[]})))
             ck("gravacoes simultaneas: uma 200, uma 409",
                sorted([r1.status_code,r2.status_code])==[200,409], f"{r1.status_code}/{r2.status_code}")
 
@@ -58,5 +74,29 @@ async def main():
             ck("filtro ?unidade=<id> encontra a rodada", len(h)==1, f"{len(h)} rodada(s)")
             h=(await c.get("/api/runs?unidade=u9")).json()
             ck("filtro por unidade inexistente volta vazio", len(h)==0, f"{len(h)}")
+
+            # ---- ficha INTEIRA: o contrato passa a valer, em vez de descrever
+            # uma coisa e o codigo fazer outra.
+            r=await c.put("/api/unidades/u1/sub-bacias/b38_1",
+                json={"params":{"preco":"1,00"},"overrides":[]})
+            ck("params parcial da 422 nomeando o que falta",
+               r.status_code==422 and "params.tarr" in r.text, f"{r.status_code} {r.text[:110]}")
+
+            r=await c.put("/api/unidades/u1/sub-bacias/b38_1",
+                json=ficha(params={"preco":"1.234,00","tarr":"3"}, db={"ligU":"9"}, overrides=[]))
+            ck("ficha inteira grava", r.status_code==200, f"{r.status_code} {r.text[:70]}")
+
+            r=await c.put("/api/unidades/u1/sub-bacias/b38_1", json={"overrides":[]})
+            ck("so overrides, sem bloco de ficha, continua passando",
+               r.status_code==200, f"{r.status_code} {r.text[:70]}")
+
+            sb=(await c.get("/api/unidades/u1/sub-bacias")).json()["subs"]["b38_1"]
+            ck("campo enviado vazio LIMPA a coluna",
+               sb["params"]["ramp"] in (None,""), repr(sb["params"]["ramp"]))
+            ck("industrial esta no bloco db, e nao em params",
+               "ligUInd" in sb["db"] and "ligUInd" not in sb["params"], str(sorted(sb["db"])))
+            ck("vazInd fica em params (e estimativa, nao medida)",
+               "vazInd" in sb["params"], str(sorted(sb["params"])))
+
     print("\nFALHAS:", f or "nenhuma"); raise SystemExit(1 if f else 0)
 asyncio.run(main())

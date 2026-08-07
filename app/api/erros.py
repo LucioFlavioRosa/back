@@ -28,6 +28,7 @@ from app.infra.fila import FilaIndisponivel
 from app.infra.repositorios.cadastro_escrita import (
     FichaDesatualizada,
     FichaDeOutraUnidade,
+    FichaIncompleta,
     ValorInvalido,
 )
 
@@ -67,6 +68,12 @@ def registrar(app: FastAPI) -> None:
         # 409 e o codigo que a tela ja trata: ela pergunta se pode recarregar do
         # servidor e semear de novo aquela unidade.
         return JSONResponse(status_code=status.HTTP_409_CONFLICT, content=_corpo(str(e)))
+
+    @app.exception_handler(FichaIncompleta)
+    async def _incompleta(_: Request, e: FichaIncompleta) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content=_corpo(str(e))
+        )
 
     @app.exception_handler(ValorInvalido)
     async def _valor(_: Request, e: ValorInvalido) -> JSONResponse:

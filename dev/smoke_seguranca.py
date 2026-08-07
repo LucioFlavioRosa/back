@@ -20,6 +20,22 @@ logging.disable(logging.WARNING)
 from app.infra import db  # noqa: E402
 from main import app  # noqa: E402
 
+# `params` e `db` viajam INTEIROS (contrato, e agora `_exigir_ficha_inteira`):
+# campo vazio vai como string vazia, nunca ausente. Este helper monta a ficha
+# completa para o teste nao repetir as 20 chaves em cada chamada — que e
+# exatamente o que o `fichas.ts` do front faz num lugar so.
+_DB = ["arr", "arrInd", "ecoA", "ecoN", "ecoU", "fat", "fatInd",
+       "ligA", "ligAInd", "ligN", "ligU", "ligUInd"]
+_PARAMS = ["preco", "tarr", "ramp", "vaz", "vazInd", "pot", "popU", "popA"]
+
+
+def ficha(params=None, db=None, **resto):
+    corpo = {"params": {**{k: "" for k in _PARAMS}, **(params or {})},
+             "db": {**{k: "" for k in _DB}, **(db or {})}}
+    corpo.update(resto)
+    return corpo
+
+
 SUB = "b38_1"  # pertence a u1
 
 
@@ -46,14 +62,14 @@ async def main() -> None:
             )
             r = await c.put(
                 f"/api/unidades/u_outra/sub-bacias/{SUB}",
-                json={"params": {"preco": "9.999,00"}, "overrides": []},
+                json=ficha(**{"params": {"preco": "9.999,00"}, "overrides": []}),
             )
             checar("ficha de outra unidade e recusada", r.status_code == 404, f"deu {r.status_code}")
 
             # 2. PUT em ficha inexistente nao pode criar linha orfa
             r = await c.put(
                 "/api/unidades/u1/sub-bacias/nao_existe",
-                json={"params": {"preco": "1,00"}, "overrides": []},
+                json=ficha(**{"params": {"preco": "1,00"}, "overrides": []}),
             )
             orfa = await db.buscar(
                 "SELECT count(*) n FROM input.subbacia_operacional WHERE sub_bacia='nao_existe'"
@@ -67,7 +83,7 @@ async def main() -> None:
             # 3. autor forjado no corpo tem de ser ignorado
             await c.put(
                 f"/api/unidades/u1/sub-bacias/{SUB}",
-                json={
+                json=ficha(**{
                     "params": {"preco": "1.900,00"},
                     "overrides": [
                         {
@@ -77,7 +93,7 @@ async def main() -> None:
                             "autor": "forjado@corp",
                         }
                     ],
-                },
+                }),
             )
             autores = await db.buscar("SELECT DISTINCT autor FROM input.override")
             checar(
@@ -96,12 +112,12 @@ async def main() -> None:
             )
             await c.put(
                 f"/api/unidades/u1/sub-bacias/{SUB}",
-                json={
+                json=ficha(**{
                     "params": {"preco": "1.900,00"},
                     "overrides": [
                         {"campo": "ligU", "valorAntigo": "300", "valorNovo": "351"}
                     ],
-                },
+                }),
             )
             depois = await db.buscar(
                 "SELECT count(*) n FROM input.override WHERE gravado_em < '2026-08-01'"
@@ -117,12 +133,12 @@ async def main() -> None:
             for _ in range(3):
                 await c.put(
                     f"/api/unidades/u1/sub-bacias/{SUB}",
-                    json={
+                    json=ficha(**{
                         "params": {"preco": "1.900,00"},
                         "overrides": [
                             {"campo": "ligU", "valorAntigo": "300", "valorNovo": "351"}
                         ],
-                    },
+                    }),
                 )
             n2 = (await db.buscar("SELECT count(*) n FROM input.override"))[0]["n"]
             checar("PUT repetido nao duplica a trilha", n1 == n2, f"{n1} -> {n2}")
@@ -130,12 +146,12 @@ async def main() -> None:
             # 6. mudanca de valor GERA linha nova, sem apagar a anterior
             await c.put(
                 f"/api/unidades/u1/sub-bacias/{SUB}",
-                json={
+                json=ficha(**{
                     "params": {"preco": "1.900,00"},
                     "overrides": [
                         {"campo": "ligU", "valorAntigo": "300", "valorNovo": "400"}
                     ],
-                },
+                }),
             )
             hist = await db.buscar(
                 "SELECT valor_novo FROM input.override WHERE campo='ligU' ORDER BY override_id"
@@ -155,11 +171,11 @@ async def main() -> None:
             # 8. obrasOverride no formato REAL do front: Record<indice, Partial>
             r = await c.put(
                 f"/api/unidades/u1/sub-bacias/{SUB}",
-                json={
+                json=ficha(**{
                     "params": {"preco": "1.900,00"},
                     "obrasOverride": {"0": {"qtd": "100", "preco": "2.000,00"}},
                     "overrides": [],
-                },
+                }),
             )
             obras = await db.buscar(
                 "SELECT componente, quantidade, preco_unitario, capex"

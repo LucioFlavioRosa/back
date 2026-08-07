@@ -248,9 +248,42 @@ _COLETA = {
     "vazao_contribuicao_industrial": "vazInd",
 }
 
-#: Quais campos vêm do Databricks (travados) e quais a Regional preenche. O front
-#: usa a separação para decidir o que é editável e o que exige override.
-_DO_DATABRICKS = {"fat", "arr", "ligU", "ligA", "ligN", "ecoU", "ecoA", "ecoN"}
+#: Quais campos vêm do Databricks (travados, corrigíveis só por override) e quais
+#: a Regional preenche. A divisão é a do `DEPLOY.md` §3, e eu a tinha errado: o
+#: RECORTE INDUSTRIAL (`ligUInd`, `ligAInd`, `fatInd`, `arrInd`) é medida do
+#: Databricks como as do topo, e estava caindo em `params` — a tela mostraria como
+#: campo a preencher o que é dado travado, e a Regional digitaria por cima sem
+#: gerar trilha de override.
+#:
+#: `vazInd` fica em `params` de propósito, e não é inconsistência: `vazao_contribuicao`
+#: é o total do Databricks e a parcela industrial dentro dele é estimativa da
+#: Regional. Está assim no `DEPLOY.md`.
+_DO_DATABRICKS = {
+    "fat",
+    "arr",
+    "ligU",
+    "ligA",
+    "ligN",
+    "ecoU",
+    "ecoA",
+    "ecoN",
+    "ligUInd",
+    "ligAInd",
+    "fatInd",
+    "arrInd",
+}
+
+#: O que a ficha de coleta DEVE trazer em cada bloco. É o contrato do front
+#: (`SubBaciaDb` / `SubBaciaParams`), e é o que torna o PUT uma substituição de
+#: ficha inteira em vez de um patch — ver `cadastro_escrita._exigir_ficha_inteira`.
+CAMPOS_DB = sorted(_DO_DATABRICKS)
+CAMPOS_PARAMS = ["preco", "tarr", "ramp", "vaz", "vazInd", "pot", "popU", "popA"]
+
+#: `popN` (`populacao_novas_obras`) existe na tabela e NÃO é modelado pelo front:
+#: não está em `SubBaciaDb` nem em `SubBaciaParams`. Por isso a escrita nunca o
+#: toca — zerá-lo em nome de "ficha inteira" apagaria uma coluna que o cliente
+#: nem sabe que existe.
+NAO_MODELADOS = {"popN"}
 
 
 def _ficha_coleta(linha: dict[str, Any], chave: str) -> dict[str, Any]:

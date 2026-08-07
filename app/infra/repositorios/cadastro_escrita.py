@@ -19,7 +19,31 @@ from typing import Any
 
 from app.config import config
 from app.infra import db
-from app.infra.repositorios.cadastro import _COLETA, _ficha_coleta
+from app.infra.repositorios.cadastro import (
+    _COLETA,
+    CAMPOS_DB,
+    CAMPOS_PARAMS,
+    NAO_MODELADOS,
+    _ficha_coleta,
+)
+
+
+class FichaIncompleta(ValueError):
+    """O corpo nao trouxe a ficha inteira — 422, com os campos que faltaram.
+
+    O contrato e explicito: "o corpo carrega a ficha INTEIRA (idempotente), nao um
+    patch", e "`params` viaja sempre inteiro". A implementacao, no entanto, gravava
+    so as colunas presentes no corpo — ou seja, um PATCH com nome de PUT.
+
+    Enquanto o front manda tudo, os dois coincidem. A divergencia mordia noutro
+    lugar: um cliente que ESQUECESSE um campo teria o valor antigo preservado em
+    silencio, e o bug dele ficaria invisivel; e ninguem conseguia raciocinar sobre
+    o endpoint pelo contrato, porque o contrato descrevia outra coisa.
+
+    Recusar e melhor que aceitar E ZERAR o que faltou: o segundo tambem honraria o
+    contrato, mas apagaria dado de verdade por causa de um bug de cliente. Aqui, o
+    pior caso e uma requisicao recusada com a lista do que falta.
+    """
 
 
 class FichaDesatualizada(RuntimeError):
@@ -260,7 +284,11 @@ async def _gravar_coleta(
     """
     juntos = {**bloco_db, **params}
     frente_para_coluna = {v: k for k, v in _COLETA.items()}
-    colunas = [frente_para_coluna[k] for k in juntos if k in frente_para_coluna]
+    colunas = [
+        frente_para_coluna[k]
+        for k in juntos
+        if k in frente_para_coluna and k not in NAO_MODELADOS
+    ]
     if not colunas:
         return
     valores = [_numerico(juntos[_COLETA[c]], _COLETA[c]) for c in colunas]
@@ -341,6 +369,27 @@ async def exigir_dona(tipo: str, ficha_id: str, unidade_id: str) -> None:
         raise FichaDeOutraUnidade(f"{tipo} {ficha_id!r} nao pertence a unidade {unidade_id!r}")
 
 
+def _exigir_ficha_inteira(corpo: dict[str, Any]) -> None:
+    """`params` e `db` precisam vir COMPLETOS — e o que faz o PUT ser substituicao.
+
+    Bloco AUSENTE passa: `{"overrides": [...]}` sozinho e uma correcao de trilha
+    sem tocar na ficha, e exigir os dois blocos ali seria exigir que o cliente
+    reenvie dado que nao esta mudando. Bloco PRESENTE, porem, tem de estar inteiro.
+    """
+    faltando: list[str] = []
+    for bloco, esperados in (("params", CAMPOS_PARAMS), ("db", CAMPOS_DB)):
+        if bloco not in corpo:
+            continue
+        recebidos = set(corpo[bloco] or {})
+        faltando += [f"{bloco}.{c}" for c in esperados if c not in recebidos]
+    if faltando:
+        raise FichaIncompleta(
+            "O corpo precisa trazer a ficha inteira. Faltaram: "
+            + ", ".join(sorted(faltando))
+            + ". Campo vazio deve vir como string vazia, não ausente."
+        )
+
+
 async def _versao_atual(tipo: str, ficha_id: str, unidade_id: str) -> str | None:
     """A versão que a ficha tem AGORA no banco, pela mesma conta que o `GET` usa.
 
@@ -399,6 +448,7 @@ async def salvar_coleta(
         # versao, as duas concordam, e as duas gravam — o conflito passaria batido
         # justamente no caso em que ele existe. E o mesmo padrao do POST /runs.
         await con.execute("SELECT pg_advisory_xact_lock(hashtext($1))", ficha_id)
+        _exigir_ficha_inteira(corpo)
         await _exigir_versao(corpo, tipo, ficha_id, unidade_id)
         await _gravar_coleta(
             con,

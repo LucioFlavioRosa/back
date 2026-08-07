@@ -89,10 +89,6 @@ Declarado em vez de escondido — cada item tem o motivo e o caminho:
   O corpo manda só o que difere da base, por índice, então sem ela não há o que
   gravar — mas cópia envelhece: se a base mudar lá e não aqui, a ficha salva com
   valores de ontem sem nenhum sinal. O certo é o backend servir a base para a tela.
-- **"Ficha inteira" é, na prática, merge**: campo ausente no corpo mantém o valor
-  no banco em vez de limpá-lo. O contrato diz que o corpo é a ficha inteira e o
-  front sempre a manda inteira, então na prática coincide — mas um cliente parcial
-  vira um PATCH sem que nada acuse.
 - **Validação do token do Entra ID** (`app/api/deps.py`): falta o JWKS do tenant.
   Está levantando erro em vez de decodificar sem verificar, de propósito.
 - **Cancelar rodada**: bloqueado por migração (ver abaixo).
