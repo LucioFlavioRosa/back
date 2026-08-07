@@ -667,8 +667,19 @@ async def criar_cts(*, unidade_id: str, sub_id: str, cts: dict[str, Any]) -> dic
             sub_id,
             cts_id,
         )
-    linha = await db.buscar_um(f"SELECT * FROM {_i()}.cts_operacional WHERE cts = $1", cts_id)
-    return {"par": {"sub": sub_id, "cts": cts_id}, "cts": _ficha_coleta(linha, "cts")}
+    # Devolve a CTS pela MESMA leitura que o `GET /cts` usa. Montar a resposta a
+    # mao aqui era o defeito: `_ficha_coleta` devolve so `{id, db, params}`, sem
+    # `obrasOverride` nem os campos de posicao (`subId`, `sisId`, `sistema`,
+    # `jusante`). O contrato manda o front ADOTAR o que voltou — entao ele adotava
+    # uma CTS sem `obrasOverride`, e a conta de pendencias fazia
+    # `mkObrasCts(undefined)`, que estoura em `undefined['0']` e derruba a tela.
+    #
+    # Reusar a leitura tambem impede as duas formas de divergirem outra vez: se o
+    # `GET` ganhar um campo, este `POST` ganha junto.
+    from app.infra.repositorios import cadastro
+
+    todas = (await cadastro.cts(unidade_id))["ctss"]
+    return {"par": {"sub": sub_id, "cts": cts_id}, "cts": todas.get(cts_id)}
 
 
 async def apagar_cts(*, unidade_id: str, cts_id: str) -> bool:

@@ -494,20 +494,34 @@ _OBRA_LEITURA = {
     "wacc": "wacc",
 }
 
-#: A ordem canonica dos componentes — e ela que da o INDICE do override, porque o
-#: front indexa por posicao na obra-base. Gravar fora de ordem faria o override da
-#: rede coletora voltar como se fosse da ligacao.
-_ORDEM_OBRAS = [
-    "Ligacao de esgoto",
-    "Rede coletora",
-    "Coletor tronco",
-    "Estacao elevatoria (EEE)",
-    "Linha de recalque (LR)",
-]
+#: O INDICE do override sai da POSICAO do componente na obra-base do front, entao
+#: cada base precisa do seu de-para. E as duas bases usam VOCABULARIOS DIFERENTES
+#: para a mesma peca — conferido no cadastro real:
+#:
+#:   sub-bacia:  Coletor tronco | Estacao elevatoria (EEE) | Linha de recalque (LR)
+#:   CTS:        Tronco         | EEE                      | Linha de recalque
+#:
+#: Eu tinha usado a grafia da sub-bacia para a CTS, e so o primeiro componente
+#: casava: a ficha voltava com 1 obra em vez de 4, e as outras tres perdiam o que a
+#: Regional tivesse digitado. Aceitar as duas grafias e o que faz a leitura
+#: sobreviver a diferenca de vocabulario entre as tabelas.
+_INDICE_SUBBACIA = {
+    "Ligacao de esgoto": "0", "Ligação de esgoto": "0",
+    "Rede coletora": "1",
+    "Coletor tronco": "2", "Tronco": "2",
+    "Estacao elevatoria (EEE)": "3", "Estação elevatória (EEE)": "3", "EEE": "3",
+    "Linha de recalque (LR)": "4", "Linha de recalque": "4",
+}
+_INDICE_CTS = {
+    "Coletor de tempo seco": "0",
+    "Coletor tronco": "1", "Tronco": "1",
+    "Estacao elevatoria (EEE)": "2", "Estação elevatória (EEE)": "2", "EEE": "2",
+    "Linha de recalque (LR)": "3", "Linha de recalque": "3",
+}
 
 
 async def _obras_por_ficha(
-    tabela: str, chave: str, ids: list[str]
+    tabela: str, chave: str, ids: list[str], indice: dict[str, str] | None = None
 ) -> dict[str, dict[str, Any]]:
     """`{ficha: {indice: {campo: valor}}}` — o `obrasOverride` como o front espera.
 
@@ -520,7 +534,7 @@ async def _obras_por_ficha(
     linhas = await db.buscar(
         f"SELECT * FROM {_i()}.{tabela} WHERE {chave} = ANY($1::text[])", ids
     )
-    pos = {nome: str(i) for i, nome in enumerate(_ORDEM_OBRAS)}
+    pos = indice or _INDICE_SUBBACIA
     out: dict[str, dict[str, Any]] = {}
     for l in linhas:
         indice = pos.get(l["componente"])
@@ -620,7 +634,9 @@ async def cts(unidade_id: str) -> dict[str, Any]:
             unidade_id,
         )
     }
-    obras = await _obras_por_ficha("componentes_cts_capex", "cts", list(fichas))
+    obras = await _obras_por_ficha(
+        "componentes_cts_capex", "cts", list(fichas), _INDICE_CTS
+    )
 
     ctss: dict[str, Any] = {}
     for l in linhas:

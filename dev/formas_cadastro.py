@@ -102,5 +102,32 @@ async def main():
             for p in ("hierarquia","contrato","sub-bacias","etes","cts"):
                 achados += nulos((await c.get(f"/api/unidades/{U}/{p}")).json(), p)
             ck("nenhum campo volta null", achados==[], str(sorted(set(achados))[:5]))
+
+            # O POST de CTS devolve a ficha que o front ADOTA — se ela vier
+            # incompleta, a conta de pendencias faz `mkObrasCts(undefined)` e a
+            # tela cai em `undefined['0']`. Foi assim que a tela de CTS quebrou.
+            sub = next(iter((await c.get(f"/api/unidades/{U}/sub-bacias")).json()["subs"]))
+            r = await c.post(f"/api/unidades/{U}/cts",
+                json={"subId": sub, "cts": {"id": "cts_forma_teste",
+                                            "params": {"preco": "1.480,00"}, "db": {}}})
+            nova = (r.json() or {}).get("cts") or {}
+            falta = [k for k in ESPERADO["cts"] if k not in nova]
+            ck("POST /cts devolve a ficha COMPLETA", r.status_code==201 and falta==[],
+               f"{r.status_code} faltam {falta}")
+            ck("a CTS criada tem obrasOverride", isinstance(nova.get("obrasOverride"), dict),
+               type(nova.get("obrasOverride")).__name__)
+
+            # O indice do override e a POSICAO na obra-base: sub-bacia tem 5, CTS
+            # tem 4. Faltar indice significa componente que o de-para nao
+            # reconheceu — e a Regional perde o que digitou naquela linha.
+            subs = (await c.get(f"/api/unidades/{U}/sub-bacias")).json()["subs"]
+            if subs:
+                idx = sorted(next(iter(subs.values()))["obrasOverride"])
+                ck("sub-bacia traz as 5 obras da base", idx == ["0","1","2","3","4"], str(idx))
+            ctss = (await c.get(f"/api/unidades/{U}/cts")).json()["ctss"]
+            if ctss:
+                idx = sorted(next(iter(ctss.values()))["obrasOverride"])
+                ck("CTS traz as 4 obras da base dela", idx == ["0","1","2","3"], str(idx))
+            await c.delete(f"/api/unidades/{U}/cts/cts_forma_teste")
     print("\nFALHAS:", f or "nenhuma"); raise SystemExit(1 if f else 0)
 asyncio.run(main())
