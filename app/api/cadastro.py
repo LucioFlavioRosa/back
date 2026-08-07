@@ -107,6 +107,10 @@ async def cts(unidade_id: str) -> dict[str, Any]:
 #
 # A resposta traz `overridesGravados` de proposito: e o unico jeito de quem chamou
 # conferir que a trilha foi junto, sem consultar o banco.
+#
+# E TODA escrita passa por `exigir_dona`: o `unidade_id` do caminho recorta a
+# ficha, e nao so assina a trilha. Sem isso dava para gravar na sub-bacia de
+# outra unidade trocando o id da URL — e a auditoria registrava a unidade errada.
 
 Corpo = Annotated[dict[str, Any], Body()]
 
@@ -148,7 +152,7 @@ async def salvar_ete(
 
 
 @router.post("/unidades/{unidade_id}/cts", status_code=status.HTTP_201_CREATED)
-async def criar_cts(unidade_id: str, corpo: Corpo) -> dict[str, Any]:
+async def criar_cts(unidade_id: str, corpo: Corpo, usuario: Usuario) -> dict[str, Any]:
     """Devolve a CTS CRIADA — e e essa versao que o front adota, nao a que enviou."""
     sub_id, cts = corpo.get("subId"), corpo.get("cts") or {}
     if not sub_id or not cts.get("id"):
@@ -156,10 +160,10 @@ async def criar_cts(unidade_id: str, corpo: Corpo) -> dict[str, Any]:
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             "Informe a sub-bacia pareada e o identificador da CTS.",
         )
-    return await cadastro_escrita.criar_cts(sub_id=sub_id, cts=cts)
+    return await cadastro_escrita.criar_cts(unidade_id=unidade_id, sub_id=sub_id, cts=cts)
 
 
 @router.delete("/unidades/{unidade_id}/cts/{cts_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def apagar_cts(unidade_id: str, cts_id: str) -> None:
-    if not await cadastro_escrita.apagar_cts(cts_id):
+async def apagar_cts(unidade_id: str, cts_id: str, usuario: Usuario) -> None:
+    if not await cadastro_escrita.apagar_cts(unidade_id=unidade_id, cts_id=cts_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "CTS não encontrada.")

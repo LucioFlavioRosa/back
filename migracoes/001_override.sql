@@ -20,6 +20,12 @@
 -- Também não é versionamento da ficha: a ficha é substituída inteira a cada PUT
 -- (idempotente). A trilha responde "quem mudou este campo, quando, de quanto para
 -- quanto", que é a pergunta que aparece meses depois, na reunião.
+--
+-- É APPEND-ONLY. A escrita nunca apaga linha daqui: só acrescenta quando o valor
+-- muda em relação à última linha daquele campo. A primeira versão do backend
+-- apagava a trilha da ficha e regravava o conjunto atual, e uma revisão mostrou o
+-- estrago — correção feita em julho reaparecia com data de agosto. Auditoria que
+-- reescreve a data do fato não é auditoria.
 
 CREATE TABLE IF NOT EXISTS input.override (
     override_id   bigserial PRIMARY KEY,
@@ -31,8 +37,12 @@ CREATE TABLE IF NOT EXISTS input.override (
     tipo          text NOT NULL
         CHECK (tipo IN ('sub-bacia', 'cts', 'ete', 'cidade')),
     ficha_id      text NOT NULL,
+    -- Sem CASCADE, e de proposito. O comentario desta tabela diz que a trilha
+    -- sobrevive a ficha ser apagada; com CASCADE, apagar a unidade levaria a
+    -- auditoria junto — que e exatamente o momento em que alguem vai querer
+    -- consulta-la. RESTRICT obriga a decisao a ser explicita.
     unidade_id    text NOT NULL
-        REFERENCES input.unidade_regional(unidade_id) ON DELETE CASCADE,
+        REFERENCES input.unidade_regional(unidade_id) ON DELETE RESTRICT,
 
     campo         text NOT NULL,
     valor_antigo  text,             -- como veio do Databricks; null = campo vazio lá

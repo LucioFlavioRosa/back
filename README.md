@@ -91,6 +91,18 @@ Declarado em vez de escondido — cada item tem o motivo e o caminho:
   produziu. A tela precisa das faixas para explicar a causalidade do degrau. Ou o
   job passa a publicá-las na rodada, ou este endpoint lê o cadastro — e aí o
   número deixa de ser o daquela rodada, o que é pior.
+- **Recorte da ETE por unidade**: `exigir_dona` cobre sub-bacia, cidade e CTS, mas
+  não ETE — `input.ete_capex` não tem coluna de unidade nem FK que chegue até ela.
+  Enquanto o esquema não tiver o caminho, `PUT /etes/{id}` aceita qualquer id de
+  qualquer unidade. É o mesmo furo da leitura, agora também na escrita.
+- **`_BASE_SUBBACIA`** em `cadastro_escrita.py` é cópia de `BASE_OBRAS` do front.
+  O corpo manda só o que difere da base, por índice, então sem ela não há o que
+  gravar — mas cópia envelhece: se a base mudar lá e não aqui, a ficha salva com
+  valores de ontem sem nenhum sinal. O certo é o backend servir a base para a tela.
+- **"Ficha inteira" é, na prática, merge**: campo ausente no corpo mantém o valor
+  no banco em vez de limpá-lo. O contrato diz que o corpo é a ficha inteira e o
+  front sempre a manda inteira, então na prática coincide — mas um cliente parcial
+  vira um PATCH sem que nada acuse.
 - **Validação do token do Entra ID** (`app/api/deps.py`): falta o JWKS do tenant.
   Está levantando erro em vez de decodificar sem verificar, de propósito.
 - **`pendencias_do_cadastro`** devolve 0, o que hoje deixa qualquer rodada passar.

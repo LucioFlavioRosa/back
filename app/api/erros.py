@@ -24,6 +24,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.dominio.parametros import ParametrosInvalidos
 from app.infra.fila import FilaIndisponivel
+from app.infra.repositorios.cadastro_escrita import FichaDeOutraUnidade
 
 log = logging.getLogger(__name__)
 
@@ -49,6 +50,16 @@ def registrar(app: FastAPI) -> None:
     async def _fila(_: Request, e: FilaIndisponivel) -> JSONResponse:
         # 503 e nao 500: e temporario e o usuario pode tentar de novo.
         return JSONResponse(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, content=_corpo(str(e)))
+
+    @app.exception_handler(FichaDeOutraUnidade)
+    async def _fora_da_unidade(_: Request, e: FichaDeOutraUnidade) -> JSONResponse:
+        # 404 e nao 403: dizer "existe, mas nao e sua" ja conta quais ids existem
+        # noutra unidade. Para quem esta no lugar certo, o efeito e o mesmo.
+        log.warning("escrita recusada: %s", e)
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content=_corpo("Ficha não encontrada nesta unidade."),
+        )
 
     @app.exception_handler(RequestValidationError)
     async def _validacao(_: Request, e: RequestValidationError) -> JSONResponse:
