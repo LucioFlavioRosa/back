@@ -32,15 +32,23 @@ def _corpo(mensagem: str) -> dict[str, str]:
     return {"erro": mensagem}
 
 
+# `JSONResponse(status, content=...)` NAO funciona: o primeiro posicional da
+# classe e `content`, entao a chamada passa o status como corpo E como content, e
+# estoura TypeError. O efeito era cruel — todo 4xx/5xx virava 500 com traceback,
+# ou seja, o modulo que existe para padronizar erro era o unico caminho em que
+# erro nenhum saia padronizado. So aparece com um erro de verdade acontecendo,
+# e foi o primeiro achado do smoke contra Postgres real.
+
+
 def registrar(app: FastAPI) -> None:
     @app.exception_handler(ParametrosInvalidos)
     async def _parametros(_: Request, e: ParametrosInvalidos) -> JSONResponse:
-        return JSONResponse(status.HTTP_422_UNPROCESSABLE_ENTITY, content=_corpo(str(e)))
+        return JSONResponse(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content=_corpo(str(e)))
 
     @app.exception_handler(FilaIndisponivel)
     async def _fila(_: Request, e: FilaIndisponivel) -> JSONResponse:
         # 503 e nao 500: e temporario e o usuario pode tentar de novo.
-        return JSONResponse(status.HTTP_503_SERVICE_UNAVAILABLE, content=_corpo(str(e)))
+        return JSONResponse(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, content=_corpo(str(e)))
 
     @app.exception_handler(RequestValidationError)
     async def _validacao(_: Request, e: RequestValidationError) -> JSONResponse:
@@ -50,19 +58,19 @@ def registrar(app: FastAPI) -> None:
         campo = ".".join(str(p) for p in primeiro.get("loc", ()) if p != "body")
         msg = primeiro.get("msg", "conteúdo inválido")
         return JSONResponse(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             content=_corpo(f"{campo}: {msg}" if campo else msg),
         )
 
     @app.exception_handler(StarletteHTTPException)
     async def _http(_: Request, e: StarletteHTTPException) -> JSONResponse:
         detalhe = e.detail if isinstance(e.detail, str) else "Requisição recusada."
-        return JSONResponse(e.status_code, content=_corpo(detalhe))
+        return JSONResponse(status_code=e.status_code, content=_corpo(detalhe))
 
     @app.exception_handler(Exception)
     async def _inesperado(req: Request, e: Exception) -> JSONResponse:
         log.exception("erro nao tratado em %s %s", req.method, req.url.path)
         return JSONResponse(
-            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content=_corpo("Erro interno. A equipe foi notificada."),
         )

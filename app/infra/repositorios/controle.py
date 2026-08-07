@@ -4,7 +4,6 @@ Nomes de schema vem da config, e nao literais no SQL, porque `input`/`controle`
 sao os nomes de producao mas o smoke test roda contra schemas de teste.
 """
 
-import json
 from typing import Any
 
 from app.config import config
@@ -62,10 +61,15 @@ async def abrir_rodada(
     async with db.transacao() as con:
         await con.execute(
             f"""INSERT INTO {_c()}.run_request (run_id, unidade, params, solicitado_por)
-                VALUES ($1, $2, $3::jsonb, $4)""",
+                VALUES ($1, $2, $3, $4)""",
             run_id,
             unidade_id,
-            json.dumps(params, ensure_ascii=False),
+            # O dict vai CRU. O pool registra um codec de json/jsonb (ver
+            # `infra/db.py`), entao o proprio asyncpg serializa. Passar
+            # `json.dumps(...)` aqui serializava DUAS vezes e gravava um escalar
+            # JSON — uma string — no lugar do objeto. O job leria `params` como
+            # texto e nenhuma rodada funcionaria. So apareceu contra banco real.
+            params,
             usuario,
         )
         await con.execute(

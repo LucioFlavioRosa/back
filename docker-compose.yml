@@ -1,0 +1,24 @@
+# Postgres de desenvolvimento — o mesmo que o smoke usa.
+#
+#   docker compose up -d
+#   docker compose exec -T db psql -U otim -d otimizador < <ddl_input.sql>
+#   docker compose exec -T db psql -U otim -d otimizador < <ddl_otimizador.sql>
+#   docker compose exec -T db psql -U otim -d otimizador < dev/seed.sql
+#   python dev/smoke.py     # bate nos 23 endpoints
+#   python dev/formas.py    # confere os campos contra o CONTRATO.md
+#
+# Os dois DDLs vivem nos outros repositorios (nao sao copiados para ca de
+# proposito: copia envelhece). Caminhos no README.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: otim
+      POSTGRES_PASSWORD: otim
+      POSTGRES_DB: otimizador
+    ports:
+      - "55432:5432"       # 55432 para nao brigar com um Postgres local na 5432
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U otim"]
+      interval: 5s
+      retries: 10
