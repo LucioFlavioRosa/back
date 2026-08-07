@@ -22,6 +22,15 @@ from app.infra import db
 from app.infra.repositorios.cadastro import _COLETA, _ficha_coleta
 
 
+class ValorInvalido(ValueError):
+    """Numero fora do formato pt-BR — 422, e nao 500.
+
+    `_numero` devolvia a string crua quando ela nao casava com o formato, e o
+    driver estourava com DataError la no `INSERT` -> 500 generico. `"123abc"` num
+    campo de preco e erro do usuario, e a resposta precisa dizer o campo.
+    """
+
+
 class FichaDeOutraUnidade(LookupError):
     """A ficha nao pertence a unidade do caminho — vira 404 no endpoint."""
 
@@ -33,7 +42,7 @@ class FichaDeOutraUnidade(LookupError):
 _PT_BR = re.compile(r"^-?\d{1,3}(\.\d{3})*(,\d+)?$|^-?\d+(,\d+)?$")
 
 
-def _numero(v: Any) -> Any:
+def _numero(v: Any, campo: str = "") -> Any:
     """String pt-BR vira float; o que ja e numero passa; o que nao e numero segue texto.
 
     String vazia vira None: no contrato, campo em branco e ausencia — e `wacc`
@@ -47,6 +56,16 @@ def _numero(v: Any) -> Any:
     if not _PT_BR.match(s):
         return v
     return float(s.replace(".", "").replace(",", "."))
+
+
+def _numerico(v: Any, campo: str) -> Any:
+    """Como `_numero`, mas para coluna que SO aceita numero: texto vira 422."""
+    n = _numero(v)
+    if isinstance(n, str):
+        raise ValorInvalido(
+            f"O campo {campo!r} precisa ser um número no formato 1.234,5 — recebi {v!r}."
+        )
+    return n
 
 
 def _i() -> str:
@@ -234,7 +253,7 @@ async def _gravar_coleta(
     colunas = [frente_para_coluna[k] for k in juntos if k in frente_para_coluna]
     if not colunas:
         return
-    valores = [_numero(juntos[_COLETA[c]]) for c in colunas]
+    valores = [_numerico(juntos[_COLETA[c]], _COLETA[c]) for c in colunas]
     marc = ", ".join(f"${i + 2}" for i in range(len(colunas)))
     sets = ", ".join(f"{c} = ${i + 2}" for i, c in enumerate(colunas))
     await con.execute(

@@ -41,9 +41,18 @@ def valido(run_id: str) -> bool:
     return bool(FORMA.match(run_id or ""))
 
 
+class RunIdInvalido(ValueError):
+    """`run_id` fora da gramatica — 404, e nao 500.
+
+    `exigir_valido` levantava `ValueError` cru, que caia no handler generico: um
+    `GET /runs/com espaco/status` respondia 500 com "erro interno" e enchia o log
+    de traceback. Para quem chamou, um id malformado e um recurso que nao existe.
+    """
+
+
 def exigir_valido(run_id: str) -> str:
     if not valido(run_id):
-        raise ValueError(
+        raise RunIdInvalido(
             f"run_id fora da forma aceita: {run_id!r}. "
             "Use [A-Za-z0-9._-], comecando por alfanumerico, ate 128 caracteres."
         )

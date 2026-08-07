@@ -25,6 +25,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, status
 
+from app.api.deps import Usuario
 from app.dominio import run_id as rid
 from app.infra.repositorios import niveis, resultado
 
@@ -52,7 +53,7 @@ async def meta(run_id: str) -> dict[str, Any]:
 
 
 @router.delete("/runs/{run_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def excluir(run_id: str) -> None:
+async def excluir(run_id: str, usuario: Usuario) -> None:
     """A unica mutacao de todo o pacote de resultados.
 
     Apaga o resultado; NAO toca no cadastro da unidade — a tela promete isso ao

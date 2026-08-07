@@ -31,7 +31,11 @@ async def main() -> None:
         if not condicao:
             falhas.append(nome)
 
+    # A trilha e APPEND-ONLY: rodada duas vezes seguidas sem limpar, a segunda
+    # encontra o historico da primeira e as checagens de data/sequencia falham por
+    # sujeira, nao por bug. Limpar aqui e mais honesto que fingir isolamento.
     async with app.router.lifespan_context(app):
+        await db.buscar("DELETE FROM input.override")
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://t"
         ) as c:

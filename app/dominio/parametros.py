@@ -84,6 +84,13 @@ def _orcamento_por_ano(corpo: dict[str, Any]) -> dict[int, float]:
     cronograma = corpo.get("orcamento")
     anual = corpo.get("orcamento_anual")
 
+    # `"abc"` em vez de dict passava direto e estourava la na frente com AttributeError
+    # -> 500. Recusar aqui devolve 422 com o que fazer.
+    if cronograma is not None and not isinstance(cronograma, dict):
+        raise ParametrosInvalidos(
+            "O orçamento por ano precisa ser um objeto {ano: valor}."
+        )
+
     if cronograma and anual:
         raise ParametrosInvalidos(
             "Informe o cronograma por ano OU um valor anual único, nunca os dois."
@@ -197,8 +204,17 @@ def _validar(params: dict[str, Any]) -> None:
         )
 
     foco = params.get("FOCO_COBERTURA")
-    if foco is not None and not 0 <= float(foco) <= 1:
-        raise ParametrosInvalidos("O foco em cobertura precisa estar entre 0 e 1.")
+    if foco is not None:
+        # `float("abc")` levantava ValueError cru e virava 500. O usuario mexeu num
+        # controle da tela; a resposta tem de dizer qual controle.
+        try:
+            foco = float(foco)
+        except (TypeError, ValueError):
+            raise ParametrosInvalidos(
+                "O foco em cobertura precisa ser um número entre 0 e 1."
+            ) from None
+        if not 0 <= foco <= 1:
+            raise ParametrosInvalidos("O foco em cobertura precisa estar entre 0 e 1.")
 
     orc = params.get("ORCAMENTO")
     if isinstance(orc, dict) and not any(v > 0 for v in orc.values()):

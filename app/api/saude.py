@@ -16,7 +16,7 @@ Ficam fora do prefixo `/api` porque quem chama e o kubelet, direto no pod.
 from fastapi import APIRouter, Response, status
 
 from app.config import config
-from app.infra import db
+from app.infra import db, fila
 
 router = APIRouter(tags=["saúde"], include_in_schema=False)
 
@@ -30,12 +30,17 @@ async def vivo() -> dict[str, str]:
 async def pronto(resposta: Response) -> dict[str, object]:
     banco = await db.saudavel()
     cfg = config()
-    if not banco:
+    # `fila` respondia "configurada", nao "de pe": com o Service Bus parado, o
+    # /readyz dizia 200 e `"fila": true` enquanto todo POST /runs dava 503. O pod
+    # continuava no balanceador anunciando saude que nao tinha.
+    fila_ok = await fila.saudavel()
+    if not banco or not fila_ok:
         resposta.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
 
     return {
         "banco": banco,
-        "fila": bool(cfg.service_bus_conn),
+        "filaConfigurada": bool(cfg.service_bus_conn),
+        "fila": fila_ok,
         # Denuncia o modo sem autenticacao. Um servico que sobe em producao com o
         # SSO desligado atende qualquer um e nada no comportamento denuncia isso —
         # entao ele se denuncia aqui, onde o time de plataforma olha.

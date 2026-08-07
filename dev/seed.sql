@@ -7,6 +7,11 @@ INSERT INTO input.cidade_operacional (cidade_id, unidade_cobertura) VALUES ('c_r
 INSERT INTO input.subbacia_operacional (sub_bacia, preco_por_ligacao, universo_ligacoes, ligacoes_atuais) VALUES ('b38_1', 1850, 300, 100);
 INSERT INTO input.metas_cobertura VALUES ('c_rio', 2030, 0.4);
 INSERT INTO input.fator_esgoto VALUES ('c_rio','Rio Bonito', 0.4, 0.72);
+-- A ETE precisa estar na TOPOLOGIA, e nao so em `ete_capex`: e por
+-- `sistema_topologia` que ela chega a uma unidade (o motor a identifica assim,
+-- `otimizador_capex_v62.py:1111`). Sem esta linha ela existe e nao pertence a
+-- ninguem — e o `PUT /etes` responde 404, corretamente.
+INSERT INTO input.sistema_topologia (componente_sistema_id, componente_sistema_nome, sistema_id, componente_sistema_id_jusante) VALUES ('ete_s38','ETE 38','s38',NULL);
 INSERT INTO input.ete_capex (ete_id, capacidade_por_modulo, capex_por_modulo) VALUES ('ete_s38', 270, 137000000);
 
 -- uma rodada publicada, com o minimo para os 11 endpoints de leitura

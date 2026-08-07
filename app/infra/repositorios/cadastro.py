@@ -225,27 +225,154 @@ def _ficha_coleta(linha: dict[str, Any], chave: str) -> dict[str, Any]:
 
 
 async def sub_bacias(unidade_id: str) -> dict[str, Any]:
-    arvore = await db.buscar(
-        f"""SELECT t.componente_sistema_id AS "subId", s.sistema_id AS "sistemaId",
-                   s.sistema_name AS "sistemaNome", c.cidade_id AS "cidadeId",
-                   c.cidade_name AS "cidadeNome"
+    """Grupo 03 — a árvore de navegação e as fichas.
+
+    Duas formas que NÃO são detalhe de gosto, e que eu tinha errado nas duas:
+
+      - `subs` é um MAPA por id, não uma lista. A tela faz `subs[subId]` para abrir
+        a ficha selecionada no rail; com lista, `Object.keys` devolve `"0"`, `"1"`,
+        e o salvamento passa a chamar `PUT /sub-bacias/0`.
+      - `arvore` é ANINHADA — superintendência → cidade → sistema → ids —, e não uma
+        lista plana. É ela que desenha o rail; plana, o rail não tem o que expandir.
+
+    A árvore traz só ramos COM sub-bacia: um sistema vazio no rail é um caminho que
+    não leva a lugar nenhum.
+    """
+    linhas = await db.buscar(
+        f"""SELECT t.componente_sistema_id AS sub_id,
+                   t.componente_sistema_nome AS sub_nome,
+                   t.componente_sistema_id_jusante AS jusante,
+                   s.sistema_id, s.sistema_name,
+                   c.cidade_id, c.cidade_name, c.superintendencia_id,
+                   r.superintendencia_name
               FROM {_i()}.sistema_topologia t
               JOIN {_i()}.cidade_sistema s USING (sistema_id)
               JOIN ({_cidades_cte()}) c ON c.cidade_id = s.cidade_id
-             ORDER BY c.cidade_name, s.sistema_name, t.componente_sistema_id""",
+              JOIN {_i()}.regional_superintendencia r
+                   USING (superintendencia_id)
+             ORDER BY r.superintendencia_name, c.cidade_name, s.sistema_name,
+                      t.componente_sistema_id""",
         unidade_id,
     )
-    fichas = await db.buscar(
-        f"""SELECT b.* FROM {_i()}.subbacia_operacional b
-             WHERE b.sub_bacia IN (
-                   SELECT t.componente_sistema_id
-                     FROM {_i()}.sistema_topologia t
-                     JOIN {_i()}.cidade_sistema s USING (sistema_id)
-                     JOIN ({_cidades_cte()}) c ON c.cidade_id = s.cidade_id)
-             ORDER BY b.sub_bacia""",
-        unidade_id,
+    fichas = {
+        f["sub_bacia"]: f
+        for f in await db.buscar(
+            f"""SELECT b.* FROM {_i()}.subbacia_operacional b
+                 WHERE b.sub_bacia IN (
+                       SELECT t.componente_sistema_id
+                         FROM {_i()}.sistema_topologia t
+                         JOIN {_i()}.cidade_sistema s USING (sistema_id)
+                         JOIN ({_cidades_cte()}) c ON c.cidade_id = s.cidade_id)""",
+            unidade_id,
+        )
+    }
+    obras = await _obras_por_ficha("componentes_subbacias_capex", "sub_bacia", list(fichas))
+
+    subs: dict[str, Any] = {}
+    for l in linhas:
+        sid = l["sub_id"]
+        if sid not in fichas:
+            continue  # linha da topologia sem ficha: e ETE ou nó sem cadastro
+        subs[sid] = {
+            **_ficha_coleta(fichas[sid], "sub_bacia"),
+            "nome": l["sub_nome"] or sid,
+            "sisId": l["sistema_id"],
+            "sistema": l["sistema_name"] or l["sistema_id"],
+            "jusante": l["jusante"] or "",
+            "obrasOverride": obras.get(sid, {}),
+        }
+
+    return {"arvore": _arvore(linhas, com_ficha=set(subs)), "subs": subs}
+
+
+def _arvore(linhas: list[dict[str, Any]], com_ficha: set[str]) -> list[dict[str, Any]]:
+    """Sup → cidade → sistema → subIds, só com os ramos que levam a alguma ficha."""
+    sups: dict[str, dict[str, Any]] = {}
+    for l in linhas:
+        if l["sub_id"] not in com_ficha:
+            continue
+        sup = sups.setdefault(
+            l["superintendencia_id"],
+            {
+                "id": l["superintendencia_id"],
+                "nome": l["superintendencia_name"] or l["superintendencia_id"],
+                "_cid": {},
+            },
+        )
+        cid = sup["_cid"].setdefault(
+            l["cidade_id"],
+            {"id": l["cidade_id"], "nome": l["cidade_name"] or l["cidade_id"], "_sis": {}},
+        )
+        sis = cid["_sis"].setdefault(
+            l["sistema_id"],
+            {"id": l["sistema_id"], "nome": l["sistema_name"] or l["sistema_id"], "subIds": []},
+        )
+        sis["subIds"].append(l["sub_id"])
+
+    return [
+        {
+            "id": s["id"],
+            "nome": s["nome"],
+            "cidades": [
+                {"id": c["id"], "nome": c["nome"], "sistemas": list(c["_sis"].values())}
+                for c in s["_cid"].values()
+            ],
+        }
+        for s in sups.values()
+    ]
+
+
+#: Colunas de obra -> nomes do front. Inverso do `_OBRA` da escrita.
+_OBRA_LEITURA = {
+    "quantidade": "qtd",
+    "unidade": "un",
+    "preco_unitario": "preco",
+    "opex": "opex",
+    "tempo_predecessoras": "tPred",
+    "tempo_execucao": "dur",
+    "obra_obrigatoria_ano": "anoObrig",
+    "obra_proibida_ate": "proibAte",
+    "wacc": "wacc",
+}
+
+#: A ordem canonica dos componentes — e ela que da o INDICE do override, porque o
+#: front indexa por posicao na obra-base. Gravar fora de ordem faria o override da
+#: rede coletora voltar como se fosse da ligacao.
+_ORDEM_OBRAS = [
+    "Ligacao de esgoto",
+    "Rede coletora",
+    "Coletor tronco",
+    "Estacao elevatoria (EEE)",
+    "Linha de recalque (LR)",
+]
+
+
+async def _obras_por_ficha(
+    tabela: str, chave: str, ids: list[str]
+) -> dict[str, dict[str, Any]]:
+    """`{ficha: {indice: {campo: valor}}}` — o `obrasOverride` como o front espera.
+
+    Devolve TODOS os campos da linha gravada, e nao so os que diferem da base: o
+    front trata `obrasOverride` como sobreposicao, entao mandar demais e inofensivo
+    e mandar de menos perderia o que a Regional digitou.
+    """
+    if not ids:
+        return {}
+    linhas = await db.buscar(
+        f"SELECT * FROM {_i()}.{tabela} WHERE {chave} = ANY($1::text[])", ids
     )
-    return {"arvore": arvore, "subs": [_ficha_coleta(f, "sub_bacia") for f in fichas]}
+    pos = {nome: str(i) for i, nome in enumerate(_ORDEM_OBRAS)}
+    out: dict[str, dict[str, Any]] = {}
+    for l in linhas:
+        indice = pos.get(l["componente"])
+        if indice is None:
+            continue  # componente fora da base: o front nao teria onde encaixar
+        campos = {
+            destino: ("" if l[col] is None else str(l[col]))
+            for col, destino in _OBRA_LEITURA.items()
+        }
+        out.setdefault(l[chave], {})[indice] = campos
+    return out
 
 
 async def etes(unidade_id: str) -> dict[str, Any]:
@@ -277,13 +404,16 @@ async def etes(unidade_id: str) -> dict[str, Any]:
 
 
 async def cts(unidade_id: str) -> dict[str, Any]:
-    """CTS e o pareamento 1:1 com a sub-bacia.
+    """Grupo 05 — CTS e o pareamento 1:1 com a sub-bacia.
 
-    `pares` vem separado porque uma CTS sem par é estado inválido que a tela
-    precisa mostrar — sem a lista, ela não teria como saber que a CTS ficou órfã.
+    `ctss` e um MAPA por id, como `subs`. E `pares` vem separado porque uma CTS SEM
+    par e estado invalido que a tela precisa mostrar — sem a lista, ela nao teria
+    como saber que a CTS ficou orfa.
     """
-    pares = await db.buscar(
-        f"""SELECT p.sub_bacia AS sub, p.cts
+    linhas = await db.buscar(
+        f"""SELECT p.sub_bacia AS sub, p.cts,
+                   t.componente_sistema_id_jusante AS jusante,
+                   s.sistema_id, s.sistema_name
               FROM {_i()}.subbacia_cts p
               JOIN {_i()}.sistema_topologia t ON t.componente_sistema_id = p.sub_bacia
               JOIN {_i()}.cidade_sistema s USING (sistema_id)
@@ -291,16 +421,32 @@ async def cts(unidade_id: str) -> dict[str, Any]:
              ORDER BY p.sub_bacia""",
         unidade_id,
     )
-    # As fichas saem dos pares, e nao de um SELECT solto: a CTS chega a unidade
-    # pela sub-bacia com que e pareada 1:1. Uma CTS sem par nao pertence a unidade
-    # nenhuma — e o estado invalido que `pares` existe para a tela mostrar.
-    fichas = await db.buscar(
-        f"""SELECT o.* FROM {_i()}.cts_operacional o
-              JOIN {_i()}.subbacia_cts p ON p.cts = o.cts
-              JOIN {_i()}.sistema_topologia t ON t.componente_sistema_id = p.sub_bacia
-              JOIN {_i()}.cidade_sistema s USING (sistema_id)
-              JOIN ({_cidades_cte()}) c ON c.cidade_id = s.cidade_id
-             ORDER BY o.cts""",
-        unidade_id,
-    )
-    return {"pares": pares, "ctss": [_ficha_coleta(f, "cts") for f in fichas]}
+    fichas = {
+        f["cts"]: f
+        for f in await db.buscar(
+            f"""SELECT o.* FROM {_i()}.cts_operacional o
+                  JOIN {_i()}.subbacia_cts p ON p.cts = o.cts
+                  JOIN {_i()}.sistema_topologia t ON t.componente_sistema_id = p.sub_bacia
+                  JOIN {_i()}.cidade_sistema s USING (sistema_id)
+                  JOIN ({_cidades_cte()}) c ON c.cidade_id = s.cidade_id""",
+            unidade_id,
+        )
+    }
+    obras = await _obras_por_ficha("componentes_cts_capex", "cts", list(fichas))
+
+    ctss: dict[str, Any] = {}
+    for l in linhas:
+        cid = l["cts"]
+        if cid not in fichas:
+            continue
+        ctss[cid] = {
+            **_ficha_coleta(fichas[cid], "cts"),
+            "nome": cid,
+            "subId": l["sub"],
+            "sisId": l["sistema_id"],
+            "sistema": l["sistema_name"] or l["sistema_id"],
+            "jusante": l["jusante"] or "",
+            "obrasOverride": obras.get(cid, {}),
+        }
+
+    return {"pares": [{"sub": l["sub"], "cts": l["cts"]} for l in linhas], "ctss": ctss}

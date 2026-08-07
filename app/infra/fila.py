@@ -99,3 +99,20 @@ async def pedir_execucao(
             "A simulação foi registrada mas não pôde ser enviada para execução. "
             "Ela aparece no histórico como pendente e pode ser reexecutada."
         ) from e
+
+
+async def saudavel() -> bool:
+    """A fila responde AGORA? — e nao "esta configurada".
+
+    Abre um sender e fecha. E uma ida a rede por chamada de readiness, o que e
+    aceitavel na cadencia do kubelet e e o unico jeito de a resposta significar
+    alguma coisa: sem isto, o pod anunciava saude com o Service Bus parado.
+    """
+    if _cliente is None:
+        return not config().service_bus_conn  # sem fila configurada: nao bloqueia
+    try:
+        async with _cliente.get_queue_sender(config().fila_simulacoes):
+            return True
+    except Exception:
+        log.warning("fila nao respondeu no readyz")
+        return False
