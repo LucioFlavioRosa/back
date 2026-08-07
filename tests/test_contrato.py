@@ -20,7 +20,7 @@ import pytest
 
 from main import app
 
-# CONTRATO.md §3 (resultados) e §4 (nova simulação), na ordem do documento.
+# CONTRATO.md §3 (resultados) e §4 (nova simulação) + DEPLOY.md §3 (cadastro).
 FORMAS_DO_CONTRATO = {
     # §3 — leitura de uma rodada
     "GET /runs",
@@ -39,6 +39,17 @@ FORMAS_DO_CONTRATO = {
     "GET /runs/{}/status",
     "POST /runs/{}/cancelar",
     "POST /runs/{}/reexecutar",
+    # DEPLOY.md §3 — cadastro (leitura). A escrita esta bloqueada pela ausencia da
+    # tabela de trilha de override; quando ela existir, os 6 PUT/POST/DELETE
+    # entram aqui e o teste passa a cobri-los.
+    "GET /regionais",
+    "GET /regionais/{}/unidades",
+    "GET /unidades/{}",
+    "GET /unidades/{}/hierarquia",
+    "GET /unidades/{}/contrato",
+    "GET /unidades/{}/sub-bacias",
+    "GET /unidades/{}/etes",
+    "GET /unidades/{}/cts",
 }
 
 
@@ -77,7 +88,7 @@ def test_nenhum_endpoint_a_mais():
 def test_a_lista_nao_esta_vazia():
     # Guarda contra o teste passar por não encontrar rota nenhuma — se `_expostas`
     # quebrar com uma mudança do FastAPI, os dois testes acima passariam vazios.
-    assert len(_expostas()) == len(FORMAS_DO_CONTRATO) == 15
+    assert len(_expostas()) == len(FORMAS_DO_CONTRATO) == 23
 
 
 @pytest.mark.parametrize("run_id", ["r1' OR 1=1", "../etc", "com espaco", ""])

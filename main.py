@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import erros, resultados, saude, simulacao
+from app.api import cadastro, erros, resultados, saude, simulacao
 from app.config import config
 from app.infra import db, fila
 
@@ -65,5 +65,6 @@ if config().origens_cors:
     )
 
 app.include_router(saude.router)  # fora do /api: as probes do k8s nao passam pelo Ingress
+app.include_router(cadastro.router, prefix="/api")
 app.include_router(simulacao.router, prefix="/api")
 app.include_router(resultados.router, prefix="/api")

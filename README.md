@@ -26,6 +26,7 @@ app/
   api/               ── OS ENDPOINTS ──
     saude.py         /healthz e /readyz (fora do /api: quem chama é o kubelet)
     simulacao.py     disparar, acompanhar, reexecutar        CONTRATO.md §4
+    cadastro.py      leitura do cadastro da unidade          DEPLOY.md §3
     resultados.py    os 11 endpoints de leitura             CONTRATO.md §3
     erros.py         todo erro sai como {"erro": "mensagem"} CONTRATO.md §1.1
     deps.py          usuário do token — quem assina a simulação
@@ -76,8 +77,20 @@ Este serviço não inventa contrato. Onde a dúvida se resolve:
 
 Declarado em vez de escondido — cada item tem o motivo e o caminho:
 
-- **Cadastro (`input.*`)**: nenhum endpoint ainda. São 16 tabelas e a escrita é por
-  ficha, com trilha de override; o contrato está em `DEPLOY.md` §3 do front.
+- **ESCRITA do cadastro** (4 PUT + POST/DELETE de CTS): bloqueada porque **não
+  existe tabela para a trilha de override**. O contrato manda `overrides` junto de
+  toda ficha e é explícito sobre o porquê ("gravar na mesma transação do dado evita
+  dado corrigido sem trilha"), mas nenhuma das 16 tabelas de `input` guarda isso.
+  Escrever os PUTs agora seria escolher, em silêncio, descartar a trilha — e
+  prometer auditoria que não existe é pior que não ter auditoria, porque alguém vai
+  confiar nela numa discussão sobre um número. Ver a migração 4.
+- **Recorte das ETEs e das CTS**: `ete_capex`, `cts_operacional` e `subbacia_cts`
+  não têm coluna de unidade nem FK que chegue até ela — o vínculo é por convenção
+  de nome do `ete_id`/`cts`. Hoje esses três endpoints trazem TUDO que está no
+  banco, não só o da unidade pedida. Com uma unidade por banco isso não aparece;
+  com duas, a tela mostra ETE de outra unidade sem nenhum sinal.
+- **`completude` da unidade** devolve 0, pelo mesmo motivo de `pendencias`: a capa
+  afirma "0% preenchido" para um cadastro que pode estar completo.
 - **Faixas de paridade** (`cidade.paridade.faixas`): vêm de `input.fator_esgoto`,
   e o job publica só a paridade REALIZADA por ano, não a tabela de faixas que a
   produziu. A tela precisa das faixas para explicar a causalidade do degrau. Ou o
@@ -107,7 +120,10 @@ Duas, no banco do pacote de produção:
    mostrou o estrago: o job valida `params` contra `MAPA_PARAMS` + `CHAVES_DO_JOB`
    e `ROTULO` não está em nenhum dos dois — **toda rodada com nome morreria em
    `ERRO`**. Hoje o nome se perde no caminho; a alternativa era perder a rodada.
-3. **`reprocessa_de` em `controle.run_request`.** Decidido junto da regra de
+3. **`input.override`** — a trilha de auditoria: ficha, campo, valor antigo, valor
+   novo, autor, timestamp. Sem ela a escrita do cadastro não pode cumprir o que o
+   contrato promete.
+4. **`reprocessa_de` em `controle.run_request`.** Decidido junto da regra de
    imutabilidade do `run_id` (`CONTRATO.md` §2.1): a reexecução depois de um
    `SUCESSO` gera id novo, e sem esse campo o histórico vira uma lista de rodadas
    soltas, sem como ligar a rodada à sua origem.
