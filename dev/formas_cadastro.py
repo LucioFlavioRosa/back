@@ -114,7 +114,8 @@ async def main():
             r = await c.post(f"/api/unidades/{U}/cts",
                 json={"subId": sub, "cts": {"id": "cts_forma_teste",
                                             "params": {"preco": "1.480,00"}, "db": {}}})
-            nova = (r.json() or {}).get("cts") or {}
+            # A resposta E a Cts, sem envelope — foi essa a correcao.
+            nova = r.json() or {}
             falta = [k for k in ESPERADO["cts"] if k not in nova]
             ck("POST /cts devolve a ficha COMPLETA", r.status_code==201 and falta==[],
                f"{r.status_code} faltam {falta}")
