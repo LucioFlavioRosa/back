@@ -12,8 +12,13 @@ docker compose exec -T db psql -U otim -d otimizador < .../ddl_input.sql
 docker compose exec -T db psql -U otim -d otimizador < .../ddl_otimizador.sql
 docker compose exec -T db psql -U otim -d otimizador < dev/seed.sql
 
-python dev/smoke.py     # 21 GET + 1 POST: nenhum pode dar 5xx
-python dev/formas.py    # os campos de cada resposta contra o CONTRATO.md
+python dev/smoke.py           # 21 GET + 1 POST: nenhum pode dar 5xx
+python dev/formas.py          # os campos de cada resposta contra o CONTRATO.md
+python dev/smoke_escrita.py   # as 6 escritas do cadastro, e a trilha junto
+python dev/smoke_seguranca.py # os dez ataques que ja funcionaram
+
+docker compose exec -T db psql -U otim -d otimizador < dev/seed_u2.sql
+python dev/smoke_recorte.py   # com DUAS unidades: nada vaza de uma para a outra
 ```
 
 `seed.sql` é o **mínimo** que faz os 23 endpoints responderem: uma unidade, uma

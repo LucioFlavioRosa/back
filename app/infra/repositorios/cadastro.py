@@ -85,8 +85,10 @@ async def unidade(unidade_id: str) -> dict[str, Any] | None:
                    (SELECT count(*) FROM sis) AS sistemas,
                    (SELECT count(*) FROM {_i()}.subbacia_operacional b
                      WHERE b.sub_bacia IN (SELECT componente_sistema_id FROM sub)) AS sub_bacias,
-                   (SELECT count(*) FROM {_i()}.ete_capex) AS etes,
-                   (SELECT count(*) FROM {_i()}.cts_operacional) AS cts""",
+                   (SELECT count(*) FROM {_i()}.ete_capex e
+                     WHERE e.ete_id IN (SELECT componente_sistema_id FROM sub)) AS etes,
+                   (SELECT count(*) FROM {_i()}.subbacia_cts p
+                     WHERE p.sub_bacia IN (SELECT componente_sistema_id FROM sub)) AS cts""",
         unidade_id,
     ) or {}
 
@@ -251,13 +253,14 @@ async def sub_bacias(unidade_id: str) -> dict[str, Any]:
 async def etes(unidade_id: str) -> dict[str, Any]:
     """As ETEs da unidade.
 
-    `ete_capex` não tem coluna de unidade nem FK para sistema — o vínculo é pelo
-    `ete_id`, que segue a convenção de nome do sistema. Enquanto o cadastro não
-    tiver a FK, esta consulta traz TODAS as ETEs do banco, e não só as da unidade.
-    Está declarado no README: é recorte faltando, não filtro esquecido.
+    O recorte passa por `sistema_topologia`: a ETE é um componente do sistema como
+    a sub-bacia, e o que a distingue é ter ficha em `ete_capex` — é assim que o
+    motor a identifica (`otimizador_capex_v62.py:1111`). Esta consulta já trouxe
+    TODAS as ETEs do banco, porque eu tinha concluído que o esquema não ligava a
+    ETE à unidade. Ligava.
     """
     linhas = await db.buscar(
-        f"""SELECT ete_id AS id, capacidade_por_modulo AS "capMod",
+        f"""SELECT e.ete_id AS id, capacidade_por_modulo AS "capMod",
                    capex_por_modulo AS "capexMod", opex_por_modulo AS "opexMod",
                    tempo_predecessoras AS "tempoPred", tempo_de_execucao AS "tempoExec",
                    capacidade_nominal_atual AS "capAtual",
@@ -265,7 +268,12 @@ async def etes(unidade_id: str) -> dict[str, Any]:
                    capacidade_ociosa AS ociosa, obra_obrigatoria_ano AS "obrigAno",
                    obra_proibida_ate AS "proibidaAte", nova, capex_terreno AS terreno,
                    modulos, wacc
-              FROM {_i()}.ete_capex ORDER BY ete_id"""
+              FROM {_i()}.ete_capex e
+              JOIN {_i()}.sistema_topologia t ON t.componente_sistema_id = e.ete_id
+              JOIN {_i()}.cidade_sistema s USING (sistema_id)
+              JOIN ({_cidades_cte()}) c ON c.cidade_id = s.cidade_id
+             ORDER BY e.ete_id""",
+        unidade_id,
     )
     return {"etes": [dict(l) for l in linhas]}
 
@@ -277,7 +285,24 @@ async def cts(unidade_id: str) -> dict[str, Any]:
     precisa mostrar — sem a lista, ela não teria como saber que a CTS ficou órfã.
     """
     pares = await db.buscar(
-        f"""SELECT sub_bacia AS sub, cts FROM {_i()}.subbacia_cts ORDER BY sub_bacia"""
+        f"""SELECT p.sub_bacia AS sub, p.cts
+              FROM {_i()}.subbacia_cts p
+              JOIN {_i()}.sistema_topologia t ON t.componente_sistema_id = p.sub_bacia
+              JOIN {_i()}.cidade_sistema s USING (sistema_id)
+              JOIN ({_cidades_cte()}) c ON c.cidade_id = s.cidade_id
+             ORDER BY p.sub_bacia""",
+        unidade_id,
     )
-    fichas = await db.buscar(f"SELECT * FROM {_i()}.cts_operacional ORDER BY cts")
+    # As fichas saem dos pares, e nao de um SELECT solto: a CTS chega a unidade
+    # pela sub-bacia com que e pareada 1:1. Uma CTS sem par nao pertence a unidade
+    # nenhuma — e o estado invalido que `pares` existe para a tela mostrar.
+    fichas = await db.buscar(
+        f"""SELECT o.* FROM {_i()}.cts_operacional o
+              JOIN {_i()}.subbacia_cts p ON p.cts = o.cts
+              JOIN {_i()}.sistema_topologia t ON t.componente_sistema_id = p.sub_bacia
+              JOIN {_i()}.cidade_sistema s USING (sistema_id)
+              JOIN ({_cidades_cte()}) c ON c.cidade_id = s.cidade_id
+             ORDER BY o.cts""",
+        unidade_id,
+    )
     return {"pares": pares, "ctss": [_ficha_coleta(f, "cts") for f in fichas]}

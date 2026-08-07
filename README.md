@@ -79,11 +79,6 @@ Este serviço não inventa contrato. Onde a dúvida se resolve:
 
 Declarado em vez de escondido — cada item tem o motivo e o caminho:
 
-- **Recorte das ETEs e das CTS**: `ete_capex`, `cts_operacional` e `subbacia_cts`
-  não têm coluna de unidade nem FK que chegue até ela — o vínculo é por convenção
-  de nome do `ete_id`/`cts`. Hoje esses três endpoints trazem TUDO que está no
-  banco, não só o da unidade pedida. Com uma unidade por banco isso não aparece;
-  com duas, a tela mostra ETE de outra unidade sem nenhum sinal.
 - **`completude` da unidade** devolve 0, pelo mesmo motivo de `pendencias`: a capa
   afirma "0% preenchido" para um cadastro que pode estar completo.
 - **Faixas de paridade** (`cidade.paridade.faixas`): vêm de `input.fator_esgoto`,
@@ -91,10 +86,6 @@ Declarado em vez de escondido — cada item tem o motivo e o caminho:
   produziu. A tela precisa das faixas para explicar a causalidade do degrau. Ou o
   job passa a publicá-las na rodada, ou este endpoint lê o cadastro — e aí o
   número deixa de ser o daquela rodada, o que é pior.
-- **Recorte da ETE por unidade**: `exigir_dona` cobre sub-bacia, cidade e CTS, mas
-  não ETE — `input.ete_capex` não tem coluna de unidade nem FK que chegue até ela.
-  Enquanto o esquema não tiver o caminho, `PUT /etes/{id}` aceita qualquer id de
-  qualquer unidade. É o mesmo furo da leitura, agora também na escrita.
 - **`_BASE_SUBBACIA`** em `cadastro_escrita.py` é cópia de `BASE_OBRAS` do front.
   O corpo manda só o que difere da base, por índice, então sem ela não há o que
   gravar — mas cópia envelhece: se a base mudar lá e não aqui, a ficha salva com

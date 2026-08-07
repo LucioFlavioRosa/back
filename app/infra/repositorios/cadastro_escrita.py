@@ -272,6 +272,25 @@ _DONO = {
           JOIN {i}.superintendencia_cidade c ON c.cidade_id = cs.cidade_id
           JOIN {i}.regional_superintendencia s USING (superintendencia_id)
          WHERE p.cts = $1""",
+    # A ETE percorre o MESMO caminho da sub-bacia, e nao um caminho proprio: em
+    # `sistema_topologia` ela e um componente do sistema como qualquer outro. O que
+    # a distingue e o id dela tambem existir em `ete_capex` — e assim que o motor a
+    # identifica (`otimizador_capex_v62.py:1111`):
+    #
+    #     if comp in ete_ids: ete_do_sis[d["sistema_id"]] = comp
+    #
+    # Eu tinha escrito no README que o vinculo era "por convencao de nome" e que o
+    # esquema nao tinha caminho ate a unidade. Estava errado: o caminho sempre
+    # existiu, e era o mesmo. O `JOIN` com `ete_capex` no fim so garante que o id
+    # pedido e mesmo uma ETE, e nao uma sub-bacia entrando pela rota errada.
+    "ete": """
+        SELECT s.unidade_id
+          FROM {i}.sistema_topologia t
+          JOIN {i}.ete_capex e ON e.ete_id = t.componente_sistema_id
+          JOIN {i}.cidade_sistema cs USING (sistema_id)
+          JOIN {i}.superintendencia_cidade c ON c.cidade_id = cs.cidade_id
+          JOIN {i}.regional_superintendencia s USING (superintendencia_id)
+         WHERE t.componente_sistema_id = $1""",
 }
 
 
@@ -281,10 +300,9 @@ async def exigir_dona(tipo: str, ficha_id: str, unidade_id: str) -> None:
     404 e nao 403 de proposito: responder "existe, mas nao e sua" ja conta quais
     ids existem noutra unidade. Para quem esta no lugar certo o efeito e o mesmo.
 
-    A ETE fica de fora porque `input.ete_capex` nao tem coluna de unidade nem FK
-    que chegue ate ela — o vinculo e por convencao de nome. Enquanto o esquema nao
-    tiver o caminho, nao ha o que conferir, e fingir que ha seria pior. Esta no
-    README junto do mesmo furo na leitura.
+    Cobre os quatro tipos. A ETE entrou depois das outras tres: eu achava que o
+    esquema nao tinha caminho dela ate a unidade, e tinha — ela e um componente de
+    `sistema_topologia` como a sub-bacia, so que com ficha em `ete_capex`.
     """
     sql = _DONO.get(tipo)
     if sql is None:
@@ -431,6 +449,7 @@ def _nova_para_texto(v: Any) -> Any:
 async def salvar_ete(
     *, unidade_id: str, ete_id: str, corpo: dict[str, Any], autor: str
 ) -> dict[str, Any]:
+    await exigir_dona("ete", ete_id, unidade_id)
     ete = dict(corpo.get("ete") or {})
     if "nova" in ete:
         ete["nova"] = _nova_para_texto(ete["nova"])
