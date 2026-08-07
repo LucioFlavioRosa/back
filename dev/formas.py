@@ -1,45 +1,128 @@
-import asyncio, os, sys
-os.environ["POSTGRES_URL"]="postgresql://otim:otim@localhost:55432/otimizador"; os.environ["SERVICE_BUS_CONN"]=""
-sys.path.insert(0,".")
-import httpx, logging; logging.disable(logging.INFO)
-from main import app
-R="run_teste_1"
-ESPERADO = {
- f"/api/runs/{R}/meta": ["runId","nome","unidadeId","dataHora","autor","status","statusTexto","kpis","parametros"],
- f"/api/runs/{R}/painel": ["anos","curvaS","cascata","capexPorComponente","histogramaVpl","subbaciasPositivas","subbaciasNegativas","obrasPorAno","fimCapex"],
- f"/api/runs/{R}/ebitda": ["anos","total","anoViraPositivo","fimCapex"],
- f"/api/runs/{R}/cidades/Rio Bonito": ["id","nome","fimConcessao","fimCapex","capexTotal","vpl","ligacoesNovas","coberturaBasePct","coberturaFinalPct","cobertura","metas","cascata","paridade","sistemas"],
- f"/api/runs/{R}/sistemas/Sistema 38/topologia": ["sistemaId","sistemaNome","cidadeId","cidadeNome","subbacias","faturando","capexConstruido","nos","ete"],
- f"/api/runs/{R}/subbacias/b38_1": ["id","tipo","pareadaCom","cidadeId","sistemaId","fatura","vazao","vpl","cascata","receita","explicacao","caminho","elementos"],
- f"/api/runs/{R}/obras/lig_b38_1": ["obraId","componente","rotulo","situacao","cidadeId","sistemaId","subbaciaId","responsavel","obrigatoria","quantidade","unidade","precoUnitario","capex","opexAno","prazoMeses","mesMaisCedo","wacc","waccOrigem","ligacoesNovas","ticketMedio","precoPorLigacao","capexConstruido","capexQueFalta","dataInicio","dataPronta","categoria","elo","narrativa","dependencias"],
-}
-KPIS = ["vpl","capexTotal","opexTotal","receitaTotal","obrasConstruidas","obrasTotal","obrigatoriasConstruidas","obrigatoriasTotal","subbaciasFaturando","subbaciasTotal","coberturaFimPct","metasAtingidas","metasTotal"]
-METRICAS = ["vpl","capex","usoOrcamentoPct","obrasConstruidas","obrasTotal","coberturaFimPct","metasAtingidas","metasTotal","ebitdaTotal"]
+"""Os payloads de RESULTADO contra o `CONTRATO.md`, campo a campo.
 
-async def main():
-    problemas=[]
+A rodada e os ids são DESCOBERTOS pela própria API, e não fixados: `run_teste_1`,
+`Rio Bonito` e `b38_1` só existem no `dev/seed.sql`, e com o banco carregado por
+`dev/rodar_simulacao_real.py` este teste quebrava com KeyError — parecendo
+regressão do serviço quando era o teste olhando para dado que não está mais lá.
+
+O par de `dev/formas_cadastro.py`, que faz o mesmo do lado do cadastro.
+"""
+
+import asyncio
+import os
+import sys
+import urllib.parse
+
+os.environ["POSTGRES_URL"] = "postgresql://otim:otim@localhost:55432/otimizador"
+os.environ["SERVICE_BUS_CONN"] = ""
+sys.path.insert(0, ".")
+
+import logging  # noqa: E402
+
+import httpx  # noqa: E402
+
+logging.disable(logging.WARNING)
+from main import app  # noqa: E402
+
+CAMPOS = {
+    "meta": ["runId", "nome", "unidadeId", "dataHora", "autor", "status", "statusTexto",
+             "kpis", "parametros"],
+    "painel": ["anos", "curvaS", "cascata", "capexPorComponente", "histogramaVpl",
+               "subbaciasPositivas", "subbaciasNegativas", "obrasPorAno", "fimCapex"],
+    "ebitda": ["anos", "total", "anoViraPositivo", "fimCapex"],
+    "cidade": ["id", "nome", "fimConcessao", "fimCapex", "capexTotal", "vpl",
+               "ligacoesNovas", "coberturaBasePct", "coberturaFinalPct", "cobertura",
+               "metas", "cascata", "paridade", "sistemas"],
+    "topologia": ["sistemaId", "sistemaNome", "cidadeId", "cidadeNome", "subbacias",
+                  "faturando", "capexConstruido", "nos", "ete"],
+    "subbacia": ["id", "tipo", "pareadaCom", "cidadeId", "sistemaId", "fatura", "vazao",
+                 "vpl", "cascata", "receita", "explicacao", "caminho", "elementos"],
+    "obra": ["obraId", "componente", "rotulo", "situacao", "cidadeId", "sistemaId",
+             "subbaciaId", "responsavel", "obrigatoria", "quantidade", "unidade",
+             "precoUnitario", "capex", "opexAno", "prazoMeses", "mesMaisCedo", "wacc",
+             "waccOrigem", "ligacoesNovas", "ticketMedio", "precoPorLigacao",
+             "capexConstruido", "capexQueFalta", "dataInicio", "dataPronta",
+             "categoria", "elo", "narrativa", "dependencias"],
+}
+KPIS = ["vpl", "capexTotal", "opexTotal", "receitaTotal", "obrasConstruidas", "obrasTotal",
+        "obrigatoriasConstruidas", "obrigatoriasTotal", "subbaciasFaturando",
+        "subbaciasTotal", "coberturaFimPct", "metasAtingidas", "metasTotal"]
+METRICAS = ["vpl", "capex", "usoOrcamentoPct", "obrasConstruidas", "obrasTotal",
+            "coberturaFimPct", "metasAtingidas", "metasTotal", "ebitdaTotal"]
+
+falhas: list[str] = []
+
+
+def ck(nome: str, cond: bool, detalhe: str = "") -> None:
+    print(f"  {'ok  ' if cond else 'FALHA'} {nome}{'' if cond else '  <- ' + detalhe}")
+    if not cond:
+        falhas.append(nome)
+
+
+async def main() -> None:
+    q = urllib.parse.quote
     async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c:
-            for url, campos in ESPERADO.items():
-                d = (await c.get(url)).json()
-                falta = [k for k in campos if k not in d]
-                if falta: problemas.append(f"{url}: faltam {falta}")
-            m = (await c.get(f"/api/runs/{R}/meta")).json()
-            f = [k for k in KPIS if k not in (m.get("kpis") or {})]
-            if f: problemas.append(f"meta.kpis: faltam {f}")
-            h = (await c.get("/api/runs")).json()
-            if h:
-                f = [k for k in METRICAS if k not in (h[0].get("metricas") or {})]
-                if f: problemas.append(f"runs[0].metricas: faltam {f}")
-                print("  status do solver:", h[0]["status"], "(milp = VIAVEL(limite de tempo))")
-                print("  ebitdaTotal:", h[0]["metricas"]["ebitdaTotal"])
-            cid = (await c.get(f"/api/runs/{R}/cidades/Rio Bonito")).json()
-            print("  metas[0]:", cid["metas"][0] if cid["metas"] else "vazio")
-            top = (await c.get(f"/api/runs/{R}/sistemas/Sistema 38/topologia")).json()
-            print("  ete.ocupacaoPct:", top["ete"]["ocupacaoPct"], "| nos:", len(top["nos"]), "| componentes do no 0:", len(top["nos"][0]["componentes"]))
-            ob = (await c.get(f"/api/runs/{R}/obras/lig_b38_1")).json()
-            print("  obra.wacc:", ob["wacc"], "| fracaoRateio:", ob["dependencias"][0]["fracaoRateio"])
-            pa = (await c.get(f"/api/runs/{R}/painel")).json()
-            print("  cascata:", [(x["rotulo"], x["tipo"]) for x in pa["cascata"]])
-    print("\nPROBLEMAS DE FORMA:", *problemas, sep="\n  ") if problemas else print("\nnenhum campo faltando")
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://t"
+        ) as c:
+
+            async def g(p):
+                return (await c.get(p)).json()
+
+            runs = await g("/api/runs")
+            if not runs:
+                ck("ha ao menos uma rodada publicada", False, "historico vazio")
+                return
+            rid = runs[0]["runId"]
+            print(f"  (rodada {rid})")
+
+            falta = [k for k in METRICAS if k not in (runs[0].get("metricas") or {})]
+            ck("runs[0].metricas completo", falta == [], f"faltam {falta}")
+
+            meta = await g(f"/api/runs/{rid}/meta")
+            ck("meta completo", [k for k in CAMPOS["meta"] if k not in meta] == [],
+               str([k for k in CAMPOS["meta"] if k not in meta]))
+            ck("meta.kpis completo", [k for k in KPIS if k not in (meta.get("kpis") or {})] == [],
+               str([k for k in KPIS if k not in (meta.get("kpis") or {})]))
+
+            for nome, p in (("painel", f"/api/runs/{rid}/painel"),
+                            ("ebitda", f"/api/runs/{rid}/ebitda")):
+                d = await g(p)
+                falta = [k for k in CAMPOS[nome] if k not in d]
+                ck(f"{nome} completo", falta == [], f"faltam {falta}")
+
+            cid = (await g(f"/api/runs/{rid}/cidades"))[0]["id"]
+            cidade = await g(f"/api/runs/{rid}/cidades/{q(cid)}")
+            falta = [k for k in CAMPOS["cidade"] if k not in cidade]
+            ck("cidade completo", falta == [], f"faltam {falta}")
+
+            sis = cidade["sistemas"][0]["id"]
+            topo = await g(f"/api/runs/{rid}/sistemas/{q(sis)}/topologia")
+            falta = [k for k in CAMPOS["topologia"] if k not in topo]
+            ck("topologia completo", falta == [], f"faltam {falta}")
+            ck("a topologia tem nos com componentes",
+               bool(topo["nos"]) and bool(topo["nos"][0]["componentes"]),
+               f"{len(topo['nos'])} nos")
+
+            sb = await g(f"/api/runs/{rid}/subbacias/{q(topo['nos'][0]['id'])}")
+            falta = [k for k in CAMPOS["subbacia"] if k not in sb]
+            ck("subbacia completo", falta == [], f"faltam {falta}")
+
+            obra_id = next((x["obraId"] for x in topo["nos"][0]["componentes"] if x["obraId"]), None)
+            if not obra_id:
+                ck("ha obra com ficha na topologia", False, "nenhum componente com obraId")
+            else:
+                ob = await g(f"/api/runs/{rid}/obras/{q(obra_id)}")
+                falta = [k for k in CAMPOS["obra"] if k not in ob]
+                ck("obra completo", falta == [], f"faltam {falta}")
+
+            pa = await g(f"/api/runs/{rid}/painel")
+            ck("cascata tem os 6 rotulos, com o VPL como total",
+               [x["tipo"] for x in pa["cascata"]] == ["entra", "entra", "entra", "sai", "sai", "total"],
+               str([(x["rotulo"], x["tipo"]) for x in pa["cascata"]]))
+
+    print("\nFALHAS:", falhas or "nenhuma")
+    raise SystemExit(1 if falhas else 0)
+
+
 asyncio.run(main())
