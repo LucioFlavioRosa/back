@@ -1,0 +1,66 @@
+# Ponta a ponta: o produto inteiro rodando local.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.e2e.yml up -d --build
+#   http://localhost:8080        o front, falando com a API de verdade
+#
+# Acrescenta ao `docker-compose.yml` (que traz os serviços Azure emulados) os dois
+# containers da aplicação. O front serve `/` e faz proxy de `/api` para o backend —
+# em produção quem roteia é o Ingress, e aqui o nginx do front faz esse papel.
+#
+# É o único arranjo em que dá para exercitar o produto como o usuário o usa:
+# navegador → nginx → FastAPI → Postgres/Service Bus. Testar o backend sozinho não
+# mostra o que a tela faz com a resposta.
+services:
+  # Publica as portas da API também, porque o container dela não tem rede própria.
+  servicebus:
+    networks:
+      default:
+        aliases: [api]
+    ports:
+      - "5672:5672"
+      - "8000:8000"
+
+  api:
+    build:
+      context: .
+    environment:
+      POSTGRES_URL: postgresql://otim:otim@db:5432/otimizador
+      # `localhost` de propósito, e não `servicebus`: com `UseDevelopmentEmulator=true`
+      # o SDK do Service Bus ignora o host da connection string e conecta em
+      # localhost:5672. Testei as duas variantes de dentro do container e as duas
+      # dão "connection refused", enquanto um socket cru em `servicebus:5672`
+      # conecta — ou seja, é o SDK, não a rede. Daí o `network_mode` abaixo.
+      SERVICE_BUS_CONN: "Endpoint=sb://localhost;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=SAS_KEY_VALUE;UseDevelopmentEmulator=true;"
+      REDIS_URL: redis://redis:6379
+      AMBIENTE: e2e
+      # Sem Entra: o serviço roda sem exigir token e assume `dev@local`. É o mesmo
+      # modo do front sem SSO, e o /readyz denuncia com "autenticacao": "DESLIGADA".
+      ENTRA_TENANT_ID: ""
+      ENTRA_AUDIENCE: ""
+    # A API compartilha a pilha de rede do emulador. É o que faz `localhost:5672`
+    # dentro do container da API ser o Service Bus — sem isso o SDK não conecta.
+    # Só vale para este arranjo local: em produção o endpoint é um host de verdade
+    # e a flag de emulador não existe.
+    #
+    # O preço: o container da API não tem nome próprio na rede. O alias `api` no
+    # serviço `servicebus` devolve esse nome, então o nginx do front continua
+    # apontando para `api:8000` como apontaria em qualquer outro arranjo.
+    network_mode: "service:servicebus"
+    depends_on:
+      db:
+        condition: service_healthy
+      servicebus:
+        condition: service_started
+
+  web:
+    build:
+      context: ../otimizador-cadastro-web
+    volumes:
+      - ./dev/nginx-e2e.conf:/etc/nginx/conf.d/default.conf:ro
+      # `apiUrl` vazio = `/api` na mesma origem, que é o recomendado em produção e
+      # o que o proxy acima atende.
+      - ./dev/config-e2e.js:/usr/share/nginx/html/config.js:ro
+    depends_on:
+      - api
+    ports:
+      - "8080:8080"

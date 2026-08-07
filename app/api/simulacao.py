@@ -71,6 +71,16 @@ async def criar(
             "Complete o cadastro antes de simular.",
         )
 
+    # Nome de rodada e rotulo de tela, nao campo livre: 2 MB foram aceitos num
+    # teste de uso real. Mesmo o backend descartando o valor hoje, aceitar sem
+    # limite e custo de rede e ruido de log de graca.
+    nome = corpo.get("nome")
+    if nome and len(str(nome)) > 200:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "O nome da simulação é longo demais (máximo 200 caracteres).",
+        )
+
     # `montar_params` levanta ParametrosInvalidos (-> 422 com a mensagem), inclusive
     # para o que o job recusaria depois. Melhor recusar aqui que gravar uma rodada
     # destinada a morrer em ERRO.

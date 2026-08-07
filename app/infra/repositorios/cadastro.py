@@ -39,6 +39,28 @@ _CIDADES_DA_UNIDADE = """
 """
 
 
+def pt_br(v: Any) -> str:
+    """Número do banco -> string pt-BR, que é como o contrato manda ele viajar.
+
+    Sem isto o `GET` devolvia `str(2497.7)` = `"2497.7"`, e a escrita — que exige
+    pt-BR estrito — não reconhecia o próprio formato que acabara de emitir. O
+    efeito era o pior possível: **ler uma ficha e salvá-la de volta dava 500**, que
+    é a operação mais comum do cadastro. Um teste de uso real pegou; nenhum dos
+    smokes pegava, porque todos montavam o corpo à mão em vez de reenviar o que
+    o `GET` devolveu.
+
+    `1234.5` -> `"1.234,5"`. Inteiro não ganha casa decimal: `244.0` -> `"244"`,
+    senão a tela mostraria "244,0" numa quantidade de ligações.
+    """
+    if v is None:
+        return ""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return str(v)
+    if float(v).is_integer():
+        return f"{int(v):,}".replace(",", ".")
+    return f"{v:,.4f}".rstrip("0").rstrip(".").replace(",", "\x00").replace(".", ",").replace("\x00", ".")
+
+
 def versao(ficha: Any) -> str:
     """A versão de uma ficha é o HASH do conteúdo que o `GET` devolveu.
 
@@ -287,8 +309,10 @@ NAO_MODELADOS = {"popN"}
 
 
 def _ficha_coleta(linha: dict[str, Any], chave: str) -> dict[str, Any]:
-    db_bloco = {v: linha[k] for k, v in _COLETA.items() if v in _DO_DATABRICKS}
-    params = {v: linha[k] for k, v in _COLETA.items() if v not in _DO_DATABRICKS}
+    # Todo número sai em pt-BR — o mesmo formato que o `PUT` exige de volta. Ver
+    # `pt_br`: a ficha lida tem de poder ser reenviada sem tradução no meio.
+    db_bloco = {v: pt_br(linha[k]) for k, v in _COLETA.items() if v in _DO_DATABRICKS}
+    params = {v: pt_br(linha[k]) for k, v in _COLETA.items() if v not in _DO_DATABRICKS}
     return {"id": linha[chave], "db": db_bloco, "params": params}
 
 
@@ -443,10 +467,8 @@ async def _obras_por_ficha(
         indice = pos.get(l["componente"])
         if indice is None:
             continue  # componente fora da base: o front nao teria onde encaixar
-        campos = {
-            destino: ("" if l[col] is None else str(l[col]))
-            for col, destino in _OBRA_LEITURA.items()
-        }
+        # pt-BR, e não `str(...)`: é o formato que a escrita aceita de volta.
+        campos = {destino: pt_br(l[col]) for col, destino in _OBRA_LEITURA.items()}
         out.setdefault(l[chave], {})[indice] = campos
     return out
 

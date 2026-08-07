@@ -34,6 +34,11 @@ python dev/smoke_pendencias.py # a conta que libera ou trava a simulacao
 python dev/smoke_fila.py       # o disparo inteiro, com Service Bus de verdade
 python dev/smoke_concorrencia.py # 10 POST simultaneos = 1 rodada
 python dev/smoke_conflito.py   # versao por ficha (409) e a identidade da unidade
+python dev/smoke_ida_e_volta.py # ler a ficha e salva-la de volta, sem traducao
+
+# Ponta a ponta com o FRONT junto (nginx + FastAPI + Postgres + Service Bus):
+docker compose -f docker-compose.yml -f docker-compose.e2e.yml up -d --build
+# http://localhost:8080 e o produto inteiro, falando com a API de verdade
 ```
 
 `seed.sql` é o **mínimo** que faz os 23 endpoints responderem: uma unidade, uma
@@ -47,3 +52,10 @@ Duas respostas que **devem** falhar, e falham por estarem certas:
 - `POST /runs` dá 503: não há Service Bus no ambiente local. E a rodada fica
   gravada como `ERRO`, que é a recuperação — se ficasse `PENDENTE`, o
   `/reexecutar` a recusaria para sempre por considerá-la em voo.
+
+## Os smokes NAO sao isolados
+
+Cada um espera o banco recem-semeado e altera dados. Rodar `smoke_seguranca` antes
+de `smoke_conflito`, por exemplo, faz o segundo falhar por sujeira e nao por bug.
+Entre um e outro, reaplique os DDLs e o seed. Esta declarado porque ja custou
+diagnostico duas vezes.

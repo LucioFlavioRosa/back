@@ -98,6 +98,13 @@ def registrar(app: FastAPI) -> None:
         primeiro = e.errors()[0] if e.errors() else {}
         campo = ".".join(str(p) for p in primeiro.get("loc", ()) if p != "body")
         msg = primeiro.get("msg", "conteúdo inválido")
+        # "14: JSON decode error" nao ajuda ninguem: o `14` e o byte onde o parser
+        # parou, e quem le a tela nao tem o corpo na mao para contar bytes.
+        if "json decode" in str(msg).lower() or primeiro.get("type") == "json_invalid":
+            return JSONResponse(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                content=_corpo("O conteúdo enviado não é um JSON válido."),
+            )
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             content=_corpo(f"{campo}: {msg}" if campo else msg),

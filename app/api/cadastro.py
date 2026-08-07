@@ -28,9 +28,12 @@ from app.infra.repositorios import cadastro, cadastro_escrita
 router = APIRouter(tags=["cadastro"])
 
 
-async def _ou_404(valor, o_que: str):
+async def _ou_404(valor, o_que: str, feminino: bool = False):
+    """404 com o texto concordando — "Unidade não encontrado" apareceu num teste
+    de uso real, e mensagem de erro malescrita corrói a confiança no resto."""
     if valor is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, f"{o_que} não encontrado.")
+        achado = "encontrada" if feminino else "encontrado"
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"{o_que} não {achado}.")
     return valor
 
 
@@ -47,7 +50,7 @@ async def unidades(regional_id: str) -> list[dict[str, Any]]:
 
 @router.get("/unidades/{unidade_id}")
 async def unidade(unidade_id: str) -> dict[str, Any]:
-    return await _ou_404(await cadastro.unidade(unidade_id), "Unidade")
+    return await _ou_404(await cadastro.unidade(unidade_id), "Unidade", feminino=True)
 
 
 # ------------------------------------------------------------------- fichas

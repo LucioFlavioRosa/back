@@ -92,6 +92,20 @@ def _numero(v: Any, campo: str = "") -> Any:
     return float(s.replace(".", "").replace(",", "."))
 
 
+#: Campos que NAO podem ser negativos. Vazao, preco, quantidade, receita e
+#: populacao sao grandezas fisicas ou monetarias sem sentido abaixo de zero — e
+#: uma vazao negativa nao para no cadastro: ela entra na simulacao e sai como um
+#: plano que ninguem sabe que esta errado. `wacc` fica de fora de proposito
+#: (taxa negativa e exotica mas existe), e `pot` (potencial de crescimento)
+#: tambem, porque encolher e um cenario legitimo.
+_NAO_NEGATIVOS = {
+    "preco", "vaz", "vazInd", "tarr", "ramp",
+    "popU", "popA", "fat", "arr", "fatInd", "arrInd",
+    "ligU", "ligA", "ligN", "ligUInd", "ligAInd", "ecoU", "ecoA", "ecoN",
+    "obra.qtd", "obra.preco", "obra.opex", "obra.dur", "obra.tPred",
+}
+
+
 def _numerico(v: Any, campo: str) -> Any:
     """Como `_numero`, mas para coluna que SO aceita numero: texto vira 422."""
     n = _numero(v)
@@ -99,6 +113,8 @@ def _numerico(v: Any, campo: str) -> Any:
         raise ValorInvalido(
             f"O campo {campo!r} precisa ser um número no formato 1.234,5 — recebi {v!r}."
         )
+    if n is not None and n < 0 and campo in _NAO_NEGATIVOS:
+        raise ValorInvalido(f"O campo {campo!r} não pode ser negativo — recebi {v!r}.")
     return n
 
 
@@ -258,7 +274,12 @@ async def _gravar_obras(
             ficha_id,
             o.get("nome"),
             *[_numero(o.get(k)) for k in _OBRA],
-            (_numero(o.get("qtd")) or 0) * (_numero(o.get("preco")) or 0),
+            # `_numerico` e nao `_numero`: o segundo devolvia a string crua quando
+            # nao reconhecia o formato, e a multiplicacao estourava
+            # `TypeError: can't multiply sequence by non-int` -> 500. Numero torto
+            # numa obra e erro de quem chamou, e merece 422 dizendo o campo.
+            (_numerico(o.get("qtd"), "obra.qtd") or 0)
+            * (_numerico(o.get("preco"), "obra.preco") or 0),
         )
         for o in obras
     ]

@@ -208,4 +208,13 @@ async def excluir(run_id: str) -> bool:
     e so em `otim_meta`."""
     async with db.transacao() as con:
         r = await con.execute(f"DELETE FROM {_p()}.otim_meta WHERE run_id = $1", run_id)
+        # O CONTROLE sai junto. Sem isto, `GET /runs/{id}/status` seguia
+        # respondendo SUCESSO para uma rodada cujo resultado nao existe mais — o
+        # front pararia o polling satisfeito e mandaria o usuario para uma tela
+        # 404. Duas fontes discordando sobre a mesma rodada e pior que qualquer
+        # uma das duas sozinha.
+        ctrl = config().schema_controle
+        await con.execute(f"DELETE FROM {ctrl}.run_diagnostico WHERE run_id = $1", run_id)
+        await con.execute(f"DELETE FROM {ctrl}.run_status WHERE run_id = $1", run_id)
+        await con.execute(f"DELETE FROM {ctrl}.run_request WHERE run_id = $1", run_id)
     return r != "DELETE 0"
