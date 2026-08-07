@@ -89,11 +89,6 @@ Declarado em vez de escondido — cada item tem o motivo e o caminho:
   O corpo manda só o que difere da base, por índice, então sem ela não há o que
   gravar — mas cópia envelhece: se a base mudar lá e não aqui, a ficha salva com
   valores de ontem sem nenhum sinal. O certo é o backend servir a base para a tela.
-- **`PUT` concorrente é last-write-wins**, sem 409 — o `DEPLOY.md` §6 já antecipa
-  que falta versão/ETag por ficha. E um `PUT` simultâneo a um `DELETE` de CTS pode
-  deixar trilha de override apontando para ficha que não existe mais.
-- **`unidadeNome` vem como o id** (`"u1"`): as tabelas de resultado usam nome como
-  id em vários pontos e o backend repassa. O certo é o job publicar id e nome.
 - **"Ficha inteira" é, na prática, merge**: campo ausente no corpo mantém o valor
   no banco em vez de limpá-lo. O contrato diz que o corpo é a ficha inteira e o
   front sempre a manda inteira, então na prática coincide — mas um cliente parcial
@@ -106,6 +101,24 @@ Declarado em vez de escondido — cada item tem o motivo e o caminho:
   O modal do front nomeia a etapa a partir dele, então hoje ele salta de 0 a 100.
 - **Nada disto foi executado contra um Postgres real.** As consultas foram escritas
   contra o DDL e conferidas coluna a coluna, mas isso é leitura, não teste.
+
+## O que este serviço precisa do JOB
+
+Nada aqui bloqueia, mas cada item é um remendo que some quando o job entregar:
+
+1. **`unidade_id` em `otim_meta`.** Hoje a coluna `regional` guarda o *nome* da
+   unidade, e o backend resolve o id fazendo join com `input.unidade_regional` pelo
+   nome. Funciona, e tem duas fragilidades: depende de nome de unidade ser único, e
+   renomear uma unidade desliga as rodadas antigas dela. Se a rodada é imutável
+   (§2.1 do `CONTRATO.md`), a identidade dela deveria ser congelada junto — não
+   reconstruída por nome a cada leitura.
+2. **`cidade_id` e `sistema_id`** em `otim_cidade`/`otim_sistema`, ao lado dos
+   nomes. Hoje o nome é usado como id, então o deep link vira
+   `/cidades/Rio%20Bonito` e renomear a cidade quebra link salvo.
+3. **`progresso`** em `controle.run_status` — sem ele o modal salta de 0 a 100.
+4. **Faixas de paridade na rodada**: o job publica a paridade realizada, não a
+   tabela cobertura→fator que a produziu, e a tela precisa dela para explicar o
+   degrau.
 
 ## Migrações que este serviço precisa
 

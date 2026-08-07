@@ -25,7 +25,11 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.dominio.parametros import ParametrosInvalidos
 from app.dominio.run_id import RunIdInvalido
 from app.infra.fila import FilaIndisponivel
-from app.infra.repositorios.cadastro_escrita import FichaDeOutraUnidade, ValorInvalido
+from app.infra.repositorios.cadastro_escrita import (
+    FichaDesatualizada,
+    FichaDeOutraUnidade,
+    ValorInvalido,
+)
 
 log = logging.getLogger(__name__)
 
@@ -57,6 +61,12 @@ def registrar(app: FastAPI) -> None:
     async def _fila(_: Request, e: FilaIndisponivel) -> JSONResponse:
         # 503 e nao 500: e temporario e o usuario pode tentar de novo.
         return JSONResponse(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, content=_corpo(str(e)))
+
+    @app.exception_handler(FichaDesatualizada)
+    async def _desatualizada(_: Request, e: FichaDesatualizada) -> JSONResponse:
+        # 409 e o codigo que a tela ja trata: ela pergunta se pode recarregar do
+        # servidor e semear de novo aquela unidade.
+        return JSONResponse(status_code=status.HTTP_409_CONFLICT, content=_corpo(str(e)))
 
     @app.exception_handler(ValorInvalido)
     async def _valor(_: Request, e: ValorInvalido) -> JSONResponse:

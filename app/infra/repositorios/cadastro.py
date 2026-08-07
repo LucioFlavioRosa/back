@@ -17,6 +17,8 @@ das colunas. A tradução mora aqui de propósito: é o único lugar onde as dua
 convenções se encontram, e espalhá-la faria cada endpoint inventar a sua.
 """
 
+import hashlib
+import json
 from typing import Any
 
 from app.config import config
@@ -35,6 +37,29 @@ _CIDADES_DA_UNIDADE = """
       JOIN {i}.regional_superintendencia s USING (superintendencia_id)
      WHERE s.unidade_id = $1
 """
+
+
+def versao(ficha: Any) -> str:
+    """A versão de uma ficha é o HASH do conteúdo que o `GET` devolveu.
+
+    Não é um contador: é a resposta a "isto ainda está como quando você leu?".
+
+    A escolha do hash sobre uma coluna `versao` tem três motivos, e o primeiro é o
+    que decide: **não precisa de migração**. As tabelas de cadastro vivem no
+    repositório do otimizador, e acrescentar coluna em cinco delas é uma migração
+    coordenada para resolver um problema que o conteúdo já responde.
+
+    Os outros dois: uma ficha pode nascer de mais de uma tabela (a de cidade sai de
+    `cidade_operacional` + `metas_cobertura` + `fator_esgoto`, e combinar três
+    contadores é pior que hashear o resultado); e duas pessoas fazendo a MESMA
+    edição não geram conflito, porque o conteúdo final é o mesmo — com contador,
+    a segunda levaria um 409 que não protege nada.
+
+    `sort_keys` porque a ordem das chaves de um JSON não significa nada: sem ele, a
+    mesma ficha lida duas vezes poderia dar versões diferentes.
+    """
+    bruto = json.dumps(ficha, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(bruto.encode("utf-8")).hexdigest()[:16]
 
 
 def _cidades_cte() -> str:
@@ -184,6 +209,16 @@ async def contrato(unidade_id: str) -> dict[str, Any]:
              ORDER BY f.cidade_id, f.cobertura_pct""",
         unidade_id,
     )
+    # A ficha de cidade sai de TRÊS tabelas — a versão cobre as três, senão editar
+    # uma meta não invalidaria a leitura de quem tem a cidade aberta.
+    for c in cidades:
+        c["versao"] = versao(
+            {
+                "cidade": {k: v for k, v in c.items() if k != "id"},
+                "metas": [m for m in metas if m["cidadeId"] == c["id"]],
+                "fator": [f for f in fator if f["cidadeId"] == c["id"]],
+            }
+        )
     return {"cidades": cidades, "metas": metas, "fator": fator}
 
 
@@ -273,7 +308,7 @@ async def sub_bacias(unidade_id: str) -> dict[str, Any]:
         sid = l["sub_id"]
         if sid not in fichas:
             continue  # linha da topologia sem ficha: e ETE ou nó sem cadastro
-        subs[sid] = {
+        ficha = {
             **_ficha_coleta(fichas[sid], "sub_bacia"),
             "nome": l["sub_nome"] or sid,
             "sisId": l["sistema_id"],
@@ -281,6 +316,14 @@ async def sub_bacias(unidade_id: str) -> dict[str, Any]:
             "jusante": l["jusante"] or "",
             "obrasOverride": obras.get(sid, {}),
         }
+        # A versão é calculada sobre o que MUDA — `db`, `params` e as obras. Nome,
+        # sistema e jusante vêm da topologia e não são editáveis por esta ficha;
+        # incluí-los faria uma mudança na hierarquia invalidar edições em curso
+        # sem que ninguém tivesse tocado no dado.
+        ficha["versao"] = versao(
+            {k: ficha[k] for k in ("db", "params", "obrasOverride")}
+        )
+        subs[sid] = ficha
 
     return {"arvore": _arvore(linhas, com_ficha=set(subs)), "subs": subs}
 
@@ -400,7 +443,12 @@ async def etes(unidade_id: str) -> dict[str, Any]:
              ORDER BY e.ete_id""",
         unidade_id,
     )
-    return {"etes": [dict(l) for l in linhas]}
+    etes = []
+    for l in linhas:
+        e = dict(l)
+        e["versao"] = versao({k: v for k, v in e.items() if k != "id"})
+        etes.append(e)
+    return {"etes": etes}
 
 
 async def cts(unidade_id: str) -> dict[str, Any]:
@@ -439,7 +487,7 @@ async def cts(unidade_id: str) -> dict[str, Any]:
         cid = l["cts"]
         if cid not in fichas:
             continue
-        ctss[cid] = {
+        ficha = {
             **_ficha_coleta(fichas[cid], "cts"),
             "nome": cid,
             "subId": l["sub"],
@@ -448,5 +496,9 @@ async def cts(unidade_id: str) -> dict[str, Any]:
             "jusante": l["jusante"] or "",
             "obrasOverride": obras.get(cid, {}),
         }
+        ficha["versao"] = versao(
+            {k: ficha[k] for k in ("db", "params", "obrasOverride")}
+        )
+        ctss[cid] = ficha
 
     return {"pares": [{"sub": l["sub"], "cts": l["cts"]} for l in linhas], "ctss": ctss}

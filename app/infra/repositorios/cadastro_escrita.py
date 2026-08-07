@@ -22,6 +22,16 @@ from app.infra import db
 from app.infra.repositorios.cadastro import _COLETA, _ficha_coleta
 
 
+class FichaDesatualizada(RuntimeError):
+    """Alguem gravou esta ficha depois que voce a leu — 409.
+
+    Sem isto, duas pessoas na mesma ficha eram last-write-wins: a segunda gravacao
+    apagava a primeira em silencio, e quem perdeu o trabalho so descobria ao
+    recarregar. O front ja tem o fluxo de 409 pronto (oferece recarregar do
+    servidor); faltava o servidor ter como perceber.
+    """
+
+
 class ValorInvalido(ValueError):
     """Numero fora do formato pt-BR — 422, e nao 500.
 
@@ -331,6 +341,48 @@ async def exigir_dona(tipo: str, ficha_id: str, unidade_id: str) -> None:
         raise FichaDeOutraUnidade(f"{tipo} {ficha_id!r} nao pertence a unidade {unidade_id!r}")
 
 
+async def _versao_atual(tipo: str, ficha_id: str, unidade_id: str) -> str | None:
+    """A versão que a ficha tem AGORA no banco, pela mesma conta que o `GET` usa.
+
+    Reusa as funções de leitura de propósito: se a versão fosse calculada por um
+    caminho próprio, os dois lados divergiriam na primeira mudança de payload e o
+    409 passaria a disparar sem conflito nenhum.
+    """
+    from app.infra.repositorios import cadastro
+
+    if tipo == "sub-bacia":
+        return (await cadastro.sub_bacias(unidade_id))["subs"].get(ficha_id, {}).get("versao")
+    if tipo == "cts":
+        return (await cadastro.cts(unidade_id))["ctss"].get(ficha_id, {}).get("versao")
+    if tipo == "ete":
+        return next(
+            (e["versao"] for e in (await cadastro.etes(unidade_id))["etes"] if e["id"] == ficha_id),
+            None,
+        )
+    return next(
+        (c["versao"] for c in (await cadastro.contrato(unidade_id))["cidades"] if c["id"] == ficha_id),
+        None,
+    )
+
+
+async def _exigir_versao(corpo: dict[str, Any], tipo: str, ficha_id: str, unidade_id: str) -> None:
+    """Recusa a gravação se a ficha mudou desde a leitura.
+
+    `versao` AUSENTE no corpo passa, de propósito: é um cliente que ainda não
+    manda o campo (ou um script de operação), e recusá-lo transformaria uma
+    melhoria de segurança numa quebra de compatibilidade. Quem manda, é protegido.
+    """
+    enviada = corpo.get("versao")
+    if not enviada:
+        return
+    atual = await _versao_atual(tipo, ficha_id, unidade_id)
+    if atual and atual != enviada:
+        raise FichaDesatualizada(
+            "Esta ficha foi alterada por outra pessoa depois que você a abriu. "
+            "Recarregue do servidor para ver a versão atual antes de salvar."
+        )
+
+
 # ------------------------------------------------------------------ as fichas
 async def salvar_coleta(
     *, unidade_id: str, ficha_id: str, corpo: dict[str, Any], autor: str, e_cts: bool
@@ -343,6 +395,11 @@ async def salvar_coleta(
     await exigir_dona(tipo, ficha_id, unidade_id)
 
     async with db.transacao() as con:
+        # Lock ANTES de conferir a versao. Sem ele, duas requisicoes leem a mesma
+        # versao, as duas concordam, e as duas gravam — o conflito passaria batido
+        # justamente no caso em que ele existe. E o mesmo padrao do POST /runs.
+        await con.execute("SELECT pg_advisory_xact_lock(hashtext($1))", ficha_id)
+        await _exigir_versao(corpo, tipo, ficha_id, unidade_id)
         await _gravar_coleta(
             con,
             tabela=tabela,
@@ -386,6 +443,8 @@ async def salvar_contrato(
     cidade = corpo.get("cidade") or {}
     await exigir_dona("cidade", cidade_id, unidade_id)
     async with db.transacao() as con:
+        await con.execute("SELECT pg_advisory_xact_lock(hashtext($1))", cidade_id)
+        await _exigir_versao(corpo, "cidade", cidade_id, unidade_id)
         await con.execute(
             f"""INSERT INTO {_i()}.cidade_operacional
                     (cidade_id, data_fim_concessao, unidade_cobertura)
@@ -474,6 +533,8 @@ async def salvar_ete(
         ete["nova"] = _nova_para_texto(ete["nova"])
     presentes = [k for k in _ETE if k in ete]
     async with db.transacao() as con:
+        await con.execute("SELECT pg_advisory_xact_lock(hashtext($1))", ete_id)
+        await _exigir_versao(corpo, "ete", ete_id, unidade_id)
         if presentes:
             colunas = [_ETE[k] for k in presentes]
             marc = ", ".join(f"${i + 2}" for i in range(len(colunas)))

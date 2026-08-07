@@ -21,6 +21,33 @@ def _p() -> str:
     return config().schema_resultado
 
 
+def _i() -> str:
+    return config().schema_input
+
+
+# `otim_meta.regional` NAO guarda a regional: guarda o NOME DA UNIDADE.
+#
+# Vem do motor (`otimizador_capex_v62.py:1117`), onde o no e construido com
+# `No(sb, cidade, sistema, uni_name[...], jusante)` — o quarto argumento se chama
+# `regional` e recebe o nome da unidade. O nome da coluna e heranca de quando o
+# escopo da analise era a regional; a analise virou por unidade e o nome ficou.
+#
+# Consequencias que isso teve aqui, as duas corrigidas nesta leva:
+#   - `unidadeId` devolvia um NOME, entao `GET /runs?unidade=<id>` nunca casava:
+#     comparava id contra nome e o filtro do historico voltava vazio;
+#   - `unidadeNome` estava certo por acidente.
+#
+# O join com `input.unidade_regional` resolve o id a partir do nome. E remendo, e
+# tem duas fragilidades que precisam estar escritas: depende de o nome da unidade
+# ser unico, e renomear uma unidade desliga as rodadas antigas dela. A correcao
+# durável e o job publicar `unidade_id` em `otim_meta` — se a rodada e imutavel, a
+# identidade dela deveria ser congelada junto, e nao reconstruida por nome a cada
+# leitura. Esta pedido no README.
+_ID_DA_UNIDADE = """
+    LEFT JOIN {i}.unidade_regional u ON u.unidade_name = m.regional
+"""
+
+
 async def historico(
     unidade: str | None = None, usuario: str | None = None
 ) -> list[dict[str, Any]]:
@@ -30,18 +57,23 @@ async def historico(
                    h.obras_construidas, h.obras_total, h.cobertura_final_pct,
                    h.metas_total, h.metas_nao_atingidas, h.tempo_s,
                    m.receita_total, m.opex_total,
-                   m.regional, m.base_receita_param, m.usar_cts, m.foco_cobertura,
-                   m.incluir_industrial
+                   m.regional, m.unidade_id, m.base_receita_param, m.usar_cts,
+                   m.foco_cobertura, m.incluir_industrial
               FROM {_p()}.otim_vw_historico h
               JOIN LATERAL (
-                   SELECT regional, receita_total, opex_total,
+                   SELECT regional,
+                          (SELECT u.unidade_id FROM {_i()}.unidade_regional u
+                            WHERE u.unidade_name = otim_meta.regional) AS unidade_id,
+                          receita_total, opex_total,
                           params_extra->>'BASE_RECEITA'      AS base_receita_param,
                           (params_extra->>'USAR_CTS')::bool  AS usar_cts,
                           (params_extra->>'FOCO_COBERTURA')::float AS foco_cobertura,
                           (params_extra->>'INCLUIR_INDUSTRIAL')::bool AS incluir_industrial
                      FROM {_p()}.otim_meta WHERE run_id = h.run_id
               ) m ON true
-             WHERE ($1::text IS NULL OR m.regional = $1)
+             -- casa por id OU por nome: o front manda o id, mas um script de
+             -- operacao provavelmente manda o nome, que e o que esta na coluna.
+             WHERE ($1::text IS NULL OR m.unidade_id = $1 OR m.regional = $1)
                AND ($2::text IS NULL OR h.usuario  = $2)
              ORDER BY h.data_hora DESC""",
         unidade,
@@ -62,7 +94,9 @@ def _resumo(l: dict[str, Any]) -> dict[str, Any]:
     resumo: dict[str, Any] = {
         "runId": l["run_id"],
         "nome": l.get("rotulo"),
-        "unidadeId": l.get("regional"),
+        # Sem cadastro correspondente, o id cai para o nome: e melhor um id feio
+        # que um `null` que a tela usaria para montar um link quebrado.
+        "unidadeId": l.get("unidade_id") or l.get("regional"),
         "unidadeNome": l.get("regional"),
         "dataHora": l["data_hora"].isoformat() if l.get("data_hora") else None,
         "autor": l.get("usuario"),
@@ -123,14 +157,18 @@ def _pct(parte: float | None, total: float | None) -> float | None:
 
 async def meta(run_id: str) -> dict[str, Any] | None:
     linha = await db.buscar_um(
-        f"SELECT * FROM {_p()}.otim_meta WHERE run_id = $1", run_id
+        f"""SELECT m.*, u.unidade_id
+              FROM {_p()}.otim_meta m
+              {_ID_DA_UNIDADE.format(i=_i())}
+             WHERE m.run_id = $1""",
+        run_id,
     )
     if not linha:
         return None
     return {
         "runId": linha["run_id"],
         "nome": linha.get("rotulo"),
-        "unidadeId": linha.get("regional"),
+        "unidadeId": linha.get("unidade_id") or linha.get("regional"),
         "unidadeNome": linha.get("regional"),
         "dataHora": linha["data_hora"].isoformat() if linha.get("data_hora") else None,
         "autor": linha.get("usuario"),

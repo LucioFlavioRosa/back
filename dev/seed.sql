@@ -19,7 +19,11 @@ INSERT INTO public.otim_meta (run_id, data_hora, regional, anos_capex, ano_base,
   params_extra, milp_status, vpl, capex_total, opex_total, receita_total, obras_total,
   obras_construidas, obrig_total, obrig_construidas, subbacias_total, subbacias_faturando,
   metas_total, metas_nao_atingidas, cobertura_final_pct, rotulo, usuario, tempo_s, status_execucao)
-VALUES ('run_teste_1', now(), 'u1', 8, 2026, 410000000,
+-- `regional` guarda o NOME DA UNIDADE, e nao um id: e o que o motor publica
+-- (`otimizador_capex_v62.py:1117`, quarto argumento de `No`). O seed usava 'u1' e
+-- com isso escondia dois defeitos — `unidadeId` devolvendo nome, e o filtro
+-- `?unidade=` nunca casando.
+VALUES ('run_teste_1', now(), 'Litoral 1', 8, 2026, 410000000,
   '{"BASE_RECEITA":"arrecadada","USAR_CTS":true,"FOCO_COBERTURA":1.0,"INCLUIR_INDUSTRIAL":true}'::jsonb,
   'VIAVEL(limite de tempo)', 168069034, 304182900, 81440200, 469000000, 902, 367, 3, 3, 902, 218,
   2, 0, 77.6, 'Litoral 1 — janela 8a', 'lucio.rosa', 274, 'CONCLUIDO');
