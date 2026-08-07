@@ -52,12 +52,13 @@ FORMAS_DO_CONTRATO = {
     "GET /unidades/{}/cts",
     # DEPLOY.md §3 — cadastro (escrita). Uma ficha por vez; o corpo e a ficha
     # inteira, e a trilha de override viaja junto.
+    #
+    # NAO ha POST nem DELETE de CTS: ela e no da topologia, e criar/remover no e
+    # mudanca de cadastro estrutural, nao acao de tela. Ver `app/api/cadastro.py`.
     "PUT /unidades/{}/sub-bacias/{}",
     "PUT /unidades/{}/cts/{}",
     "PUT /unidades/{}/contrato/{}",
     "PUT /unidades/{}/etes/{}",
-    "POST /unidades/{}/cts",
-    "DELETE /unidades/{}/cts/{}",
 }
 
 
@@ -96,7 +97,7 @@ def test_nenhum_endpoint_a_mais():
 def test_a_lista_nao_esta_vazia():
     # Guarda contra o teste passar por não encontrar rota nenhuma — se `_expostas`
     # quebrar com uma mudança do FastAPI, os dois testes acima passariam vazios.
-    assert len(_expostas()) == len(FORMAS_DO_CONTRATO) == 29
+    assert len(_expostas()) == len(FORMAS_DO_CONTRATO) == 27
 
 
 @pytest.mark.parametrize("run_id", ["r1' OR 1=1", "../etc", "com espaco", ""])

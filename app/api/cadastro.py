@@ -154,19 +154,29 @@ async def salvar_ete(
     )
 
 
-@router.post("/unidades/{unidade_id}/cts", status_code=status.HTTP_201_CREATED)
-async def criar_cts(unidade_id: str, corpo: Corpo, usuario: Usuario) -> dict[str, Any]:
-    """Devolve a CTS CRIADA — e e essa versao que o front adota, nao a que enviou."""
-    sub_id, cts = corpo.get("subId"), corpo.get("cts") or {}
-    if not sub_id or not cts.get("id"):
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
-            "Informe a sub-bacia pareada e o identificador da CTS.",
-        )
-    return await cadastro_escrita.criar_cts(unidade_id=unidade_id, sub_id=sub_id, cts=cts)
-
-
-@router.delete("/unidades/{unidade_id}/cts/{cts_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def apagar_cts(unidade_id: str, cts_id: str, usuario: Usuario) -> None:
-    if not await cadastro_escrita.apagar_cts(unidade_id=unidade_id, cts_id=cts_id):
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "CTS não encontrada.")
+# ---------------------------------------------------------------------------
+# CRIAR e APAGAR CTS: removidos de proposito
+# ---------------------------------------------------------------------------
+# A CTS NAO e algo que se cria escolhendo uma sub-bacia. Ela e um NO DO SISTEMA,
+# como a sub-bacia, e a posicao dela ja esta em `input.sistema_topologia` — com
+# jusante proprio. No banco real, 337 das 339 estao la.
+#
+# O motor confirma (`otimizador_capex_v62.py`): os nos saem do laco sobre
+# `sistema-topologia`, e `cen.cts_ids = set(cts_operacional) & set(cen.nos)`. So e
+# CTS efetiva a ficha que TAMBEM e no.
+#
+# Entao:
+#   - `POST /cts` gravava `cts_operacional` + `subbacia_cts` e NAO tocava na
+#     topologia: criava uma ficha visivel no cadastro e invisivel para a simulacao.
+#   - `DELETE /cts` era pior. Apagava a ficha e deixava o no na topologia: a CTS
+#     virava um no comum, sem ficha, sem componentes e com demanda ZERADA. E como
+#     o par tambem sumia, com `usar_cts=False` a demanda dela nao era nem somada a
+#     sub-bacia pareada. Destruia dado de duas formas ao mesmo tempo.
+#
+# `subbacia_cts` e SOBREPOSICAO de area, nao pertencimento: e ela que permite ao
+# `USAR_CTS` decidir se a CTS entra como estrutura propria ou se ligacoes, receita
+# e vazao dela sao somadas a sub-bacia irma.
+#
+# O que sobra e o que faz sentido: LER e EDITAR a ficha de uma CTS que o cadastro
+# ja tem. Criar e remover CTS e mudanca de topologia, e topologia vem do
+# Databricks como todo o resto do Grupo 01.

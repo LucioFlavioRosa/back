@@ -98,6 +98,41 @@ Declarado em vez de escondido — cada item tem o motivo e o caminho:
 - **Nada disto foi executado contra um Postgres real.** As consultas foram escritas
   contra o DDL e conferidas coluna a coluna, mas isso é leitura, não teste.
 
+## Uma decisão de modelagem: a CTS não se cria pela tela
+
+`POST /cts` e `DELETE /cts` **foram removidos**, e o `DEPLOY.md` §3 do front ainda
+os promete — está pendente lá.
+
+A CTS é um **nó do sistema**, como a sub-bacia: a posição dela já está em
+`input.sistema_topologia`, com jusante próprio (337 das 339 no banco real). O motor
+monta os nós percorrendo a topologia, e faz `cts_ids = fichas ∩ nós` — só é CTS
+efetiva a ficha que **também** é nó.
+
+Então os dois endpoints estavam conceitualmente errados:
+
+- `POST` gravava ficha + par sem tocar na topologia: criava uma CTS visível no
+  cadastro e **invisível para a simulação**;
+- `DELETE` era pior — apagava a ficha e deixava o nó, virando um nó de demanda
+  **zero**; e como o par também sumia, com `USAR_CTS=false` a demanda dela deixava
+  de ser somada à sub-bacia irmã. Destruía dado de duas formas ao mesmo tempo.
+
+`subbacia_cts` é **sobreposição de área**, não pertencimento: é ela que permite ao
+`USAR_CTS` escolher entre tratar a CTS como estrutura própria ou somar ligações,
+receita e vazão dela na sub-bacia pareada.
+
+Sobra o que faz sentido: `GET /cts` e `PUT /cts/{id}` — ler e editar a ficha de uma
+CTS que o cadastro já tem. Criar ou remover CTS é mudança de topologia, e topologia
+vem do cadastro estrutural.
+
+**Pendente:** a tela ainda oferece "Criar CTS" e "Remover CTS"
+(`GrupoCts.tsx`), e agora esses botões batem em endpoint que não existe. Remover
+os dois da tela, e os testes que os exercitam, é o próximo passo.
+
+**Também pendente:** `GET /cts` poderia denunciar as inconsistências que essa
+modelagem torna possíveis — ficha sem nó, nó `cts_*` sem ficha, par apontando para
+CTS sem topologia. Há 2 casos assim no banco real (`cts_b2b80_1_3`,
+`cts_c2b12_3_1`), ambos sem componentes.
+
 ## O que este serviço precisa do JOB
 
 Nada aqui bloqueia, mas cada item é um remendo que some quando o job entregar:
