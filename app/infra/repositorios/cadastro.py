@@ -19,11 +19,15 @@ convenções se encontram, e espalhá-la faria cada endpoint inventar a sua.
 
 import hashlib
 import json
+import logging
 from typing import Any
 
 from app.config import config
 from app.infra import db
 from app.infra.repositorios import pendencias
+
+
+log = logging.getLogger(__name__)
 
 
 def _i() -> str:
@@ -634,6 +638,13 @@ async def cts(unidade_id: str) -> dict[str, Any]:
     `ctss` e um MAPA por id, como `subs`. E `pares` vem separado porque uma CTS SEM
     par e estado invalido que a tela precisa mostrar — sem a lista, ela nao teria
     como saber que a CTS ficou orfa.
+
+    `inconsistencias` traz as CTS que existem pela metade — ver
+    `_cts_inconsistentes`. Ele NAO substitui `ctss`, e cruza com ele: uma CTS com
+    ficha e par mas sem no aparece nos DOIS (continua editavel, e agora se sabe
+    que a simulacao nao a ve), enquanto um no sem ficha so existe aqui, porque
+    nao ha ficha para editar. E de proposito: a lista de fichas responde "o que
+    da para mexer", esta responde "no que confiar".
     """
     linhas = await db.buscar(
         f"""SELECT p.sub_bacia AS sub, p.cts,
@@ -680,4 +691,87 @@ async def cts(unidade_id: str) -> dict[str, Any]:
         )
         ctss[cid] = ficha
 
-    return {"pares": [{"sub": l["sub"], "cts": l["cts"]} for l in linhas], "ctss": ctss}
+    return {
+        "pares": [{"sub": l["sub"], "cts": l["cts"]} for l in linhas],
+        "ctss": ctss,
+        "inconsistencias": await _cts_inconsistentes(unidade_id),
+    }
+
+
+async def _cts_inconsistentes(unidade_id: str) -> list[dict[str, Any]]:
+    """As CTS que existem pela metade — as que a leitura normal nao denuncia.
+
+    Uma CTS precisa de TRES coisas para existir de verdade: um no em
+    `sistema_topologia` (e dele que sai a posicao na rede, com jusante proprio),
+    uma ficha em `cts_operacional` (a demanda) e um par em `subbacia_cts` (a
+    sobreposicao de area com a sub-bacia irma). O motor so a considera onde no e
+    ficha coincidem — `cts_ids = fichas ∩ nos` — e o par e o que permite ao
+    `USAR_CTS` somar a demanda dela na sub-bacia quando ela e desligada.
+
+    Faltando qualquer uma das tres, o efeito e SILENCIOSO: a rodada roda, o plano
+    sai, e a CTS simplesmente nao esta la — ou pior, esta como um no de demanda
+    zero. Nenhum erro, nenhum aviso; so um numero diferente no fim. Foi assim que
+    duas CTS ficaram meio existindo no cadastro real sem ninguem notar.
+
+    Por isso o `GET` passa a devolve-las. Nao e diagnostico de infraestrutura: e
+    informacao de cadastro, e quem le a tela e exatamente quem pode corrigi-la.
+    """
+    achados = await db.buscar(
+        f"""
+        -- (1) FICHA SEM NO: tem ficha e par, nao esta na topologia.
+        --     O motor monta os nos percorrendo `sistema_topologia`; sem no, a
+        --     intersecao nao a pega e ela e invisivel para a simulacao.
+        SELECT 'ficha-sem-no' AS tipo, o.cts AS id, p.sub_bacia AS "subId",
+               'Tem ficha e par, mas nao esta na topologia do sistema. '
+               'A simulacao nao a enxerga.' AS detalhe
+          FROM {_i()}.cts_operacional o
+          JOIN {_i()}.subbacia_cts p ON p.cts = o.cts
+          JOIN {_i()}.sistema_topologia ts ON ts.componente_sistema_id = p.sub_bacia
+          JOIN {_i()}.cidade_sistema s USING (sistema_id)
+          JOIN ({_cidades_cte()}) c ON c.cidade_id = s.cidade_id
+         WHERE NOT EXISTS (SELECT 1 FROM {_i()}.sistema_topologia t
+                            WHERE t.componente_sistema_id = o.cts)
+
+        UNION ALL
+
+        -- (2) NO SEM FICHA: esta na topologia, nao tem demanda cadastrada.
+        --     Este e o pior dos tres, e o unico que MUDA O RESULTADO: o no entra
+        --     na simulacao com demanda zero, ocupa posicao na rede e puxa a media
+        --     do sistema para baixo — sem aparecer como erro em lugar nenhum.
+        SELECT 'no-sem-ficha', t.componente_sistema_id,
+               (SELECT p.sub_bacia FROM {_i()}.subbacia_cts p
+                 WHERE p.cts = t.componente_sistema_id),
+               'Esta na topologia e nao tem ficha em cts_operacional. '
+               'Entra na simulacao com demanda zero.'
+          FROM {_i()}.sistema_topologia t
+          JOIN {_i()}.cidade_sistema s USING (sistema_id)
+          JOIN ({_cidades_cte()}) c ON c.cidade_id = s.cidade_id
+         WHERE t.componente_sistema_id LIKE 'cts%'
+           AND NOT EXISTS (SELECT 1 FROM {_i()}.cts_operacional o
+                            WHERE o.cts = t.componente_sistema_id)
+
+        UNION ALL
+
+        -- (3) SEM PAR: existe e e simulavel, mas nao esta pareada com sub-bacia
+        --     nenhuma. Com `USAR_CTS` desligado a demanda dela some da conta, em
+        --     vez de ser somada a sub-bacia irma.
+        SELECT 'sem-par', o.cts, NULL,
+               'Nao esta pareada com nenhuma sub-bacia. Com USAR_CTS desligado, '
+               'a demanda dela nao e somada a lugar nenhum.'
+          FROM {_i()}.cts_operacional o
+          JOIN {_i()}.sistema_topologia t ON t.componente_sistema_id = o.cts
+          JOIN {_i()}.cidade_sistema s USING (sistema_id)
+          JOIN ({_cidades_cte()}) c ON c.cidade_id = s.cidade_id
+         WHERE NOT EXISTS (SELECT 1 FROM {_i()}.subbacia_cts p WHERE p.cts = o.cts)
+
+         ORDER BY 1, 2""",
+        unidade_id,
+    )
+    if achados:
+        log.warning(
+            "unidade %s: %d CTS inconsistente(s) — %s",
+            unidade_id,
+            len(achados),
+            ", ".join(f"{a['tipo']}:{a['id']}" for a in achados[:5]),
+        )
+    return [dict(a) for a in achados]

@@ -127,10 +127,29 @@ vem do cadastro estrutural.
 A tela e o `DEPLOY.md` §3 já acompanharam: os dois botões saíram, junto dos hooks e
 dos cinco testes que exercitavam a funcionalidade retirada.
 
-**Também pendente:** `GET /cts` poderia denunciar as inconsistências que essa
-modelagem torna possíveis — ficha sem nó, nó `cts_*` sem ficha, par apontando para
-CTS sem topologia. Há 2 casos assim no banco real (`cts_b2b80_1_3`,
-`cts_c2b12_3_1`), ambos sem componentes.
+### A CTS que existe pela metade
+
+A CTS precisa de **três** coisas: nó em `sistema_topologia` (a posição na rede,
+com jusante próprio), ficha em `cts_operacional` (a demanda) e par em
+`subbacia_cts` (a sobreposição de área). O motor faz `cts_ids = fichas ∩ nós`, e o
+par é o que permite ao `USAR_CTS` somar a demanda na sub-bacia irmã quando ela é
+desligada.
+
+Faltando qualquer uma, o efeito é **silencioso**: a rodada roda, o plano sai, e o
+número está errado sem nenhum erro em lugar nenhum. O pior caso é o nó sem ficha —
+ele *entra* na simulação, com demanda zero, ocupando posição na rede.
+
+Por isso `GET /cts` devolve `inconsistencias: [{ tipo, id, subId, detalhe }]`, com
+`tipo` em `ficha-sem-no` / `no-sem-ficha` / `sem-par`, e a tela as lista. Elas
+**cruzam** com `ctss` em vez de substituí-lo: uma CTS com ficha mas sem nó aparece
+nos dois — continua editável, e agora se sabe que a simulação não a vê — enquanto
+um nó sem ficha só existe na denúncia, porque não há ficha para editar.
+
+No banco real há 2 casos (`cts_b2b80_1_3` em uA2, `cts_c2b12_3_1` em uA3), ambos
+`ficha-sem-no` e sem componente nenhum. Foi assim que eles ficaram meio existindo
+sem ninguém notar. `dev/smoke_incons.py` cobre isso perguntando ao banco quais
+deveriam aparecer e conferindo que a API disse exatamente aquilo — sem fixar ids,
+para não falhar no dia em que o cadastro for corrigido.
 
 ## O que este serviço precisa do JOB
 

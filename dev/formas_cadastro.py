@@ -114,33 +114,41 @@ async def main():
             if subs:
                 idx = sorted(next(iter(subs.values()))["obrasOverride"])
                 ck("sub-bacia traz as 5 obras da base", idx == ["0","1","2","3","4"], str(idx))
-            ctss = (await c.get(f"/api/unidades/{U}/cts")).json()["ctss"]
-            if ctss:
-                idx = sorted(next(iter(ctss.values()))["obrasOverride"])
+            # Escolhe uma CTS que o proprio servidor NAO denuncia. Em uA2 a
+            # primeira da lista e `cts_b2b80_1_3`, que esta no cadastro sem no na
+            # topologia e sem componente nenhum: o teste falhava nela e parecia
+            # regressao da base de obras, quando era a CTS que esta quebrada no
+            # dado real. Pegar "a primeira" so funciona quando todas prestam.
+            cts_payload = (await c.get(f"/api/unidades/{U}/cts")).json()
+            quebradas = {x["id"] for x in cts_payload.get("inconsistencias", [])}
+            sadias = [v for k, v in cts_payload["ctss"].items() if k not in quebradas]
+            if sadias:
+                idx = sorted(sadias[0]["obrasOverride"])
                 ck("CTS traz as 4 obras da base dela", idx == ["0","1","2","3"], str(idx))
+            elif cts_payload["ctss"]:
+                print(f"  --   todas as CTS de {U} estao denunciadas; checagem pulada")
             else:
                 print(f"  --   esta unidade nao tem CTS (normal em {U}); checagem pulada")
 
-            # O POST de CTS devolve a ficha que o front ADOTA — se ela vier
-            # incompleta, a conta de pendencias faz `mkObrasCts(undefined)` e a
-            # tela cai em `undefined['0']`. Foi assim que a tela de CTS quebrou.
-            sub = next(iter((await c.get(f"/api/unidades/{U}/sub-bacias")).json()["subs"]))
-            r = await c.post(f"/api/unidades/{U}/cts",
-                json={"subId": sub, "cts": {"id": "cts_forma_teste",
-                                            "params": {"preco": "1.480,00"}, "db": {}}})
-            # A resposta E a Cts, sem envelope — foi essa a correcao.
-            nova = r.json() or {}
-            falta = [k for k in ESPERADO["cts"] if k not in nova]
-            ck("POST /cts devolve a ficha COMPLETA", r.status_code==201 and falta==[],
-               f"{r.status_code} faltam {falta}")
-            # O front faz `api.post<Cts>`: a resposta e a CTS, sem envelope. Com
-            # `{par, cts}` ele guardava o envelope em `ctss[undefined]` e a tela caia.
-            ck("POST /cts nao devolve envelope",
-               "par" not in (r.json() or {}) and "cts" not in (r.json() or {}),
-               str(sorted(r.json() or {})[:4]))
-            ck("a CTS criada tem obrasOverride", isinstance(nova.get("obrasOverride"), dict),
-               type(nova.get("obrasOverride")).__name__)
+            # AQUI HAVIA tres checagens do `POST /cts` (ficha completa, sem
+            # envelope, com `obrasOverride`) e o `DELETE` que limpava depois.
+            # Elas nao falharam: o endpoint que cobriam foi REMOVIDO de
+            # proposito — criar CTS pela tela gravava ficha e par sem tocar em
+            # `sistema_topologia`, produzindo uma CTS que o motor nunca ve.
+            # Hoje o POST responde 405.
+            #
+            # O bug que elas pegaram (o envelope `{par, cts}`, que derrubava a
+            # tela em `undefined['0']`) morreu junto com o endpoint. Ficam
+            # registradas aqui para ninguem as "restaurar" achando que sumiram
+            # por descuido.
 
-            await c.delete(f"/api/unidades/{U}/cts/cts_forma_teste")
+            # O que sobrou vivo daquele episodio: as CTS que existem pela metade
+            # agora sao DENUNCIADAS em vez de servidas caladas.
+            d = (await c.get(f"/api/unidades/{U}/cts")).json()
+            ck("GET /cts traz `inconsistencias`", "inconsistencias" in d,
+               str(sorted(d))[:70])
+            ck("cada inconsistencia se explica",
+               all({"tipo", "id", "detalhe"} <= set(x) for x in d.get("inconsistencias", [])),
+               "falta tipo/id/detalhe")
     print("\nFALHAS:", f or "nenhuma"); raise SystemExit(1 if f else 0)
 asyncio.run(main())
