@@ -107,6 +107,20 @@ async def main():
                 achados += nulos((await c.get(f"/api/unidades/{U}/{p}")).json(), p)
             ck("nenhum campo volta null", achados==[], str(sorted(set(achados))[:5]))
 
+            # ANTES de criar a CTS de teste: uma CTS recem-criada nao tem override
+            # nenhum (a tela parte da base), entao inclui-la aqui exigiria indices
+            # que ela nao deve ter — o teste falharia por estar errado.
+            subs = (await c.get(f"/api/unidades/{U}/sub-bacias")).json()["subs"]
+            if subs:
+                idx = sorted(next(iter(subs.values()))["obrasOverride"])
+                ck("sub-bacia traz as 5 obras da base", idx == ["0","1","2","3","4"], str(idx))
+            ctss = (await c.get(f"/api/unidades/{U}/cts")).json()["ctss"]
+            if ctss:
+                idx = sorted(next(iter(ctss.values()))["obrasOverride"])
+                ck("CTS traz as 4 obras da base dela", idx == ["0","1","2","3"], str(idx))
+            else:
+                print(f"  --   esta unidade nao tem CTS (normal em {U}); checagem pulada")
+
             # O POST de CTS devolve a ficha que o front ADOTA — se ela vier
             # incompleta, a conta de pendencias faz `mkObrasCts(undefined)` e a
             # tela cai em `undefined['0']`. Foi assim que a tela de CTS quebrou.
@@ -127,17 +141,6 @@ async def main():
             ck("a CTS criada tem obrasOverride", isinstance(nova.get("obrasOverride"), dict),
                type(nova.get("obrasOverride")).__name__)
 
-            # O indice do override e a POSICAO na obra-base: sub-bacia tem 5, CTS
-            # tem 4. Faltar indice significa componente que o de-para nao
-            # reconheceu — e a Regional perde o que digitou naquela linha.
-            subs = (await c.get(f"/api/unidades/{U}/sub-bacias")).json()["subs"]
-            if subs:
-                idx = sorted(next(iter(subs.values()))["obrasOverride"])
-                ck("sub-bacia traz as 5 obras da base", idx == ["0","1","2","3","4"], str(idx))
-            ctss = (await c.get(f"/api/unidades/{U}/cts")).json()["ctss"]
-            if ctss:
-                idx = sorted(next(iter(ctss.values()))["obrasOverride"])
-                ck("CTS traz as 4 obras da base dela", idx == ["0","1","2","3"], str(idx))
             await c.delete(f"/api/unidades/{U}/cts/cts_forma_teste")
     print("\nFALHAS:", f or "nenhuma"); raise SystemExit(1 if f else 0)
 asyncio.run(main())
