@@ -20,22 +20,29 @@ def ck(n,c,d=""):
 async def main():
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c:
+            # Descobre unidade e ficha em vez de fixar `u1`/`b38_1`: assim o smoke
+            # vale tanto para o `dev/seed.sql` quanto para o banco carregado com
+            # dado real (`dev/rodar_simulacao_real.py`), que foi onde ele quebrou.
+            reg = (await c.get("/api/regionais")).json()[0]["id"]
+            U = (await c.get(f"/api/regionais/{reg}/unidades")).json()[0]["id"]
+            SUB = next(iter((await c.get(f"/api/unidades/{U}/sub-bacias")).json()["subs"]))
+            print(f"  (unidade {U}, sub-bacia {SUB})")
             # 1. ida e volta pura: o que veio do GET volta inteiro pelo PUT
-            sb = (await c.get("/api/unidades/u1/sub-bacias")).json()["subs"]["b38_1"]
+            sb = (await c.get(f"/api/unidades/{U}/sub-bacias")).json()["subs"][SUB]
             corpo = {k: sb[k] for k in ("db","params","obrasOverride","versao")}
             corpo["overrides"] = []
-            r = await c.put("/api/unidades/u1/sub-bacias/b38_1", json=corpo)
+            r = await c.put(f"/api/unidades/{U}/sub-bacias/{SUB}", json=corpo)
             ck("a ficha lida pode ser salva de volta", r.status_code==200, f"{r.status_code} {r.text[:110]}")
 
             # 2. e com uma edicao, que e o caso real
-            sb = (await c.get("/api/unidades/u1/sub-bacias")).json()["subs"]["b38_1"]
+            sb = (await c.get(f"/api/unidades/{U}/sub-bacias")).json()["subs"][SUB]
             corpo = {k: sb[k] for k in ("db","params","obrasOverride","versao")}
             corpo["params"] = {**corpo["params"], "preco": "2.500,00"}
             corpo["overrides"] = []
-            r = await c.put("/api/unidades/u1/sub-bacias/b38_1", json=corpo)
+            r = await c.put(f"/api/unidades/{U}/sub-bacias/{SUB}", json=corpo)
             ck("editar um campo e salvar funciona", r.status_code==200, f"{r.status_code} {r.text[:110]}")
 
-            sb = (await c.get("/api/unidades/u1/sub-bacias")).json()["subs"]["b38_1"]
+            sb = (await c.get(f"/api/unidades/{U}/sub-bacias")).json()["subs"][SUB]
             ck("o valor editado voltou em pt-BR", sb["params"]["preco"]=="2.500", repr(sb["params"]["preco"]))
             # A heuristica "tem ponto sem virgula" nao serve: `2.738` tanto pode
             # ser str(float) quanto pt-BR para 2738 — as duas grafias colidem. O
@@ -55,33 +62,33 @@ async def main():
 
             # relê a versão: o PUT anterior mudou a ficha, e reusar a versão velha
             # daria 409 antes de o formato ser sequer olhado.
-            atual = (await c.get("/api/unidades/u1/sub-bacias")).json()["subs"]["b38_1"]
+            atual = (await c.get(f"/api/unidades/{U}/sub-bacias")).json()["subs"][SUB]
             corpo = {k: atual[k] for k in ("db","params","obrasOverride","versao")}
             corpo["overrides"] = []
             ruim = {**corpo, "params": {**corpo["params"], "preco": "1.234 hab"}}
-            r = await c.put("/api/unidades/u1/sub-bacias/b38_1", json=ruim)
+            r = await c.put(f"/api/unidades/{U}/sub-bacias/{SUB}", json=ruim)
             ck("numero com unidade colada da 422", r.status_code==422, f"{r.status_code} {r.text[:90]}")
 
-            sb = (await c.get("/api/unidades/u1/sub-bacias")).json()["subs"]["b38_1"]
+            sb = (await c.get(f"/api/unidades/{U}/sub-bacias")).json()["subs"][SUB]
             base = {k: sb[k] for k in ("db","params","obrasOverride","versao")}
             base["overrides"] = []
             neg = {**base, "params": {**base["params"], "vaz": "-10"}}
-            r = await c.put("/api/unidades/u1/sub-bacias/b38_1", json=neg)
+            r = await c.put(f"/api/unidades/{U}/sub-bacias/{SUB}", json=neg)
             ck("vazao negativa e recusada", r.status_code==422, f"{r.status_code} {r.text[:90]}")
 
             obra_ruim = {**base, "obrasOverride": {**base["obrasOverride"], "0": {**base["obrasOverride"].get("0",{}), "qtd":"abc"}}}
-            r = await c.put("/api/unidades/u1/sub-bacias/b38_1", json=obra_ruim)
+            r = await c.put(f"/api/unidades/{U}/sub-bacias/{SUB}", json=obra_ruim)
             ck("quantidade de obra invalida da 422, nao 500", r.status_code==422, f"{r.status_code} {r.text[:90]}")
 
             # 4. JSON invalido e mensagem legivel
-            r = await c.post("/api/runs", content=b'{"unidade_id": "u1"', headers={"content-type":"application/json"})
+            r = await c.post("/api/runs", content=b'{"unidade_id": "x"', headers={"content-type":"application/json"})
             ck("JSON truncado tem mensagem legivel",
                r.status_code==422 and "JSON válido" in r.text, f"{r.status_code} {r.text[:80]}")
 
             r = await c.get("/api/unidades/nao_existe")
             ck("404 de unidade concorda em genero", "encontrada" in r.text, r.text[:60])
 
-            r = await c.post("/api/runs", json={"unidade_id":"u1","nome":"x"*300,"orcamento":{"2026":1e6}})
+            r = await c.post("/api/runs", json={"unidade_id":U,"nome":"x"*300,"orcamento":{"2026":1e6}})
             ck("nome absurdamente longo e recusado", r.status_code==422, f"{r.status_code} {r.text[:70]}")
     print("\nFALHAS:", f or "nenhuma"); raise SystemExit(1 if f else 0)
 asyncio.run(main())
