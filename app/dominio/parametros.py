@@ -140,6 +140,15 @@ def montar_params(corpo: dict[str, Any], unidade_id: str, usuario: str) -> dict[
     elif por_ano:
         params["ORCAMENTO"] = por_ano
     else:
+        # Redistribuir so faz sentido sobre um CRONOGRAMA: e ele que tem uma soma a
+        # travar e picos a achatar. Com valor anual unico todo ano ja tem o mesmo
+        # teto, entao a opcao nao teria efeito — e ignorar em silencio faria a tela
+        # oferecer um controle que nao muda nada.
+        if corpo.get("redistribuir_orcamento") or corpo.get("teto_execucao_anual"):
+            raise ParametrosInvalidos(
+                "Redistribuir o orçamento só vale para o cronograma por ano. "
+                "Com valor anual único, todo ano já tem o mesmo teto."
+            )
         params["ORCAMENTO"] = float(corpo["orcamento_anual"])
         params["HORIZONTE_CAPEX"] = int(corpo["horizonte_capex"])
 

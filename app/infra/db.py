@@ -11,6 +11,7 @@ conexao por request custa mais que a propria consulta na maioria dos endpoints
 deste servico.
 """
 
+import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -34,8 +35,27 @@ async def abrir_pool() -> asyncpg.Pool:
             # tela nao deve esperar por eles indefinidamente e deixar o usuario com
             # a roda girando sem explicacao.
             command_timeout=30,
+            init=_registrar_json,
         )
     return _pool
+
+
+async def _registrar_json(con: asyncpg.Connection) -> None:
+    """`jsonb` chega como dict, e nao como texto.
+
+    Sem isto o asyncpg devolve `json`/`jsonb` como `str` — e o codigo que faz
+    `linha["params_extra"].get("BASE_RECEITA")` estoura com AttributeError na
+    primeira rodada publicada. O erro so aparece em runtime, contra banco real, e
+    e por isso que passou batido: nenhum teste desta suite abre conexao.
+
+    Vale para TODAS as colunas jsonb do esquema (`params_extra`, `peso_cidade`,
+    `orcamento_por_ano`, `capex_componentes`, `detalhe`), e nao so para a que
+    doeu primeiro.
+    """
+    for tipo in ("json", "jsonb"):
+        await con.set_type_codec(
+            tipo, encoder=json.dumps, decoder=json.loads, schema="pg_catalog"
+        )
 
 
 async def fechar_pool() -> None:

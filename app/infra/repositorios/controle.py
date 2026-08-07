@@ -22,7 +22,8 @@ def _i() -> str:
 
 async def unidade(unidade_id: str) -> dict[str, Any] | None:
     return await db.buscar_um(
-        f"SELECT unidade_id, nome FROM {_i()}.unidade_regional WHERE unidade_id = $1",
+        f"""SELECT unidade_id, unidade_name AS nome
+             FROM {_i()}.unidade_regional WHERE unidade_id = $1""",
         unidade_id,
     )
 
@@ -72,17 +73,18 @@ async def abrir_rodada(
             run_id,
             Status.PENDENTE.value,
         )
-        # `rotulo` e o nome que o usuario deu a rodada. Ele vive em `otim_meta`, que
-        # so existe depois da publicacao — entao viaja dentro do params, de onde o
-        # job o repassa. Guardado aqui tambem seria uma segunda verdade.
-        if rotulo:
-            await con.execute(
-                f"""UPDATE {_c()}.run_request
-                       SET params = params || jsonb_build_object('ROTULO', $2::text)
-                     WHERE run_id = $1""",
-                run_id,
-                rotulo,
-            )
+        # O `rotulo` (o nome que o usuario deu a rodada) NAO entra no `params`.
+        #
+        # Ele viajava ali ate a revisao mostrar o estrago: o job valida `params`
+        # contra `MAPA_PARAMS` + `CHAVES_DO_JOB` e levanta ValueError em chave
+        # desconhecida — `ROTULO` nao esta em nenhum dos dois. Ou seja, TODA rodada
+        # com nome morria em ERRO, e a mensagem falaria de `params`, sem relacao
+        # visivel com o campo "nome" que o usuario preencheu.
+        #
+        # Enquanto `controle.run_request` nao ganhar a coluna `rotulo` (esta na
+        # lista de migracoes do README), o nome se perde no caminho: `otim_meta.rotulo`
+        # sai vazio e o historico mostra a rodada sem nome. Perder o nome e ruim;
+        # perder a rodada inteira e pior.
 
 
 async def status(run_id: str) -> dict[str, Any] | None:
@@ -96,14 +98,15 @@ async def status(run_id: str) -> dict[str, Any] | None:
 
 
 async def marcar(run_id: str, novo: Status, erro: str | None = None) -> None:
-    await db.buscar(
-        f"""INSERT INTO {_c()}.run_status (run_id, status, erro, atualizado_em)
-            VALUES ($1, $2, $3, now())
-            ON CONFLICT (run_id) DO UPDATE
-              SET status = EXCLUDED.status,
-                  erro = EXCLUDED.erro,
-                  atualizado_em = now()""",
-        run_id,
-        novo.value,
-        erro,
-    )
+    async with db.pool().acquire() as con:
+        await con.execute(
+            f"""INSERT INTO {_c()}.run_status (run_id, status, erro, atualizado_em)
+                VALUES ($1, $2, $3, now())
+                ON CONFLICT (run_id) DO UPDATE
+                  SET status = EXCLUDED.status,
+                      erro = EXCLUDED.erro,
+                      atualizado_em = now()""",
+            run_id,
+            novo.value,
+            erro,
+        )

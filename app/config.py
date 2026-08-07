@@ -10,9 +10,10 @@ para o lugar errado e ninguem percebe ate o dado aparecer no banco errado. Sem
 valor, o processo nao sobe.
 """
 
+import re
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -53,6 +54,20 @@ class Config(BaseSettings):
     redis_url: str = ""
     ambiente: str = "desenvolvimento"
     origens_cors: list[str] = []
+
+    @field_validator("schema_input", "schema_controle", "schema_resultado")
+    @classmethod
+    def _identificador(cls, v: str) -> str:
+        """Os schemas entram no SQL por f-string — nao da para parametriza-los.
+
+        Nao e explorável por HTTP (nenhum vem do usuario), mas um valor vindo de
+        ConfigMap errado quebraria toda consulta com erro de sintaxe, e um valor
+        hostil executaria SQL sob as credenciais do servico. Recusar no startup e
+        barato e fecha a porta antes de ela existir.
+        """
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", v):
+            raise ValueError(f"nome de schema invalido: {v!r}")
+        return v
 
     @property
     def exige_auth(self) -> bool:

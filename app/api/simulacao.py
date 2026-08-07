@@ -77,7 +77,16 @@ async def criar(usuario: Usuario, corpo: Annotated[dict[str, Any], Body()]) -> d
         usuario=usuario,
         rotulo=corpo.get("nome"),
     )
-    await fila.pedir_execucao(run, unidade_id=unidade_id, usuario=usuario)
+    try:
+        await fila.pedir_execucao(run, unidade_id=unidade_id, usuario=usuario)
+    except fila.FilaIndisponivel as e:
+        # A rodada JA esta gravada. Deixa-la em PENDENTE seria uma armadilha: o
+        # `/reexecutar` recusa PENDENTE por considera-la em voo, entao ela ficaria
+        # parada para sempre com a tela dizendo que da para tentar de novo.
+        # Marcada como ERRO, ela sai do "em voo", aparece no historico com a causa
+        # e o botao de reexecutar volta a funcionar.
+        await controle.marcar(run, st.Status.ERRO, erro=str(e))
+        raise
     return {"runId": run, "status": st.Status.PENDENTE}
 
 
@@ -113,7 +122,11 @@ async def reexecutar(run_id: str, usuario: Usuario) -> dict[str, str]:
         raise HTTPException(status.HTTP_409_CONFLICT, motivo)
 
     await controle.marcar(run_id, st.Status.PENDENTE, erro=None)
-    await fila.pedir_execucao(run_id, unidade_id=linha["unidade"], usuario=usuario)
+    try:
+        await fila.pedir_execucao(run_id, unidade_id=linha["unidade"], usuario=usuario)
+    except fila.FilaIndisponivel as e:
+        await controle.marcar(run_id, st.Status.ERRO, erro=str(e))
+        raise
     return {"runId": run_id, "status": st.Status.PENDENTE}
 
 

@@ -52,6 +52,22 @@ def _pct(parte: float | None, total: float | None) -> float | None:
     return round(parte / total * 100, 1)
 
 
+def _escala_pct(fracao: float | None) -> float | None:
+    """Fracao do motor (0.4) -> percentual do contrato (40.0). None continua None."""
+    return None if fracao is None else round(fracao * 100, 1)
+
+
+def _realizado_pct(cobertura: float | None, alvo_lig: float | None, pct_alvo: float | None) -> float | None:
+    """Quanto se cobriu, na mesma escala do alvo.
+
+    None quando a conta nao existe (cidade sem alvo de ligacoes), e nao 0 — que
+    afirmaria cobertura nula onde nao ha meta com que comparar.
+    """
+    if cobertura is None or not alvo_lig or pct_alvo is None:
+        return None
+    return round(cobertura / alvo_lig * pct_alvo * 100, 1)
+
+
 def _situacao(linha: dict[str, Any]) -> str:
     """`construida | nao-construida | terceiro | sem-obra`.
 
@@ -341,10 +357,14 @@ async def cidade(run_id: str, cidade_id: str) -> dict[str, Any] | None:
         "metas": [
             {
                 "ano": m["ano"],
-                "alvoPct": m["pct_alvo"],
-                "realizadoPct": _pct(m["cobertura_ligacoes"], m["alvo_ligacoes"])
-                if m["pct_alvo"] is None
-                else round((m["cobertura_ligacoes"] or 0) / (m["alvo_ligacoes"] or 1) * (m["pct_alvo"] or 0), 1),
+                # `pct_alvo` vem do motor como FRACAO (0.4); o contrato pede
+                # percentual (40.0) — campos `Pct` vao de 0 a 100. E o realizado e
+                # o alvo reescalado pela razao entre o que se cobriu e o que se
+                # devia cobrir: 524 de 400 ligacoes com alvo de 40% da 52,4%.
+                "alvoPct": _escala_pct(m["pct_alvo"]),
+                "realizadoPct": _realizado_pct(
+                    m["cobertura_ligacoes"], m["alvo_ligacoes"], m["pct_alvo"]
+                ),
                 "atingida": m["atingida"],
                 "dentroDaJanela": m["dentro_janela_capex"],
             }

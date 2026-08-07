@@ -29,11 +29,12 @@ async def historico(
                    h.anos_capex, h.orcamento_total, h.vpl, h.capex_total,
                    h.obras_construidas, h.obras_total, h.cobertura_final_pct,
                    h.metas_total, h.metas_nao_atingidas, h.tempo_s,
+                   m.receita_total, m.opex_total,
                    m.regional, m.base_receita_param, m.usar_cts, m.foco_cobertura,
                    m.incluir_industrial
               FROM {_p()}.otim_vw_historico h
               JOIN LATERAL (
-                   SELECT regional,
+                   SELECT regional, receita_total, opex_total,
                           params_extra->>'BASE_RECEITA'      AS base_receita_param,
                           (params_extra->>'USAR_CTS')::bool  AS usar_cts,
                           (params_extra->>'FOCO_COBERTURA')::float AS foco_cobertura,
@@ -56,7 +57,8 @@ def _resumo(l: dict[str, Any]) -> dict[str, Any]:
     A tela usa a ausencia para dizer "não houve plano", e um bloco de zeros ali
     seria lido como um plano que nao construiu nada, que e outra coisa.
     """
-    inviavel = (l.get("milp_status") or "").upper().startswith("SEM SOLUCAO")
+    situacao = _status_do_solver(l.get("milp_status"))
+    inviavel = situacao == "INFEASIBLE"
     resumo: dict[str, Any] = {
         "runId": l["run_id"],
         "nome": l.get("rotulo"),
@@ -65,7 +67,7 @@ def _resumo(l: dict[str, Any]) -> dict[str, Any]:
         "dataHora": l["data_hora"].isoformat() if l.get("data_hora") else None,
         "autor": l.get("usuario"),
         "duracaoS": l.get("tempo_s"),
-        "status": "INFEASIBLE" if inviavel else "OPTIMAL",
+        "status": situacao,
         "favorita": False,
         "parametros": {
             "baseReceita": l.get("base_receita_param"),
@@ -87,8 +89,29 @@ def _resumo(l: dict[str, Any]) -> dict[str, Any]:
             "coberturaFimPct": l.get("cobertura_final_pct"),
             "metasAtingidas": atingidas,
             "metasTotal": l.get("metas_total"),
+            # EBITDA nominal do plano: receita operacional menos OPEX. Sai do
+            # proprio `otim_meta` para nao precisar somar `otim_ano` por rodada
+            # numa listagem que pode ter centenas de linhas.
+            "ebitdaTotal": (l.get("receita_total") or 0) - (l.get("opex_total") or 0),
         }
     return resumo
+
+
+def _status_do_solver(milp: str | None) -> str:
+    """`OTIMO` / `VIAVEL(...)` / `SEM SOLUCAO(...)`  ->  o vocabulario do front.
+
+    O CP-SAT deste pacote NUNCA devolve 'OPTIMAL'/'FEASIBLE': ele devolve
+    `OTIMO`, `OTIMO | OBRIG 3/3`, `VIAVEL(limite de tempo)` e `SEM SOLUCAO(3)`.
+    Tratar tudo que nao e "sem solucao" como OPTIMAL apagava a distincao que mais
+    importa ao usuario — uma rodada que parou no limite de tempo tem plano VIAVEL,
+    e nao otimo, e a tela precisa dizer isso antes de alguem aprovar o numero.
+    """
+    s = (milp or "").upper()
+    if s.startswith("SEM SOLUCAO"):
+        return "INFEASIBLE"
+    if s.startswith("VIAVEL"):
+        return "FEASIBLE"
+    return "OPTIMAL"
 
 
 def _pct(parte: float | None, total: float | None) -> float | None:
@@ -111,10 +134,26 @@ async def meta(run_id: str) -> dict[str, Any] | None:
         "unidadeNome": linha.get("regional"),
         "dataHora": linha["data_hora"].isoformat() if linha.get("data_hora") else None,
         "autor": linha.get("usuario"),
-        "status": "INFEASIBLE"
-        if (linha.get("milp_status") or "").upper().startswith("SEM SOLUCAO")
-        else "OPTIMAL",
+        "status": _status_do_solver(linha.get("milp_status")),
         "statusTexto": linha.get("milp_status"),
+        # `kpis` alimenta a faixa de numeros do nivel global. O contrato exige o
+        # bloco inteiro; faltando um campo, a tela mostra "—" onde ha dado.
+        "kpis": {
+            "vpl": linha.get("vpl"),
+            "capexTotal": linha.get("capex_total"),
+            "opexTotal": linha.get("opex_total"),
+            "receitaTotal": linha.get("receita_total"),
+            "obrasConstruidas": linha.get("obras_construidas"),
+            "obrasTotal": linha.get("obras_total"),
+            "obrigatoriasConstruidas": linha.get("obrig_construidas"),
+            "obrigatoriasTotal": linha.get("obrig_total"),
+            "subbaciasFaturando": linha.get("subbacias_faturando"),
+            "subbaciasTotal": linha.get("subbacias_total"),
+            "coberturaFimPct": linha.get("cobertura_final_pct"),
+            "metasAtingidas": (linha.get("metas_total") or 0)
+            - (linha.get("metas_nao_atingidas") or 0),
+            "metasTotal": linha.get("metas_total"),
+        },
         "parametros": {
             "baseReceita": (linha.get("params_extra") or {}).get("BASE_RECEITA"),
             "usarCts": (linha.get("params_extra") or {}).get("USAR_CTS"),

@@ -88,6 +88,11 @@ Declarado em vez de escondido — cada item tem o motivo e o caminho:
 - **`pendencias_do_cadastro`** devolve 0, o que hoje deixa qualquer rodada passar.
   É a mesma conta que o front faz em `cadastro/domain`, e precisa virar SQL.
 - **Cancelar rodada**: bloqueado por migração (ver abaixo).
+- **Nome da rodada**: perdido até a coluna `rotulo` existir (ver abaixo).
+- **`progresso` do status** é sempre 0: `controle.run_status` não tem essa coluna.
+  O modal do front nomeia a etapa a partir dele, então hoje ele salta de 0 a 100.
+- **Nada disto foi executado contra um Postgres real.** As consultas foram escritas
+  contra o DDL e conferidas coluna a coluna, mas isso é leitura, não teste.
 
 ## Migrações que este serviço precisa
 
@@ -97,7 +102,12 @@ Duas, no banco do pacote de produção:
    `PENDENTE, RODANDO, SUCESSO, FALHOU_QUALIDADE, ERRO`, mas o `CONTRATO.md` §4.3 e
    a tela de simulação usam `CANCELADA`. Sem isso `POST /runs/{id}/cancelar` não
    pode existir sem mentir para o usuário.
-2. **`reprocessa_de` em `controle.run_request`.** Decidido junto da regra de
+2. **`rotulo` em `controle.run_request`.** O nome que o usuário dá à rodada não
+   tem onde morar até a publicação. Ele viajava dentro do `params`, e a revisão
+   mostrou o estrago: o job valida `params` contra `MAPA_PARAMS` + `CHAVES_DO_JOB`
+   e `ROTULO` não está em nenhum dos dois — **toda rodada com nome morreria em
+   `ERRO`**. Hoje o nome se perde no caminho; a alternativa era perder a rodada.
+3. **`reprocessa_de` em `controle.run_request`.** Decidido junto da regra de
    imutabilidade do `run_id` (`CONTRATO.md` §2.1): a reexecução depois de um
    `SUCESSO` gera id novo, e sem esse campo o histórico vira uma lista de rodadas
    soltas, sem como ligar a rodada à sua origem.
