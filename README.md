@@ -124,9 +124,8 @@ Sobra o que faz sentido: `GET /cts` e `PUT /cts/{id}` — ler e editar a ficha d
 CTS que o cadastro já tem. Criar ou remover CTS é mudança de topologia, e topologia
 vem do cadastro estrutural.
 
-**Pendente:** a tela ainda oferece "Criar CTS" e "Remover CTS"
-(`GrupoCts.tsx`), e agora esses botões batem em endpoint que não existe. Remover
-os dois da tela, e os testes que os exercitam, é o próximo passo.
+A tela e o `DEPLOY.md` §3 já acompanharam: os dois botões saíram, junto dos hooks e
+dos cinco testes que exercitavam a funcionalidade retirada.
 
 **Também pendente:** `GET /cts` poderia denunciar as inconsistências que essa
 modelagem torna possíveis — ficha sem nó, nó `cts_*` sem ficha, par apontando para
