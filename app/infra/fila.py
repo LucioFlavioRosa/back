@@ -25,6 +25,7 @@ PENDENTE e visivel, e da para reenfileirar.
 
 import json
 import logging
+import uuid
 
 from azure.servicebus import ServiceBusMessage
 from azure.servicebus.aio import ServiceBusClient
@@ -54,7 +55,9 @@ class FilaIndisponivel(RuntimeError):
     do erro precisa dizer isso ao usuario."""
 
 
-async def pedir_execucao(run_id: str, unidade_id: str, usuario: str) -> None:
+async def pedir_execucao(
+    run_id: str, unidade_id: str, usuario: str, *, reenvio: bool = False
+) -> None:
     """Publica o pedido. O corpo carrega o minimo: quem consome busca o resto na
     `run_request`, que e a fonte de verdade — mensagem com copia dos parametros
     envelheceria em relacao ao banco."""
@@ -67,12 +70,24 @@ async def pedir_execucao(run_id: str, unidade_id: str, usuario: str) -> None:
         {"run_id": run_id, "unidade_id": unidade_id, "solicitado_por": usuario},
         ensure_ascii=False,
     )
+    # A deduplicacao e pelo `run_id` — mas SO no primeiro envio.
+    #
+    # A fila tem janela de deteccao de duplicata. Com `message_id=run_id` fixo, um
+    # retry deliberado dentro da janela era DESCARTADO EM SILENCIO: a API respondia
+    # 202, o status voltava para PENDENTE e nenhum job rodava. A rodada ficava
+    # parada para sempre, e o unico sinal era a ausencia de sinal.
+    #
+    # So apareceu quando o emulador do Service Bus entrou no compose — sem fila de
+    # verdade, o caminho feliz do disparo nunca tinha rodado.
+    #
+    # Entao: primeiro envio deduplica pelo `run_id` (protege contra o retry de rede
+    # do proprio SDK virar duas execucoes); reenvio pedido por gente carrega chave
+    # propria. Duas execucoes do mesmo `run_id` sao seguras — a publicacao do job e
+    # idempotente por construcao —, ao passo que uma rodada que nunca executa nao e.
     msg = ServiceBusMessage(
         corpo,
         content_type="application/json",
-        # Deduplicacao pelo run_id: um retry de rede do proprio backend nao pode
-        # virar duas execucoes da mesma rodada no cluster.
-        message_id=run_id,
+        message_id=f"{run_id}:{uuid.uuid4().hex[:8]}" if reenvio else run_id,
         subject="executar_simulacao",
     )
     try:

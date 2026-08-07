@@ -1,5 +1,16 @@
 # Ambiente de desenvolvimento
 
+A pilha do `docker-compose` espelha os serviços Azure do desenho, em imagem local:
+
+| Azure | Local |
+|---|---|
+| Database for PostgreSQL | `postgres:16-alpine` |
+| Service Bus | emulador oficial (+ SQL Edge, que ele exige) |
+| Blob Storage | Azurite |
+| Cache for Redis | `redis:7-alpine` |
+| Entra ID | **sem emulador** — e falsificar identidade em dev é como se aceita token forjado em produção |
+
+
 O que existe aqui só serve para provar que o serviço fala com um Postgres de
 verdade. Três dos erros mais caros deste repositório **só apareceram assim** — nome
 de coluna errado, `jsonb` chegando como texto, e um handler de erro que estourava
@@ -20,6 +31,7 @@ python dev/smoke_seguranca.py # os dez ataques que ja funcionaram
 docker compose exec -T db psql -U otim -d otimizador < dev/seed_u2.sql
 python dev/smoke_recorte.py   # com DUAS unidades: nada vaza de uma para a outra
 python dev/smoke_pendencias.py # a conta que libera ou trava a simulacao
+python dev/smoke_fila.py       # o disparo inteiro, com Service Bus de verdade
 ```
 
 `seed.sql` é o **mínimo** que faz os 23 endpoints responderem: uma unidade, uma

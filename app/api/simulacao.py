@@ -128,7 +128,9 @@ async def reexecutar(run_id: str, usuario: Usuario) -> dict[str, str]:
 
     await controle.marcar(run_id, st.Status.PENDENTE, erro=None)
     try:
-        await fila.pedir_execucao(run_id, unidade_id=linha["unidade"], usuario=usuario)
+        await fila.pedir_execucao(
+            run_id, unidade_id=linha["unidade"], usuario=usuario, reenvio=True
+        )
     except fila.FilaIndisponivel as e:
         await controle.marcar(run_id, st.Status.ERRO, erro=str(e))
         raise
