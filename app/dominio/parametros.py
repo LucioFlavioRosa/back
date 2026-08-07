@@ -1,0 +1,199 @@
+"""Traduz o corpo do `POST /runs` (front) para o `params` do `controle.run_request`.
+
+Esta e a peca central do disparo, e ela existe porque as duas pontas falam idiomas
+diferentes:
+
+    front  -> snake_case, vocabulario da TELA        (CONTRATO.md 4.2)
+    job    -> MAIUSCULAS, vocabulario do NOTEBOOK    (job_databricks.MAPA_PARAMS)
+
+E o job e ESTRITO: `_params_para_ler_banco` levanta ValueError em chave
+desconhecida, de proposito — um `orcamento` minusculo passando batido faria a
+rodada sair sem teto de CAPEX e ninguem notaria. Entao mandar chave a mais aqui
+nao e desleixo, e uma rodada que morre em producao.
+
+------------------------------------------------------------------------------
+A tradução que NENHUMA das duas pontas faz
+------------------------------------------------------------------------------
+`redistribuir_orcamento` e `teto_execucao_anual` estao no contrato do front, mas
+NAO existem no motor: conferi a assinatura de `ler_banco` e nenhum dos dois esta
+la. Eles sao PRE-PROCESSAMENTO, feito na celula 3 do notebook
+(`Otimizador_CAPEX_v61_dashboard.ipynb`), que e a fonte de verdade deste fluxo:
+
+    if isinstance(ORCAMENTO, dict) and REDISTRIBUIR_ORCAMENTO:
+        _total = sum(ORCAMENTO.values())
+        _teto  = TETO_EXECUCAO_ANUAL or max(ORCAMENTO.values())
+        _orc_arg = {ano: _teto for ano in ORCAMENTO}
+        _orc_total = _total
+    else:
+        _orc_arg, _orc_total = ORCAMENTO, None
+
+Ou seja: com redistribuicao ligada, cada ano recebe o MESMO teto (o pico, ou o que
+o usuario informou) e a SOMA da janela fica travada em `ORCAMENTO_TOTAL`. E assim
+que "deixe o otimizador escolher em que ano gastar" e expresso num motor que so
+entende teto por ano.
+
+Se isto ficasse no notebook, a tela ofereceria dois controles que o job receberia
+como chave desconhecida — e a rodada iria a ERRO com uma mensagem sobre `params`,
+sem relacao visivel com o botao que o usuario apertou.
+"""
+
+from typing import Any
+
+# Espelha `job_databricks.MAPA_PARAMS` + `CHAVES_DO_JOB`. Se o job ganhar um
+# parametro novo e este conjunto nao acompanhar, o backend simplesmente nao
+# consegue envia-lo — o que e melhor que enviar errado.
+CHAVES_ACEITAS = frozenset(
+    {
+        "ORCAMENTO",
+        "ORCAMENTO_TOTAL",
+        "HORIZONTE_CAPEX",
+        "ETE_FASEADA",
+        "ETE_FIXO",
+        "METAS_COBERTURA",
+        "PESO_COBERTURA",
+        "FOCO_COBERTURA",
+        "PENALIDADE_COBERTURA",
+        "PESO_CIDADE",
+        "DATA_INICIO",
+        "REGIONAL",
+        "UNIDADE",
+        "CURVA_ADOCAO",
+        "BASE_RECEITA",
+        "USAR_CTS",
+        "ANOS_EXTRA_CONCLUSAO",
+        "INCLUIR_INDUSTRIAL",
+        # CHAVES_DO_JOB — nao vao para o `ler_banco`, ficam com o job
+        "USUARIO",
+        "MAX_TIME_S",
+        "WORKERS",
+    }
+)
+
+
+class ParametrosInvalidos(ValueError):
+    """Recusa que o usuario consegue entender — vira 422 com a mensagem no corpo."""
+
+
+def _orcamento_por_ano(corpo: dict[str, Any]) -> dict[int, float]:
+    """O cronograma anual, venha ele em qual dos dois modos vier.
+
+    O contrato do front (4.2) diz que os dois blocos sao exclusivos: ou
+    `orcamento` (cronograma por ano), ou `orcamento_anual` + `horizonte_capex`.
+    Aceitar os dois juntos seria escolher um em silencio.
+    """
+    cronograma = corpo.get("orcamento")
+    anual = corpo.get("orcamento_anual")
+
+    if cronograma and anual:
+        raise ParametrosInvalidos(
+            "Informe o cronograma por ano OU um valor anual único, nunca os dois."
+        )
+
+    if cronograma:
+        # As chaves chegam como string no JSON ("2026"); o motor so reconhece
+        # cronograma por ano se elas forem int. Sem esta conversao, o valor cai no
+        # ramo "orcamento por unidade", a unidade nao e encontrada e o teto vira
+        # infinito — rodada sem restricao anual, que estoura no CP-SAT.
+        try:
+            por_ano = {int(ano): float(v) for ano, v in cronograma.items()}
+        except (TypeError, ValueError) as e:
+            raise ParametrosInvalidos(f"Cronograma de orçamento inválido: {e}") from e
+        if not por_ano:
+            raise ParametrosInvalidos("O cronograma de orçamento está vazio.")
+        return por_ano
+
+    if anual:
+        horizonte = corpo.get("horizonte_capex")
+        if not horizonte:
+            raise ParametrosInvalidos(
+                "Com valor anual único é preciso informar o horizonte de CAPEX."
+            )
+        # O ano-base sai do cadastro, do lado do motor. Aqui o que importa e o
+        # NUMERO de anos: o job repassa `horizonte_capex` e o motor monta a janela.
+        return {}
+
+    raise ParametrosInvalidos("A rodada precisa de teto anual: informe o orçamento.")
+
+
+def montar_params(corpo: dict[str, Any], unidade_id: str, usuario: str) -> dict[str, Any]:
+    """O `params` que vai para `controle.run_request`, pronto e validado.
+
+    `usuario` vem do token, nunca do corpo: e ele que amarra a rodada a uma pessoa
+    no historico, e aceita-lo do cliente seria aceitar que qualquer um assinasse
+    a simulacao de outro.
+    """
+    params: dict[str, Any] = {"UNIDADE": unidade_id, "USUARIO": usuario}
+
+    por_ano = _orcamento_por_ano(corpo)
+
+    if por_ano and corpo.get("redistribuir_orcamento"):
+        # Pre-processamento da celula 3 do notebook — ver o docstring do modulo.
+        total = sum(por_ano.values())
+        teto = corpo.get("teto_execucao_anual") or max(por_ano.values())
+        if teto <= 0:
+            raise ParametrosInvalidos(
+                "O teto de execução anual precisa ser maior que zero. "
+                "Deixe em branco para usar o pico do cronograma."
+            )
+        params["ORCAMENTO"] = {ano: float(teto) for ano in por_ano}
+        params["ORCAMENTO_TOTAL"] = total
+    elif por_ano:
+        params["ORCAMENTO"] = por_ano
+    else:
+        params["ORCAMENTO"] = float(corpo["orcamento_anual"])
+        params["HORIZONTE_CAPEX"] = int(corpo["horizonte_capex"])
+
+    # Repasse direto: nome do front -> nome do job. Chave ausente no corpo NAO
+    # entra no params, para o job usar o default do `ler_banco` — se o backend
+    # inventasse default proprio, o mesmo pedido daria planos diferentes aqui e no
+    # notebook, que foi exatamente o bug mais caro da revisao do pacote.
+    DIRETO = {
+        "foco_cobertura": "FOCO_COBERTURA",
+        "penalidade_cobertura": "PENALIDADE_COBERTURA",
+        "peso_cidade": "PESO_CIDADE",
+        "base_receita": "BASE_RECEITA",
+        "curva_adocao": "CURVA_ADOCAO",
+        "usar_cts": "USAR_CTS",
+        "incluir_industrial": "INCLUIR_INDUSTRIAL",
+        "ete_faseada": "ETE_FASEADA",
+        "ete_fixo": "ETE_FIXO",
+        "anos_extra_conclusao": "ANOS_EXTRA_CONCLUSAO",
+        "data_inicio": "DATA_INICIO",
+        "max_time_s": "MAX_TIME_S",
+        "workers": "WORKERS",
+    }
+    for origem, destino in DIRETO.items():
+        if origem in corpo:
+            params[destino] = corpo[origem]
+
+    # `metas_cobertura: null` NAO e ausencia — e a escolha de ignorar as metas
+    # nesta rodada. Por isso entra mesmo valendo None, e por isso o `in` acima
+    # nao serve para ela sozinha.
+    if "metas_cobertura" in corpo:
+        valor = corpo["metas_cobertura"]
+        params["METAS_COBERTURA"] = None if valor in (None, "cadastro") else valor
+
+    _validar(params)
+    return params
+
+
+def _validar(params: dict[str, Any]) -> None:
+    desconhecidas = sorted(set(params) - CHAVES_ACEITAS)
+    if desconhecidas:
+        # Nao chega ao usuario: e erro de programacao aqui dentro, e o job
+        # levantaria o mesmo depois. Falhar antes de gravar poupa uma rodada morta.
+        raise ParametrosInvalidos(
+            f"params com chaves que o job recusaria: {desconhecidas}. "
+            f"Aceitas: {sorted(CHAVES_ACEITAS)}"
+        )
+
+    foco = params.get("FOCO_COBERTURA")
+    if foco is not None and not 0 <= float(foco) <= 1:
+        raise ParametrosInvalidos("O foco em cobertura precisa estar entre 0 e 1.")
+
+    orc = params.get("ORCAMENTO")
+    if isinstance(orc, dict) and not any(v > 0 for v in orc.values()):
+        raise ParametrosInvalidos(
+            "Pelo menos um ano precisa de verba — uma rodada sem teto anual "
+            "não tem o que otimizar."
+        )
