@@ -524,7 +524,7 @@ async def salvar_contrato(
                   SET data_fim_concessao = EXCLUDED.data_fim_concessao,
                       unidade_cobertura  = EXCLUDED.unidade_cobertura""",
             cidade_id,
-            cidade.get("fimConcessao"),
+            _numerico(cidade.get("fim"), "cidade.fim"),
             cidade.get("cob"),
         )
         if "metas" in corpo:
@@ -534,7 +534,11 @@ async def salvar_contrato(
             await con.executemany(
                 f"""INSERT INTO {_i()}.metas_cobertura (cidade_id, ano, cobertura_pct)
                     VALUES ($1, $2, $3)""",
-                [(cidade_id, m.get("ano"), m.get("pct")) for m in corpo.get("metas") or []],
+                [
+                    (cidade_id, _numerico(m.get("ano"), "meta.ano"),
+                     _numerico(m.get("pct"), "meta.pct"))
+                    for m in corpo.get("metas") or []
+                ],
             )
         if "fator" in corpo:
             await con.execute(
@@ -545,7 +549,12 @@ async def salvar_contrato(
                         (cidade_id, cidade_name, cobertura_pct, paridade)
                     VALUES ($1, $2, $3, $4)""",
                 [
-                    (cidade_id, cidade.get("nome"), f.get("coberturaPct"), f.get("paridade"))
+                    (
+                        cidade_id,
+                        cidade.get("nome"),
+                        _numerico(f.get("cob"), "fator.cob"),
+                        _numerico(f.get("par"), "fator.par"),
+                    )
                     for f in corpo.get("fator") or []
                 ],
             )

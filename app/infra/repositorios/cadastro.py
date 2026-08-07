@@ -61,6 +61,21 @@ def pt_br(v: Any) -> str:
     return f"{v:,.4f}".rstrip("0").rstrip(".").replace(",", "\x00").replace(".", ",").replace("\x00", ".")
 
 
+#: Campos que sao ANO ou CODIGO, e nao quantidade: vao sem separador de milhar.
+#: `pt_br(2049)` daria "2.049", e ano com ponto e erro de leitura na tela — alem de
+#: `obra_obrigatoria_ano` ser codigo (0 = nao obrigatoria, -1 = qualquer ano).
+SEM_SEPARADOR = {"fim", "ano", "anoObrig", "proibAte"}
+
+
+def pt_br_ano(v: Any) -> str:
+    """`2049` -> `"2049"`. Numero que nao e quantidade nao ganha separador."""
+    if v is None:
+        return ""
+    if isinstance(v, (int, float)) and float(v).is_integer():
+        return str(int(v))
+    return pt_br(v)
+
+
 def versao(ficha: Any) -> str:
     """A versão de uma ficha é o HASH do conteúdo que o `GET` devolveu.
 
@@ -203,10 +218,22 @@ async def hierarquia(unidade_id: str) -> dict[str, Any]:
 
 
 async def contrato(unidade_id: str) -> dict[str, Any]:
-    """Grupo 02 — cidades, metas e as faixas de paridade."""
+    """Grupo 02 — cidades, metas e as faixas de paridade.
+
+    Os nomes aqui são CURTOS (`fim`, `cob`, `cid`, `par`) porque são os do front
+    (`Cidade`, `Meta`, `Fator` em `cadastro/domain/contrato.ts`). Eu tinha usado
+    `fimConcessao`, `cidadeId`, `coberturaPct` e `paridade`, e o efeito foi um
+    "Unexpected Application Error" no navegador ao abrir o cadastro: a contagem de
+    pendências chama `c.fim.trim()` direto, sem guarda, e `undefined.trim()`
+    derruba a tela inteira.
+
+    E TUDO vai como string, inclusive ano e percentual — o front trata todo campo
+    de ficha como texto editável e chama `.trim()` neles. Número cru quebraria do
+    mesmo jeito.
+    """
     cidades = await db.buscar(
         f"""SELECT c.cidade_id AS id, c.cidade_name AS nome,
-                   o.data_fim_concessao AS "fimConcessao",
+                   o.data_fim_concessao AS fim,
                    o.unidade_cobertura AS cob
               FROM ({_cidades_cte()}) c
               LEFT JOIN {_i()}.cidade_operacional o USING (cidade_id)
@@ -214,7 +241,7 @@ async def contrato(unidade_id: str) -> dict[str, Any]:
         unidade_id,
     )
     metas = await db.buscar(
-        f"""SELECT m.cidade_id AS "cidadeId", m.ano, m.cobertura_pct AS pct
+        f"""SELECT m.cidade_id AS cid, m.ano, m.cobertura_pct AS pct
               FROM {_i()}.metas_cobertura m
               JOIN ({_cidades_cte()}) c ON c.cidade_id = m.cidade_id
              ORDER BY m.cidade_id, m.ano""",
@@ -224,21 +251,33 @@ async def contrato(unidade_id: str) -> dict[str, Any]:
     # para explicar o degrau de paridade e hoje não recebe, porque o job publica só
     # a paridade realizada. Aqui ela existe, porque é cadastro.
     fator = await db.buscar(
-        f"""SELECT f.cidade_id AS "cidadeId", f.cobertura_pct AS "coberturaPct",
-                   f.paridade
+        f"""SELECT f.cidade_id AS cid, f.cobertura_pct AS cob, f.paridade AS par
               FROM {_i()}.fator_esgoto f
               JOIN ({_cidades_cte()}) c ON c.cidade_id = f.cidade_id
              ORDER BY f.cidade_id, f.cobertura_pct""",
         unidade_id,
     )
+
+    def _txt(linha: dict[str, Any], exceto: tuple[str, ...]) -> dict[str, Any]:
+        return {
+            k: v
+            if k in exceto
+            else (pt_br_ano if k in SEM_SEPARADOR else pt_br)(v)
+            for k, v in linha.items()
+        }
+
+    cidades = [_txt(c, ("id", "nome")) for c in cidades]
+    metas = [_txt(m, ("cid",)) for m in metas]
+    fator = [_txt(f, ("cid",)) for f in fator]
+
     # A ficha de cidade sai de TRÊS tabelas — a versão cobre as três, senão editar
     # uma meta não invalidaria a leitura de quem tem a cidade aberta.
     for c in cidades:
         c["versao"] = versao(
             {
                 "cidade": {k: v for k, v in c.items() if k != "id"},
-                "metas": [m for m in metas if m["cidadeId"] == c["id"]],
-                "fator": [f for f in fator if f["cidadeId"] == c["id"]],
+                "metas": [m for m in metas if m["cid"] == c["id"]],
+                "fator": [f for f in fator if f["cid"] == c["id"]],
             }
         )
     return {"cidades": cidades, "metas": metas, "fator": fator}
@@ -468,7 +507,10 @@ async def _obras_por_ficha(
         if indice is None:
             continue  # componente fora da base: o front nao teria onde encaixar
         # pt-BR, e não `str(...)`: é o formato que a escrita aceita de volta.
-        campos = {destino: pt_br(l[col]) for col, destino in _OBRA_LEITURA.items()}
+        campos = {
+            destino: (pt_br_ano if destino in SEM_SEPARADOR else pt_br)(l[col])
+            for col, destino in _OBRA_LEITURA.items()
+        }
         out.setdefault(l[chave], {})[indice] = campos
     return out
 
