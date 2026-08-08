@@ -25,7 +25,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, status
 
-from app.api.deps import Usuario
+from app.api.deps import Usuario, Quem
 from app.dominio import run_id as rid
 from app.infra.repositorios import niveis, resultado
 
@@ -34,12 +34,29 @@ router = APIRouter(tags=["resultados"])
 
 @router.get("/runs")
 async def historico(
+    quem: Quem,
     unidade: str | None = Query(None),
     usuario: str | None = Query(None),
 ) -> list[dict[str, Any]]:
     """A lista do historico. Sai da view `otim_vw_historico`, que existe justamente
-    para esta tela consumir sem nenhum join."""
-    return await resultado.historico(unidade=unidade, usuario=usuario)
+    para esta tela consumir sem nenhum join.
+
+    O RECORTE NAO PASSA PELA `guarda_de_rota`: ela le parametros de rota, e aqui
+    nao ha nenhum. Fica explicito, entao — e este comentario existe porque a lista
+    foi a unica rota que o guarda nao alcancou, e uma lista que vaza e pior que um
+    detalhe que vaza: entrega o mapa inteiro de uma vez.
+
+    `usuario` da querystring vira FILTRO do proprio ("minhas rodadas"), nunca
+    ampliacao: quem nao e admin ve so as suas, peca o que pedir.
+    """
+    if not quem.admin:
+        usuario = quem.login
+    linhas = await resultado.historico(unidade=unidade, usuario=usuario)
+    if quem.admin or quem.tudo:
+        return linhas
+    # Rodada de unidade fora do escopo nao aparece nem que seja da propria pessoa
+    # — o acesso pode ter sido revogado depois de ela rodar.
+    return [l for l in linhas if l.get("unidadeId") in quem.unidades]
 
 
 @router.get("/runs/{run_id}/meta")

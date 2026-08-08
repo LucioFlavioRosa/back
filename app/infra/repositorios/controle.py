@@ -22,6 +22,53 @@ def _i() -> str:
     return config().schema_input
 
 
+async def acesso(login: str) -> list[dict[str, Any]]:
+    """As concessoes deste login: papel + escopo (regional, unidade, ou total).
+
+    Sem cache de proposito: e busca por indice numa tabela pequena, e cache aqui
+    faria revogacao demorar a valer. Se um dia pesar, o lugar e um TTL curto —
+    nunca cache eterno por processo, que e o jeito de alguem demitido continuar
+    entrando ate o proximo deploy.
+    """
+    return await db.buscar(
+        f"""SELECT papel, regional_id, unidade_id
+              FROM {_c()}.usuario_acesso
+             WHERE lower(login) = lower($1)""",
+        login,
+    )
+
+
+async def unidades_da_regional(regional_id: str) -> list[str]:
+    """Expande uma concessao por regional nas unidades dela."""
+    linhas = await db.buscar(
+        f"SELECT unidade_id FROM {_i()}.unidade_regional WHERE regional_id = $1",
+        regional_id,
+    )
+    return [l["unidade_id"] for l in linhas]
+
+
+async def dono(run_id: str) -> str | None:
+    """Quem pediu esta rodada.
+
+    Olha o PEDIDO primeiro e a publicacao depois. O pedido existe desde o instante
+    do `POST` — inclusive enquanto a rodada esta em voo e ainda nao ha linha em
+    `otim_meta` —, e e ele que registra quem apertou o botao. A publicacao serve de
+    reserva para rodada carregada por script, que nasce publicada sem passar pela
+    fila.
+
+    `None` quando nao ha nem um nem outro: rodada inexistente, ou anterior ao
+    registro de autoria.
+    """
+    linha = await db.buscar_um(
+        f"""SELECT coalesce(r.solicitado_por, m.usuario) AS dono
+              FROM (SELECT $1::text AS run_id) x
+              LEFT JOIN {_c()}.run_request r USING (run_id)
+              LEFT JOIN {config().schema_resultado}.otim_meta m USING (run_id)""",
+        run_id,
+    )
+    return (linha or {}).get("dono")
+
+
 async def unidade(unidade_id: str) -> dict[str, Any] | None:
     return await db.buscar_um(
         f"""SELECT unidade_id, unidade_name AS nome
@@ -143,7 +190,11 @@ async def abrir_rodada(
 
 async def status(run_id: str) -> dict[str, Any] | None:
     return await db.buscar_um(
-        f"""SELECT s.run_id, s.status, s.erro, s.atualizado_em, r.unidade
+        # `progresso` EXIGE a coluna em `run_status` (dev/migracao_progresso.sql).
+        # O front ja tinha barra e nome de etapa por faixa; sem a coluna o
+        # endpoint devolvia 0 sempre e a barra saltava de 0 a 100, prometendo um
+        # acompanhamento que nao existia.
+        f"""SELECT s.run_id, s.status, s.erro, s.progresso, s.atualizado_em, r.unidade
               FROM {_c()}.run_status s
               JOIN {_c()}.run_request r USING (run_id)
              WHERE s.run_id = $1""",

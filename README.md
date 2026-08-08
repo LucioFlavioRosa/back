@@ -96,8 +96,10 @@ Declarado em vez de escondido — cada item tem o motivo e o caminho:
   das rodadas carregadas têm os dois). O que ainda falta é `rotulo` e
   `reprocessa_de` em `controle.run_request`, para o nome sobreviver ao
   reprocessamento — hoje ele só existe depois que a rodada publica.
-- **`progresso` do status** é sempre 0: `controle.run_status` não tem essa coluna.
-  O modal do front nomeia a etapa a partir dele, então hoje ele salta de 0 a 100.
+- **`progresso` do status**: a coluna foi criada (`dev/migracao_progresso.sql`) e o
+  endpoint a serve. **Aplique a migração antes de subir** — sem ela a consulta de
+  status falha. Falta o JOB escrevê-la; `dev/worker.py` já escreve, nas mesmas
+  faixas que o front usa para nomear a etapa.
 - **Nada disto foi executado contra um Postgres real.** As consultas foram escritas
   contra o DDL e conferidas coluna a coluna, mas isso é leitura, não teste.
 

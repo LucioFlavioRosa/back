@@ -12,10 +12,11 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import cadastro, erros, resultados, saude, simulacao
+from app.api.deps import guarda_de_rota
 from app.config import config
 from app.infra import db, fila
 
@@ -65,6 +66,9 @@ if config().origens_cors:
     )
 
 app.include_router(saude.router)  # fora do /api: as probes do k8s nao passam pelo Ingress
-app.include_router(cadastro.router, prefix="/api")
-app.include_router(simulacao.router, prefix="/api")
-app.include_router(resultados.router, prefix="/api")
+# `guarda_de_rota` entra aqui, e nao endpoint a endpoint: e o que faz rota nova
+# com `{unidade_id}` ou `{run_id}` nascer protegida. Ver `app/api/deps.py`.
+_protegido = [Depends(guarda_de_rota)]
+app.include_router(cadastro.router, prefix="/api", dependencies=_protegido)
+app.include_router(simulacao.router, prefix="/api", dependencies=_protegido)
+app.include_router(resultados.router, prefix="/api", dependencies=_protegido)

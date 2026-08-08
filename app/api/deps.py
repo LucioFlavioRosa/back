@@ -1,47 +1,158 @@
 """Dependencias compartilhadas pelos endpoints.
 
-A que carrega peso e o USUARIO. Ele nao e enfeite de auditoria: o pedido do
-projeto e que cada simulacao fique amarrada a uma pessoa, e e ele que vai para
-`controle.run_request.solicitado_por` e, dali, para `otim_meta.usuario` — a coluna
-que a tela de historico mostra como autor.
+A que carrega peso e a IDENTIDADE. Ela nao e enfeite de auditoria: decide QUEM
+ASSINA cada simulacao — o valor vai para `controle.run_request.solicitado_por` e,
+dali, para `otim_meta.usuario` — e, desde que o acesso passou a ser por usuario,
+decide tambem O QUE A PESSOA VE.
 
-Por isso o usuario sai do TOKEN e nunca do corpo da requisicao. Aceitar do corpo
-seria aceitar que qualquer um assinasse a simulacao de outro, e o historico
-deixaria de responder "quem pediu isto".
+Duas perguntas diferentes, e vale nao confundi-las:
+
+  ESCOPO   quais unidades a pessoa acessa (tabela `controle.usuario_acesso`).
+           Responde "esta unidade e sua?" — vale para cadastro e simulacao.
+  POSSE    de quem e uma rodada especifica. Responde "este resultado e seu?".
+           Uma pessoa com acesso a unidade NAO ve automaticamente as rodadas dos
+           colegas dela: cada um ve as proprias, e `admin` ve todas.
+
+Por isso o login sai do TOKEN e nunca do corpo. Aceitar do corpo seria aceitar
+que qualquer um assinasse — e agora tambem LESSE — o trabalho de outro.
 
 Enquanto o Entra ID nao esta configurado (`ENTRA_TENANT_ID` vazio), o servico roda
-sem exigir token e usa um usuario de desenvolvimento — o mesmo arranjo do front,
-que so manda `Authorization` quando o SSO esta ligado no `/config.js`. O `/readyz`
-denuncia esse modo para que ele nao chegue a producao sem que alguem veja.
+sem exigir token e usa um usuario de desenvolvimento. O `/readyz` denuncia esse
+modo para que ele nao chegue a producao sem que alguem veja.
 """
 
+from dataclasses import dataclass
 from typing import Annotated
 
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Request, status
 
 from app.config import config
 
 USUARIO_DEV = "dev@local"
 
+#: So vale com a autenticacao DESLIGADA. Ver `identidade_atual`.
+CABECALHO_DEV = "x-usuario-dev"
 
-async def usuario_atual(
+#: O unico papel que o codigo entende hoje. Os outros sao guardados na tabela e
+#: ignorados aqui — de proposito: o conjunto de papeis ainda nao esta fechado, e a
+#: tabela precisa poder crescer antes do codigo.
+ADMIN = "admin"
+
+
+@dataclass(frozen=True)
+class Identidade:
+    """Quem esta pedindo, o que pode fazer, e sobre o que."""
+
+    login: str
+    papeis: frozenset[str] = frozenset()
+    #: Unidades concedidas — ja com as regionais expandidas nas unidades delas.
+    unidades: frozenset[str] = frozenset()
+    #: Escopo total (uma concessao sem regional nem unidade, com papel `admin`).
+    tudo: bool = False
+
+    @property
+    def admin(self) -> bool:
+        return ADMIN in self.papeis
+
+    def acessa_unidade(self, unidade_id: str) -> bool:
+        return self.tudo or unidade_id in self.unidades
+
+    def ve_rodada_de(self, dono: str | None) -> bool:
+        """A POSSE de uma rodada, que e mais estreita que o escopo.
+
+        `dono` ausente devolve True de proposito: rodada sem autor registrado e
+        dado anterior ao recorte, e esconde-la de TODO MUNDO transformaria uma
+        lacuna de cadastro em perda de acesso.
+        """
+        return self.admin or not dono or dono.lower() == self.login.lower()
+
+
+async def identidade_atual(
     authorization: Annotated[str | None, Header()] = None,
-) -> str:
+    x_usuario_dev: Annotated[str | None, Header()] = None,
+) -> Identidade:
     cfg = config()
 
     if not cfg.exige_auth:
-        return USUARIO_DEV
+        # SEM AUTENTICACAO, `X-Usuario-Dev` troca de usuario. Existe para dar para
+        # exercitar o recorte em ambiente local, onde todo mundo seria `dev@local`
+        # e nem privacidade nem escopo apareceriam.
+        #
+        # Ele e ignorado assim que a autenticacao liga — nao ha caminho em que ele
+        # valha junto com token. Se valesse, seria o buraco mais obvio possivel:
+        # um cabecalho de texto escolhendo a identidade.
+        login = (x_usuario_dev or USUARIO_DEV).strip() or USUARIO_DEV
+    else:
+        if not authorization or not authorization.lower().startswith("bearer "):
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Sessão inválida ou expirada.")
+        token = authorization.split(" ", 1)[1].strip()
+        try:
+            login = await _identidade_do_token(token)
+        except HTTPException:
+            raise
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(
+                status.HTTP_401_UNAUTHORIZED, "Sessão inválida ou expirada."
+            ) from e
 
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Sessão inválida ou expirada.")
+    return await _com_acesso(login)
 
-    token = authorization.split(" ", 1)[1].strip()
-    try:
-        return await _identidade_do_token(token)
-    except HTTPException:
-        raise
-    except Exception as e:  # noqa: BLE001
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Sessão inválida ou expirada.") from e
+
+async def _com_acesso(login: str) -> Identidade:
+    """Monta a identidade a partir das concessoes da tabela.
+
+    SEM CONCESSAO = SEM ACESSO. Falha fechada de proposito: o modo de falha errado
+    aqui e o permissivo, porque ele nao aparece — tudo funciona, para todo mundo,
+    ate o dia em que aparece do pior jeito.
+    """
+    from app.infra.repositorios import controle
+
+    linhas = await controle.acesso(login)
+    papeis = {str(l["papel"]).strip().lower() for l in linhas if l.get("papel")}
+
+    unidades: set[str] = set()
+    tudo = False
+    for l in linhas:
+        if l.get("unidade_id"):
+            unidades.add(l["unidade_id"])
+        elif l.get("regional_id"):
+            unidades.update(await controle.unidades_da_regional(l["regional_id"]))
+        elif ADMIN in papeis:
+            # Concessao sem escopo so vale como "tudo" para quem tem papel que a
+            # justifique. Uma linha sem escopo com papel qualquer nao abre o banco.
+            tudo = True
+
+    return Identidade(
+        login=login,
+        papeis=frozenset(papeis),
+        unidades=frozenset(unidades),
+        tudo=tudo,
+    )
+
+
+def exigir_unidade(quem: Identidade, unidade_id: str) -> None:
+    """404 — e nao 403 — para unidade fora do escopo.
+
+    403 confirmaria que a unidade existe, e "existe mas não é sua" ja e informacao:
+    daria para mapear a organizacao inteira variando o id. Para quem nao tem
+    acesso, a unidade simplesmente nao existe. E o mesmo criterio que
+    `cadastro_escrita.exigir_dona` usa para ficha de outra unidade.
+    """
+    if not quem.acessa_unidade(unidade_id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Unidade não encontrada.")
+
+
+async def exigir_rodada(quem: Identidade, run_id: str) -> None:
+    """404 para rodada de outra pessoa, pela mesma razao."""
+    from app.infra.repositorios import controle
+
+    if not quem.ve_rodada_de(await controle.dono(run_id)):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Rodada não encontrada.")
+
+
+async def usuario_atual(quem: Annotated[Identidade, Depends(identidade_atual)]) -> str:
+    """Só o login. Para quem grava autoria e não precisa decidir visibilidade."""
+    return quem.login
 
 
 async def _identidade_do_token(token: str) -> str:
@@ -51,10 +162,13 @@ async def _identidade_do_token(token: str) -> str:
     (`https://login.microsoftonline.com/{tenant}/discovery/v2.0/keys`), com cache
     das chaves e conferencia de `aud`, `iss` e `exp`.
 
+    O PAPEL deve passar a sair do claim `roles` quando isto existir. O ESCOPO
+    (quais unidades) continua em `controle.usuario_acesso`: que unidades alguem
+    acessa e decisao do negocio, nao do diretorio corporativo.
+
     Levanta em vez de decodificar sem verificar: um `jwt.decode(..., verify=False)`
     aqui aceitaria qualquer token forjado, e o modo de falha seria silencioso —
-    tudo funcionando, com o usuario que o atacante escolheu. Falhar alto mantem o
-    ambiente sem SSO explicitamente sem SSO.
+    tudo funcionando, com o usuario que o atacante escolheu.
     """
     raise HTTPException(
         status.HTTP_501_NOT_IMPLEMENTED,
@@ -62,4 +176,29 @@ async def _identidade_do_token(token: str) -> str:
     )
 
 
+async def guarda_de_rota(
+    request: Request, quem: Annotated[Identidade, Depends(identidade_atual)]
+) -> None:
+    """Aplica escopo e posse a partir dos PARAMETROS DA ROTA.
+
+    Uma dependencia no roteador, e nao uma linha em cada endpoint, porque
+    autorizacao esquecida nao falha: o endpoint funciona, so que para todo mundo.
+    Sao 20 rotas hoje; bastava uma passar batida. Assim, rota nova com
+    `{unidade_id}` ou `{run_id}` nasce protegida sem ninguem lembrar de nada.
+
+    O preco e ficar amarrada ao NOME do parametro. Por isso o `main.py` tem um
+    teste que percorre as rotas registradas e exige que todo parametro de unidade
+    ou rodada se chame assim — renomear sem perceber viraria buraco silencioso, e
+    silencioso e o unico tipo que importa aqui.
+    """
+    unidade_id = request.path_params.get("unidade_id")
+    if unidade_id:
+        exigir_unidade(quem, unidade_id)
+
+    run_id = request.path_params.get("run_id")
+    if run_id:
+        await exigir_rodada(quem, run_id)
+
+
 Usuario = Annotated[str, Depends(usuario_atual)]
+Quem = Annotated[Identidade, Depends(identidade_atual)]

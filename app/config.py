@@ -50,6 +50,7 @@ class Config(BaseSettings):
     entra_tenant_id: str = ""
     entra_audience: str = ""
 
+
     # ---------------------------------------------------------------- resto
     redis_url: str = ""
     ambiente: str = "desenvolvimento"
