@@ -145,9 +145,14 @@ Por isso `GET /cts` devolve `inconsistencias: [{ tipo, id, subId, detalhe }]`, c
 nos dois — continua editável, e agora se sabe que a simulação não a vê — enquanto
 um nó sem ficha só existe na denúncia, porque não há ficha para editar.
 
-No banco real há 2 casos (`cts_b2b80_1_3` em uA2, `cts_c2b12_3_1` em uA3), ambos
-`ficha-sem-no` e sem componente nenhum. Foi assim que eles ficaram meio existindo
-sem ninguém notar. `dev/smoke_incons.py` cobre isso perguntando ao banco quais
+No banco há 2 casos (`cts_b2b80_1_3` em uA2, `cts_c2b12_3_1` em uA3), ambos
+`ficha-sem-no` e sem componente nenhum. **Eles não vieram da planilha**: ela tem
+337 CTS e o banco tem 339, e a diferença é exatamente esses dois — foram criados
+pelo antigo `POST /cts`, que gravava ficha e par sem tocar na topologia. É
+resíduo de teste, não defeito do cadastro de origem. Ver `dev/conferir_planilha.py`.
+
+Isso não diminui a denúncia: ela é o que tornou os dois visíveis, e o mesmo
+estado pode ser produzido por qualquer carga parcial. `dev/smoke_incons.py` cobre isso perguntando ao banco quais
 deveriam aparecer e conferindo que a API disse exatamente aquilo — sem fixar ids,
 para não falhar no dia em que o cadastro for corrigido.
 
