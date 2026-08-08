@@ -71,6 +71,11 @@ def log(run: str, msg: str) -> None:
 #:   <90  "Resolvendo (solver)..."
 #:   <100 "Materializando as tabelas de resultado..."
 LENDO, MODELO, SOLVER, MATERIALIZANDO, PRONTO = 10, 30, 60, 92, 100
+#: Teto da barra ENQUANTO o solver roda. Tem de ficar ABAIXO de 90, que e onde
+#: o front troca o texto para "Materializando": chegar a 90 antes da hora fazia
+#: a tela anunciar uma etapa que ainda nao comecou. Barra que anda enquanto o
+#: texto mente e pior que barra parada.
+SOLVER_TETO = 89
 
 
 def marcar(run_id: str, status: str, erro: str | None = None, progresso: int | None = None) -> None:
@@ -82,7 +87,7 @@ def marcar(run_id: str, status: str, erro: str | None = None, progresso: int | N
                    VALUES (:r, :s, :e, coalesce(:p, 0), now())
                    ON CONFLICT (run_id) DO UPDATE
                      SET status = EXCLUDED.status, erro = EXCLUDED.erro,
-                         progresso = coalesce(:p, controle.run_status.progresso),
+                         progresso = coalesce(:p, run_status.progresso),
                          atualizado_em = now()"""
             ),
             {"r": run_id, "s": status, "e": erro, "p": progresso},
@@ -90,12 +95,25 @@ def marcar(run_id: str, status: str, erro: str | None = None, progresso: int | N
 
 
 def andar(run_id: str, progresso: int) -> None:
-    """So o progresso, sem mexer no status."""
+    """So o progresso, sem mexer no status — e SO PARA A FRENTE.
+
+    As duas condicoes do `WHERE` sao guarda-corpo contra escrita atrasada:
+
+      `status = 'RODANDO'`  a thread que acompanha o solver espera ate
+                            `tempo // 12` segundos entre passos, e o `join` que a
+                            encerra nao cobre essa espera. Ela pode acordar depois
+                            do SUCESSO; aqui a escrita simplesmente nao acontece.
+      `progresso < :p`      nenhum caminho faz a barra voltar. Vale tambem se duas
+                            atualizacoes chegarem fora de ordem.
+
+    Poderia ser resolvido acertando o timeout do `join`, mas isso e apostar em
+    tempo — e a aposta se perde no dia em que alguem mexer no intervalo.
+    """
     with R.eng.begin() as con:
         con.execute(
             text(
                 "UPDATE controle.run_status SET progresso = :p, atualizado_em = now()"
-                " WHERE run_id = :r"
+                " WHERE run_id = :r AND status = 'RODANDO' AND progresso < :p"
             ),
             {"p": progresso, "r": run_id},
         )
@@ -160,7 +178,7 @@ def executar(run_id: str, tempo: int) -> None:
     def acompanhar() -> None:
         passo = SOLVER
         while not parar.wait(max(2, tempo // 12)):
-            passo = min(passo + 2, MATERIALIZANDO - 2)
+            passo = min(passo + 2, SOLVER_TETO)
             andar(run_id, passo)
 
     batedor = threading.Thread(target=acompanhar, daemon=True)
