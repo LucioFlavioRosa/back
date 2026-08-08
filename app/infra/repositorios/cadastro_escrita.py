@@ -458,9 +458,16 @@ async def _versao_atual(tipo: str, ficha_id: str, unidade_id: str) -> str | None
 async def _exigir_versao(corpo: dict[str, Any], tipo: str, ficha_id: str, unidade_id: str) -> None:
     """Recusa a gravação se a ficha mudou desde a leitura.
 
-    `versao` AUSENTE no corpo passa, de propósito: é um cliente que ainda não
-    manda o campo (ou um script de operação), e recusá-lo transformaria uma
-    melhoria de segurança numa quebra de compatibilidade. Quem manda, é protegido.
+    `versao` AUSENTE no corpo passa, de propósito: é um script de operação, ou um
+    cliente antigo, e recusá-lo transformaria uma melhoria de segurança numa
+    quebra de compatibilidade. Quem manda, é protegido.
+
+    O contraponto disso é que a tolerância esconde o cliente que DEVERIA mandar e
+    não manda — e foi o que aconteceu: o front montava a ficha sem `versao` e a
+    proteção inteira nunca disparou em produção, enquanto o teste de 409 passava
+    porque mockava a resposta do servidor. Hoje o front manda, e
+    `dev/smoke_versao.py` prova o ciclo contra a API de verdade em vez de contra
+    um mock.
     """
     enviada = corpo.get("versao")
     if not enviada:
@@ -519,7 +526,11 @@ async def salvar_coleta(
             autor=autor,
             overrides=corpo.get("overrides") or [],
         )
-    return {"id": ficha_id, "overridesGravados": n}
+    return {
+        "id": ficha_id,
+        "overridesGravados": n,
+        "versao": await _versao_atual(tipo, ficha_id, unidade_id),
+    }
 
 
 async def salvar_contrato(
@@ -586,7 +597,11 @@ async def salvar_contrato(
             autor=autor,
             overrides=corpo.get("overrides") or [],
         )
-    return {"id": cidade_id, "overridesGravados": n}
+    return {
+        "id": cidade_id,
+        "overridesGravados": n,
+        "versao": await _versao_atual("cidade", cidade_id, unidade_id),
+    }
 
 
 #: Nomes do tipo `Ete` do front -> colunas. Tem de casar com o que `cadastro.etes`
@@ -657,7 +672,11 @@ async def salvar_ete(
             autor=autor,
             overrides=corpo.get("overrides") or [],
         )
-    return {"id": ete_id, "overridesGravados": n}
+    return {
+        "id": ete_id,
+        "overridesGravados": n,
+        "versao": await _versao_atual("ete", ete_id, unidade_id),
+    }
 
 
 # ---------------------------------------------------------------------- CTS

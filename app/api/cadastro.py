@@ -159,7 +159,11 @@ async def salvar_ete(
 # ---------------------------------------------------------------------------
 # A CTS NAO e algo que se cria escolhendo uma sub-bacia. Ela e um NO DO SISTEMA,
 # como a sub-bacia, e a posicao dela ja esta em `input.sistema_topologia` — com
-# jusante proprio. No banco real, 337 das 339 estao la.
+# jusante proprio: no banco carregado da planilha, TODAS estao la.
+#
+# (Houve um periodo com 339 fichas para 337 nos. As duas sobrando nao vinham
+# da planilha — foram criadas pelo `POST /cts` que existia aqui, que gravava
+# ficha e par sem tocar na topologia. E a prova pratica do argumento abaixo.)
 #
 # O motor confirma (`otimizador_capex_v62.py`): os nos saem do laco sobre
 # `sistema-topologia`, e `cen.cts_ids = set(cts_operacional) & set(cen.nos)`. So e

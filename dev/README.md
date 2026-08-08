@@ -21,38 +21,47 @@ docker compose up -d
 # os DDLs vêm dos outros repositórios — ver a tabela de fontes no README raiz
 docker compose exec -T db psql -U otim -d otimizador < .../ddl_input.sql
 docker compose exec -T db psql -U otim -d otimizador < .../ddl_otimizador.sql
-docker compose exec -T db psql -U otim -d otimizador < dev/seed.sql
 
-python dev/smoke.py           # 21 GET + 1 POST: nenhum pode dar 5xx
-python dev/formas.py          # campos das respostas de RESULTADO vs CONTRATO.md
-python dev/formas_cadastro.py # campos das respostas de CADASTRO vs os tipos do front
-python dev/smoke_escrita.py   # as 6 escritas do cadastro, e a trilha junto
-python dev/smoke_seguranca.py # os dez ataques que ja funcionaram
-
-docker compose exec -T db psql -U otim -d otimizador < dev/seed_u2.sql
-python dev/smoke_recorte.py   # com DUAS unidades: nada vaza de uma para a outra
-python dev/smoke_pendencias.py # a conta que libera ou trava a simulacao
-python dev/smoke_fila.py       # o disparo inteiro, com Service Bus de verdade
-python dev/smoke_concorrencia.py # 10 POST simultaneos = 1 rodada
-python dev/smoke_conflito.py   # versao por ficha (409) e a identidade da unidade
-python dev/smoke_ida_e_volta.py # ler a ficha e salva-la de volta, sem traducao
+# Dado REAL, da planilha: apaga tudo, carrega e roda as 5 unidades (~20 min).
+python dev/recarregar_tudo.py
 
 # Ponta a ponta com o FRONT junto (nginx + FastAPI + Postgres + Service Bus):
 docker compose -f docker-compose.yml -f docker-compose.e2e.yml up -d --build
 # http://localhost:8080 e o produto inteiro, falando com a API de verdade
 ```
 
-`seed.sql` é o **mínimo** que faz os 23 endpoints responderem: uma unidade, uma
-cidade, um sistema, uma sub-bacia, uma obra, e uma rodada publicada. Não é dado
-realista e não serve para conferir número — serve para exercitar caminho.
+## Os smokes
 
-Duas respostas que **devem** falhar, e falham por estarem certas:
+Todos descobrem unidade e ficha **pela própria API**. Nenhum fixa id: os que
+fixavam quebraram no dia em que o dado real substituiu o seed, e a falha parecia
+regressão do serviço quando era o teste olhando para dado que não está mais lá.
 
-- `GET /runs/run_teste_1/status` dá 404: o seed popula só o lado do resultado,
-  sem `controle.run_request`;
+```bash
+python dev/smoke.py             # 21 GET + 1 POST: nenhum pode dar 5xx
+python dev/formas.py            # respostas de RESULTADO vs CONTRATO.md
+UNIDADE=uA1 python dev/formas_cadastro.py  # respostas de CADASTRO vs os tipos do front
+python dev/smoke_versao.py      # o ciclo do 409: ler, salvar, conflitar, fechar
+python dev/smoke_incons.py      # as CTS que existem pela metade
+python dev/smoke_ida_e_volta.py # ler a ficha e salvá-la de volta, sem tradução
+python dev/conferir_planilha.py # o banco reproduz a planilha? aba por aba
+```
+
+`dev/legado_seed/` guarda os smokes presos ao seed sintético (`u1`, `b38_1`,
+`c_rio`), que **não rodam** contra o dado real — ver o README de lá. Não estão
+apagados porque cobrem o que nenhum outro cobre (segurança, fila, concorrência),
+e não estão aqui porque falhariam sempre, ensinando todo mundo a ignorar falha
+de smoke.
+
+Uma resposta que **deve** falhar, e falha por estar certa:
+
 - `POST /runs` dá 503: não há Service Bus no ambiente local. E a rodada fica
   gravada como `ERRO`, que é a recuperação — se ficasse `PENDENTE`, o
   `/reexecutar` a recusaria para sempre por considerá-la em voo.
+
+(`GET /runs/{id}/status` **deixou** de dar 404: `dev/rodar_simulacao_real.py`
+agora registra a rodada em `controle.run_request`/`run_status`, como o job faz em
+produção. Antes ele publicava direto em `public.otim_*` e a tela de
+acompanhamento não achava a rodada que a tela de resultados mostrava.)
 
 ## Os smokes NAO sao isolados
 

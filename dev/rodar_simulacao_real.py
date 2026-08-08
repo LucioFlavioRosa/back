@@ -14,6 +14,7 @@ As duas precisam da MESMA unidade, senao a tela de cadastro mostra uma coisa e a
 de resultado outra.
 """
 
+import json
 import sys
 from pathlib import Path
 
@@ -162,7 +163,46 @@ def rodar_e_publicar() -> str:
         tabs, pg=PG, criar_schema=False, verbose=True,
         rotulo=f"{UNIDADE} — janela 8a, foco cobertura", usuario="lucio.rosa",
     )
+    registrar_no_controle(run_id)
     return run_id
+
+
+def registrar_no_controle(run_id: str) -> None:
+    """Registra a rodada em `controle.*`, como o job faria em producao.
+
+    Este script publica direto em `public.otim_*` e pula a fila — e por isso as
+    rodadas apareciam no historico mas `GET /runs/{id}/status` devolvia 404: a
+    tela de acompanhamento nao achava a rodada que a tela de resultados mostrava.
+
+    A alternativa seria o endpoint inventar o status a partir de `otim_meta`
+    quando a rodada existisse. Seria pior: colocaria no codigo de PRODUCAO um
+    remendo para um buraco que so existe porque um script de DEV atalha a fila.
+    Aqui o ambiente local passa a se parecer com producao, que e o que se quer de
+    um ambiente local.
+    """
+    with eng.begin() as con:
+        con.execute(
+            text(
+                """INSERT INTO controle.run_request (run_id, unidade, params, solicitado_por)
+                   VALUES (:r, :u, CAST(:p AS jsonb), :q)
+                   ON CONFLICT (run_id) DO NOTHING"""
+            ),
+            {
+                "r": run_id,
+                "u": UNIDADE,
+                "p": json.dumps({"UNIDADE": UNIDADE, "origem": "dev/rodar_simulacao_real.py"}),
+                "q": "lucio.rosa",
+            },
+        )
+        con.execute(
+            text(
+                """INSERT INTO controle.run_status (run_id, status)
+                   VALUES (:r, 'SUCESSO')
+                   ON CONFLICT (run_id) DO UPDATE SET status = 'SUCESSO'"""
+            ),
+            {"r": run_id},
+        )
+    print(f"  controle.run_request/run_status: {run_id} = SUCESSO")
 
 
 if __name__ == "__main__":

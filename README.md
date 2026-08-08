@@ -92,7 +92,10 @@ Declarado em vez de escondido — cada item tem o motivo e o caminho:
 - **Validação do token do Entra ID** (`app/api/deps.py`): falta o JWKS do tenant.
   Está levantando erro em vez de decodificar sem verificar, de propósito.
 - **Cancelar rodada**: bloqueado por migração (ver abaixo).
-- **Nome da rodada**: perdido até a coluna `rotulo` existir (ver abaixo).
+- **Nome da rodada**: o job já publica `rotulo` e `usuario` em `otim_meta` (5/5
+  das rodadas carregadas têm os dois). O que ainda falta é `rotulo` e
+  `reprocessa_de` em `controle.run_request`, para o nome sobreviver ao
+  reprocessamento — hoje ele só existe depois que a rodada publica.
 - **`progresso` do status** é sempre 0: `controle.run_status` não tem essa coluna.
   O modal do front nomeia a etapa a partir dele, então hoje ele salta de 0 a 100.
 - **Nada disto foi executado contra um Postgres real.** As consultas foram escritas

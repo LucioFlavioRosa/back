@@ -39,9 +39,9 @@ FORMAS_DO_CONTRATO = {
     "GET /runs/{}/status",
     "POST /runs/{}/cancelar",
     "POST /runs/{}/reexecutar",
-    # DEPLOY.md §3 — cadastro (leitura). A escrita esta bloqueada pela ausencia da
-    # tabela de trilha de override; quando ela existir, os 6 PUT/POST/DELETE
-    # entram aqui e o teste passa a cobri-los.
+    # DEPLOY.md §3 — cadastro. `input.override` ja existe e os PUT estao listados
+    # abaixo. NAO ha POST nem DELETE de CTS: a CTS e no da topologia, e criar uma
+    # pela tela produzia ficha que o motor nunca carrega.
     "GET /regionais",
     "GET /regionais/{}/unidades",
     "GET /unidades/{}",
