@@ -22,7 +22,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, HTTPException, status
 
-from app.api.deps import Usuario
+from app.api.deps import Quem, Usuario
 from app.infra.repositorios import cadastro, cadastro_escrita
 
 router = APIRouter(tags=["cadastro"])
@@ -38,14 +38,36 @@ async def _ou_404(valor, o_que: str, feminino: bool = False):
 
 
 # ---------------------------------------------------------------- organização
+#
+# Estas duas rotas NAO tem `{unidade_id}` no caminho, entao a `guarda_de_rota`
+# nao as alcanca — e sem o recorte explicito abaixo qualquer login, inclusive um
+# SEM concessao nenhuma, enumerava todas as regionais, todas as unidades, e os
+# resumos operacionais delas. E o vazamento mais barato que existe: entrega o mapa
+# da organizacao inteira numa requisicao, antes de qualquer tentativa de acesso.
 @router.get("/regionais")
-async def regionais() -> list[dict[str, Any]]:
-    return await cadastro.regionais()
+async def regionais(quem: Quem) -> list[dict[str, Any]]:
+    todas = await cadastro.regionais()
+    if quem.tudo:
+        return todas
+    # Uma regional aparece quando o usuario acessa ALGUMA unidade dela — inclusive
+    # quando a concessao e por unidade solta, e nao pela regional inteira.
+    minhas = {
+        r["id"]
+        for r in todas
+        if any(u["id"] in quem.unidades for u in await cadastro.unidades(r["id"]))
+    }
+    return [r for r in todas if r["id"] in minhas]
 
 
 @router.get("/regionais/{regional_id}/unidades")
-async def unidades(regional_id: str) -> list[dict[str, Any]]:
-    return await cadastro.unidades(regional_id)
+async def unidades(regional_id: str, quem: Quem) -> list[dict[str, Any]]:
+    todas = await cadastro.unidades(regional_id)
+    if quem.tudo:
+        return todas
+    # Lista vazia, e nao 404: a regional pode existir e o usuario ter acesso a
+    # nenhuma unidade dela. Uma lista vazia nao afirma nem nega a existencia da
+    # regional, que e o que se quer.
+    return [u for u in todas if u["id"] in quem.unidades]
 
 
 @router.get("/unidades/{unidade_id}")

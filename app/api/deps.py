@@ -60,11 +60,19 @@ class Identidade:
     def ve_rodada_de(self, dono: str | None) -> bool:
         """A POSSE de uma rodada, que e mais estreita que o escopo.
 
-        `dono` ausente devolve True de proposito: rodada sem autor registrado e
-        dado anterior ao recorte, e esconde-la de TODO MUNDO transformaria uma
-        lacuna de cadastro em perda de acesso.
+        `dono` ausente e SO DO ADMIN. A primeira versao deixava passar para todo
+        mundo, com o argumento de nao esconder dado anterior ao recorte — o
+        argumento e razoavel e a consequencia nao: `otim_meta.usuario` aceita
+        NULL, entao bastava um script publicar sem autor para a rodada ficar
+        legivel por qualquer um que soubesse o `run_id`. Uma brecha que se abre
+        sozinha, por descuido de carga, e pior que uma que exige ataque.
+
+        Hoje nao ha rodada sem dono (medido: 0 de 13). Se aparecer, o admin ve e
+        pode atribuir.
         """
-        return self.admin or not dono or dono.lower() == self.login.lower()
+        if self.admin:
+            return True
+        return bool(dono) and dono.lower() == self.login.lower()
 
 
 async def identidade_atual(
@@ -186,10 +194,19 @@ async def guarda_de_rota(
     Sao 20 rotas hoje; bastava uma passar batida. Assim, rota nova com
     `{unidade_id}` ou `{run_id}` nasce protegida sem ninguem lembrar de nada.
 
-    O preco e ficar amarrada ao NOME do parametro. Por isso o `main.py` tem um
-    teste que percorre as rotas registradas e exige que todo parametro de unidade
-    ou rodada se chame assim — renomear sem perceber viraria buraco silencioso, e
-    silencioso e o unico tipo que importa aqui.
+    DUAS LIMITACOES, e as duas ja morderam:
+
+    1. So enxerga PARAMETRO DE CAMINHO. `POST /runs` recebe a unidade no CORPO e
+       passava batido — alguem com acesso a uma unidade disparava simulacao em
+       outra e, como o disparo grava autoria, virava dono do resultado. Rota que
+       recebe unidade pelo corpo precisa chamar `exigir_unidade` na mao.
+    2. Depende do NOME do parametro. `/regionais/{regional_id}/unidades` nao tem
+       `unidade_id` e listava as unidades de qualquer regional para qualquer um.
+
+    Ou seja: isto reduz o numero de lugares onde da para esquecer, e nao o zera.
+    O teste em `tests/test_autorizacao.py` percorre as rotas registradas e exige
+    que cada uma esteja coberta pelo guarda OU declarada como recortada na mao —
+    rota nova aparece la, e nao em producao.
     """
     unidade_id = request.path_params.get("unidade_id")
     if unidade_id:

@@ -19,7 +19,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, HTTPException, Response, status
 
-from app.api.deps import Usuario
+from app.api.deps import Quem, Usuario, exigir_unidade
 from app.dominio import run_id as rid
 from app.dominio import status as st
 from app.dominio.parametros import montar_params
@@ -54,11 +54,25 @@ async def prontidao(unidade_id: str) -> dict[str, Any]:
 
 @router.post("/runs", status_code=status.HTTP_201_CREATED)
 async def criar(
-    usuario: Usuario, corpo: Annotated[dict[str, Any], Body()], resposta: Response
+    quem: Quem, corpo: Annotated[dict[str, Any], Body()], resposta: Response
 ) -> dict[str, str]:
     unidade_id = corpo.get("unidade_id")
     if not unidade_id:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Informe a unidade.")
+
+    # A UNIDADE VEM DO CORPO, e por isso a `guarda_de_rota` NAO alcanca esta rota:
+    # ela le `request.path_params`, e aqui nao ha `{unidade_id}` no caminho.
+    #
+    # Sem esta linha, alguem com acesso a uma unidade disparava simulacao em
+    # QUALQUER outra — e, como o disparo grava `solicitado_por`, virava dono da
+    # rodada e passava a poder ler o resultado dela. Escopo furado que se
+    # transformava em posse legitima.
+    #
+    # Foi o unico caso do tipo: as demais rotas recebem a unidade pelo caminho.
+    # Se aparecer outra que a receba pelo corpo, ela precisa desta linha tambem —
+    # o guarda de roteador nao substitui isto, e nao tem como.
+    exigir_unidade(quem, unidade_id)
+    usuario = quem.login
 
     # O front ja bloqueia, mas o contrato e claro: isto e regra de negocio e
     # precisa ser checada no servidor. O mock do front recusa com 422 de proposito,
