@@ -49,6 +49,7 @@ async def historico(
     `usuario` da querystring vira FILTRO do proprio ("minhas rodadas"), nunca
     ampliacao: quem nao e admin ve so as suas, peca o que pedir.
     """
+    # `admin` ve as rodadas dos OUTROS; os demais, so as suas. Isto e POSSE.
     if not quem.admin:
         usuario = quem.login
     # As em voo vem de `controle.*` e as publicadas de `otim_*`: a rodada nasce na
@@ -57,10 +58,16 @@ async def historico(
     # era cega justamente para o estado operacional.
     linhas = await resultado.em_voo(unidade=unidade, usuario=usuario)
     linhas += await resultado.historico(unidade=unidade, usuario=usuario)
-    if quem.admin or quem.tudo:
+    # E o ESCOPO vale para todo mundo, inclusive admin. Era
+    # `if quem.admin or quem.tudo: return linhas`, e por causa daquele `admin` um
+    # administrador de uma regional listava o banco inteiro — papel e escopo
+    # viravam a mesma coisa, e a tabela de concessao deixava de significar algo
+    # para quem mais precisa dela.
+    #
+    # Rodada de unidade fora do escopo nao aparece nem sendo da propria pessoa: a
+    # concessao pode ter sido revogada depois de ela rodar.
+    if quem.tudo:
         return linhas
-    # Rodada de unidade fora do escopo nao aparece nem que seja da propria pessoa
-    # — o acesso pode ter sido revogado depois de ela rodar.
     return [l for l in linhas if l.get("unidadeId") in quem.unidades]
 
 

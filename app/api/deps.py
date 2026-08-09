@@ -151,10 +151,24 @@ def exigir_unidade(quem: Identidade, unidade_id: str) -> None:
 
 
 async def exigir_rodada(quem: Identidade, run_id: str) -> None:
-    """404 para rodada de outra pessoa, pela mesma razao."""
+    """404 para rodada fora do escopo OU de outra pessoa.
+
+    As duas condicoes, e nesta ordem — o escopo primeiro, porque ele vale para
+    todo mundo. `admin` relaxa a POSSE: ve as rodadas dos colegas, mas so nas
+    unidades que lhe foram concedidas. Antes ele via o banco inteiro, o que fazia
+    de "papel" e "escopo" a mesma coisa e esvaziava a tabela de concessao.
+    """
     from app.infra.repositorios import controle
 
-    if not quem.ve_rodada_de(await controle.dono(run_id)):
+    r = await controle.de_quem(run_id)
+    unidade = (r or {}).get("unidade")
+    # Unidade desconhecida (rodada antiga, sem pedido nem de-para) nao bloqueia
+    # aqui: a posse abaixo ainda decide. Perder acesso a dado antigo por falta de
+    # cadastro seria transformar lacuna em incidente.
+    if unidade and not quem.acessa_unidade(unidade):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Rodada não encontrada.")
+
+    if not quem.ve_rodada_de((r or {}).get("dono")):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Rodada não encontrada.")
 
 

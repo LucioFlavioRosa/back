@@ -114,9 +114,14 @@ async def criar(
         rotulo=corpo.get("nome"),
     )
     if run != pedido:
-        # Pedido IDENTICO ja em voo — duplo clique, retry do navegador, ou duas
-        # pessoas pedindo a mesma coisa. Devolve a rodada que ja existe, e o front
+        # Pedido IDENTICO ja em voo, DA MESMA PESSOA — duplo clique, retry do
+        # navegador, reenvio do SDK. Devolve a rodada que ja existe, e o front
         # navega para ela: para o usuario, o segundo clique leva ao mesmo lugar.
+        #
+        # Duas PESSOAS pedindo a mesma coisa NAO caem aqui: o `USUARIO` entra no
+        # digest. Cair aqui devolveria a Ciclana o `runId` do Fulano, e o guarda
+        # de posse responderia 404 na tela seguinte — dizer "pronto, e essa" e
+        # depois negar que existe e pior que gastar cluster duas vezes.
         #
         # 200 e nao 201, porque nada foi criado. E nao 409: nao ha conflito a
         # resolver, ha uma rodada pronta para acompanhar. Rodar a mesma unidade com

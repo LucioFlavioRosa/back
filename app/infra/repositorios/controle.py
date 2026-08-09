@@ -47,6 +47,25 @@ async def unidades_da_regional(regional_id: str) -> list[str]:
     return [l["unidade_id"] for l in linhas]
 
 
+async def de_quem(run_id: str) -> dict[str, Any] | None:
+    """Dono E unidade da rodada — as duas coisas que decidem quem pode ve-la.
+
+    Vinham separadas, e a unidade nao vinha: o guarda conferia so o dono. Um
+    `admin` de uma regional abria rodada de outra, e qualquer pessoa abria uma
+    rodada propria de unidade cuja concessao ja tinha sido revogada.
+    """
+    linha = await db.buscar_um(
+        f"""SELECT coalesce(r.solicitado_por, m.usuario) AS dono,
+                   coalesce(r.unidade, u.unidade_id)     AS unidade
+              FROM (SELECT $1::text AS run_id) x
+              LEFT JOIN {_c()}.run_request r USING (run_id)
+              LEFT JOIN {config().schema_resultado}.otim_meta m USING (run_id)
+              LEFT JOIN {_i()}.unidade_regional u ON u.unidade_name = m.regional""",
+        run_id,
+    )
+    return dict(linha) if linha else None
+
+
 async def dono(run_id: str) -> str | None:
     """Quem pediu esta rodada.
 
@@ -93,13 +112,35 @@ def digest(params: dict[str, Any]) -> str:
     `sort_keys` porque a ordem das chaves num JSON não significa nada, e sem ele
     dois pedidos idênticos vindos de dois clientes dariam digests diferentes.
 
-    `USUARIO` fica FORA da conta: dois analistas pedindo a mesma simulação da mesma
-    unidade estão pedindo a mesma coisa, e rodar duas vezes gastaria cluster para
-    produzir dois resultados idênticos. Quem pediu primeiro assina; o segundo é
-    levado para a rodada que já existe.
+    `USUARIO` ENTRA na conta, e isto já foi o contrário.
+
+    A versão anterior o excluía com um argumento que era bom na época: dois
+    analistas pedindo a mesma simulação da mesma unidade pedem a mesma coisa, e
+    rodar duas vezes gasta cluster para produzir dois resultados idênticos — então
+    o segundo era levado para a rodada que já existia.
+
+    Isso dependia de as rodadas serem COMPARTILHADAS. Desde que a posse passou a
+    ser por pessoa (cada um vê as suas; `admin` vê todas), "ser levado para a
+    rodada que já existe" virou uma promessa que o serviço nega em seguida:
+
+        Fulano   POST /runs  -> 201  run_X
+        Ciclana  POST /runs  -> 200  run_X     (a rodada do Fulano)
+        Ciclana  GET  run_X  -> 404            (que não é dela)
+
+    Um `runId` que quem recebeu não pode abrir é pior que um 409: o serviço diz
+    "pronto, é essa" e depois nega que exista.
+
+    O preço de incluir: duas execuções do cluster quando duas pessoas pedem
+    exatamente a mesma coisa ao mesmo tempo. É raro — e a alternativa que
+    economizaria (uma execução com uma tabela de solicitantes, autorizando todos)
+    resolve o gasto sem resolver a contradição, porque continua misturando o que a
+    regra de visibilidade separou.
+
+    A deduplicação continua fazendo o que ela existe para fazer: duplo clique,
+    retry do navegador e reenvio do SDK são o MESMO usuário, e continuam caindo na
+    mesma rodada.
     """
-    limpo = {k: v for k, v in params.items() if k != "USUARIO"}
-    bruto = json.dumps(limpo, sort_keys=True, ensure_ascii=False, default=str)
+    bruto = json.dumps(params, sort_keys=True, ensure_ascii=False, default=str)
     return hashlib.sha256(bruto.encode("utf-8")).hexdigest()
 
 
