@@ -60,7 +60,7 @@ def agora() -> str:
 
 
 def log(run: str, msg: str) -> None:
-    print(f"  [{agora()}] {run[-8:] if run else '--------'}  {msg}", flush=True)
+    print(f"  [{agora()}] {(run[-8:] if run else '--------'):<8}  {msg}", flush=True)
 
 
 #: As faixas que o FRONT usa para NOMEAR a etapa
@@ -234,26 +234,45 @@ async def main() -> None:
 
     limite = asyncio.Semaphore(a.paralelo)
     vivos: set[asyncio.Task] = set()
+    espera = 1
 
-    async with ServiceBusClient.from_connection_string(CONN) as cli:
-        async with cli.get_queue_receiver(FILA, max_wait_time=5) as rx:
-            while True:
-                for msg in await rx.receive_messages(max_message_count=10, max_wait_time=5):
-                    # Completa ANTES de processar: o emulador tem lock curto, e
-                    # uma rodada de 45s estouraria o lock e a mensagem voltaria
-                    # para a fila — a mesma simulacao rodando duas vezes. O
-                    # estado real da rodada vive em `controle.run_status`, nao na
-                    # mensagem.
-                    await rx.complete_message(msg)
+    while True:
+        try:
+            async with ServiceBusClient.from_connection_string(CONN) as cli:
+                async with cli.get_queue_receiver(FILA, max_wait_time=5) as rx:
+                    espera = 1  # conectou: zera o recuo
+                    while True:
+                        for msg in await rx.receive_messages(
+                            max_message_count=10, max_wait_time=5
+                        ):
+                            # Completa ANTES de processar: o emulador tem lock
+                            # curto, e uma rodada de 45s estouraria o lock e a
+                            # mensagem voltaria para a fila — a mesma simulacao
+                            # rodando duas vezes. O estado real da rodada vive em
+                            # `controle.run_status`, nao na mensagem.
+                            await rx.complete_message(msg)
 
-                    async def tarefa(m=msg):
-                        async with limite:
-                            await processar(m, a.tempo)
+                            async def tarefa(m=msg):
+                                async with limite:
+                                    await processar(m, a.tempo)
 
-                    t = asyncio.create_task(tarefa())
-                    vivos.add(t)
-                    t.add_done_callback(vivos.discard)
-                await asyncio.sleep(0.5)
+                            tk = asyncio.create_task(tarefa())
+                            vivos.add(tk)
+                            tk.add_done_callback(vivos.discard)
+                        await asyncio.sleep(0.5)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            # Queda de conexao NAO e fim de vida. Antes era: um `WinError 64` do
+            # emulador derrubava o laco, o consumo parava, e as rodadas
+            # disparadas pela tela empilhavam em PENDENTE sem nenhum sinal de que
+            # nao havia mais ninguem consumindo.
+            #
+            # As tarefas em voo seguem nas threads delas e terminam normalmente —
+            # o que reconecta e so o receptor.
+            log("", f"fila caiu ({type(e).__name__}), reconectando em {espera}s")
+            await asyncio.sleep(espera)
+            espera = min(espera * 2, 30)
 
 
 if __name__ == "__main__":
