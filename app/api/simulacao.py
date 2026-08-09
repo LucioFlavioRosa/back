@@ -10,7 +10,12 @@ Ordem do disparo, e ela nao e negociavel:
     3. GRAVA run_request + run_status=PENDENTE na MESMA transacao
     4. ENFILEIRA no Service Bus
 
-Se 4 falhar, a rodada existe e aparece no historico como pendente: recuperavel.
+Se 4 falhar, a rodada existe e e marcada como ERRO, com a causa — nao fica
+PENDENTE. Deixa-la PENDENTE seria armadilha: o `/reexecutar` recusa PENDENTE por
+considera-la em voo, e ela ficaria parada para sempre com a tela dizendo que da
+para tentar de novo. Como ERRO ela sai do "em voo", aparece no historico com o
+motivo, e o botao de reexecutar volta a funcionar. Ver o `except` em `criar`.
+
 Se a ordem fosse 4-3, o job poderia acordar antes do commit e nao encontrar a
 `run_request` — o erro "run_request nao encontrada" do runbook de producao.
 """

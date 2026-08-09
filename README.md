@@ -100,8 +100,13 @@ Declarado em vez de escondido — cada item tem o motivo e o caminho:
   endpoint a serve. **Aplique a migração antes de subir** — sem ela a consulta de
   status falha. Falta o JOB escrevê-la; `dev/worker.py` já escreve, nas mesmas
   faixas que o front usa para nomear a etapa.
-- **Nada disto foi executado contra um Postgres real.** As consultas foram escritas
-  contra o DDL e conferidas coluna a coluna, mas isso é leitura, não teste.
+> Este parágrafo dizia **"nada disto foi executado contra um Postgres real"**.
+> Era verdade quando foi escrito e deixou de ser: hoje o `docker-compose` sobe um
+> Postgres 16, `dev/recarregar_tudo.py` carrega as 5 unidades da planilha e roda as
+> 5 simulações, e os smokes de `dev/` batem nos endpoints contra esse banco. Três
+> dos erros mais caros do repositório só apareceram assim — nome de coluna errado,
+> `jsonb` chegando como texto, e um handler de erro que estourava em vez de
+> responder. Fica registrado porque a frase enganou por semanas.
 
 ## Uma decisão de modelagem: a CTS não se cria pela tela
 
@@ -109,7 +114,8 @@ Declarado em vez de escondido — cada item tem o motivo e o caminho:
 os promete — está pendente lá.
 
 A CTS é um **nó do sistema**, como a sub-bacia: a posição dela já está em
-`input.sistema_topologia`, com jusante próprio (337 das 339 no banco real). O motor
+`input.sistema_topologia`, com jusante próprio — no banco carregado da planilha,
+todas as 337 estão lá. O motor
 monta os nós percorrendo a topologia, e faz `cts_ids = fichas ∩ nós` — só é CTS
 efetiva a ficha que **também** é nó.
 

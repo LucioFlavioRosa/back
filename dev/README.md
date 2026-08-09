@@ -72,9 +72,12 @@ diagnostico duas vezes.
 
 ## Dado de verdade, em vez de seed
 
-`dev/seed.sql` é o mínimo para os endpoints responderem — não é dado realista, e
-foi justamente por isso que três defeitos passaram (`otim_obra.sistema` NULL,
-componente como código curto, obra de ETE sem `no`).
+`dev/legado_seed/seed.sql` é o mínimo para os endpoints responderem — não é dado
+realista, e foi justamente por isso que três defeitos passaram (`otim_obra.sistema`
+NULL, componente como código curto, obra de ETE sem `no`). Ele **saiu de `dev/`**
+junto com os smokes que dependiam dele: os ids que ele cria (`u1`, `b38_1`,
+`c_rio`) não existem no banco carregado da planilha, e rodá-lo por cima do dado
+real só produz falha que parece do serviço.
 
 Para navegar com uma simulação DE VERDADE:
 

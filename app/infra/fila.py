@@ -19,8 +19,10 @@ resolve sozinho em dois minutos.
 E a ORDEM importa: grava no banco PRIMEIRO, enfileira DEPOIS. Se enfileirasse
 antes, o job poderia acordar e nao encontrar a `run_request` — que e o erro
 `run_request nao encontrada para run_id=...` documentado no runbook do pacote de
-producao. O contrario (gravou e falhou ao enfileirar) e recuperavel: a rodada fica
-PENDENTE e visivel, e da para reenfileirar.
+producao. O contrario (gravou e falhou ao enfileirar) e recuperavel: quem chama
+marca a rodada como ERRO com a causa, ela aparece no historico e o `/reexecutar`
+a aceita. NAO fica PENDENTE — PENDENTE e lida como "em voo" e o reexecutar a
+recusaria para sempre.
 """
 
 import json
