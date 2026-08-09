@@ -35,6 +35,7 @@ import asyncio
 import json
 import os
 import sys
+import threading
 import traceback
 from pathlib import Path
 
@@ -141,8 +142,24 @@ def executar(run_id: str, tempo: int) -> None:
     andar(run_id, LENDO)
     p = ped["params"]
     unidade = p.get("UNIDADE") or ped["unidade"]
-    orc = {int(k): float(v) for k, v in (p.get("ORCAMENTO") or {}).items()}
-    log(run_id, f"unidade={unidade}  anos={sorted(orc)}  total={sum(orc.values()):,.0f}")
+
+    # `ORCAMENTO` tem DUAS formas, e o worker so entendia uma. A tela oferece
+    # "cronograma por ano" (dict {ano: valor}) e "valor anual unico" (escalar +
+    # HORIZONTE_CAPEX) — ver `app/dominio/parametros.py`. Com o escalar, o worker
+    # estourava `AttributeError: 'float' object has no attribute 'items'` e a
+    # rodada ia para ERRO: metade dos modos da tela nao funcionava, e o teste de
+    # dinamica seria falso justamente onde parecia funcionar.
+    bruto = p.get("ORCAMENTO")
+    if isinstance(bruto, dict):
+        orc = {int(k): float(v) for k, v in bruto.items()}
+        descricao = f"anos={sorted(orc)} total={sum(orc.values()):,.0f}"
+    elif bruto is not None:
+        # Escalar: o motor recebe o numero e o horizonte, e distribui.
+        orc = float(bruto)
+        descricao = f"anual={orc:,.0f} horizonte={p.get('HORIZONTE_CAPEX')}"
+    else:
+        raise RuntimeError("a rodada nao tem ORCAMENTO em run_request.params")
+    log(run_id, f"unidade={unidade}  {descricao}")
 
     import dashboard_otimizador_v2 as D
     import otimizador_capex_cpsat63 as CP
@@ -171,8 +188,6 @@ def executar(run_id: str, tempo: int) -> None:
     # O solver e a etapa longa. Uma thread empurra a barra dentro da faixa dele
     # enquanto ele trabalha: sem isso a tela fica parada nos 30% pelo tempo todo,
     # e "parado" e o sinal universal de travado.
-    import threading
-
     parar = threading.Event()
 
     def acompanhar() -> None:
@@ -193,8 +208,25 @@ def executar(run_id: str, tempo: int) -> None:
 
     # `run_id` E o da fila: publicar com outro id faria a tela perder a rodada
     # que ela esta acompanhando.
+    # A materializacao levou 86s numa medicao, com a barra parada em 92: "parado"
+    # e o sinal universal de travado, e numa demonstracao alguem recarrega a
+    # pagina. Mesmo batedor do solver, na faixa que sobra.
     andar(run_id, MATERIALIZANDO)
-    tabs = P.materializar(cen, res, banco=R.BANCO, run_id=run_id, params=p)
+    parar_mat = threading.Event()
+
+    def acompanhar_mat() -> None:
+        passo = MATERIALIZANDO
+        while not parar_mat.wait(4):
+            passo = min(passo + 1, PRONTO - 1)
+            andar(run_id, passo)
+
+    bat_mat = threading.Thread(target=acompanhar_mat, daemon=True)
+    bat_mat.start()
+    try:
+        tabs = P.materializar(cen, res, banco=R.BANCO, run_id=run_id, params=p)
+    finally:
+        parar_mat.set()
+        bat_mat.join(timeout=2)
     PUB.publicar(
         tabs,
         pg=R.PG,
@@ -223,6 +255,40 @@ async def processar(msg, tempo: int) -> None:
         traceback.print_exc()
 
 
+def soltar_presas(limite_min: int = 30) -> int:
+    """Marca ERRO nas rodadas RODANDO que este worker nao esta executando.
+
+    A mensagem e completada ANTES de processar, de proposito: o lock do emulador
+    e curto, e uma rodada de 45s o estouraria — a mensagem voltaria para a fila e
+    a MESMA simulacao rodaria duas vezes. Rodar duas vezes e pior que nao rodar,
+    porque as duas publicam.
+
+    O preco dessa escolha e que morte do processo no meio deixa a rodada RODANDO
+    para sempre, sem mensagem para reentregar. A tela fica girando e ninguem
+    descobre. Isto varre esse resto na PARTIDA do worker: se ainda esta RODANDO
+    quando um worker sobe, ninguem a esta executando.
+
+    O conserto completo e lease no banco (`worker_id`, `lease_ate`) com renovacao
+    — que e o que se faria em producao, onde ha varios consumidores. Aqui seria
+    infraestrutura para um consumidor so: `limite_min` cobre o caso real (o
+    processo morreu) sem inventar protocolo.
+    """
+    with R.eng.begin() as con:
+        n = con.execute(
+            text(
+                """UPDATE controle.run_status
+                      SET status = 'ERRO',
+                          erro = 'Consumidor encerrou antes de terminar esta rodada '
+                                 '(marcada na partida do worker seguinte).',
+                          atualizado_em = now()
+                    WHERE status = 'RODANDO'
+                      AND atualizado_em < now() - make_interval(mins => :m)"""
+            ),
+            {"m": limite_min},
+        ).rowcount
+    return n or 0
+
+
 async def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--paralelo", type=int, default=1, help="rodadas simultaneas (default 1)")
@@ -230,6 +296,9 @@ async def main() -> None:
     a = ap.parse_args()
 
     print(f"worker: fila `{FILA}`, {a.paralelo} em paralelo, {a.tempo}s de solver")
+    presas = soltar_presas()
+    if presas:
+        print(f"  {presas} rodada(s) presas em RODANDO de um worker anterior -> ERRO")
     print("Ctrl+C encerra.\n")
 
     limite = asyncio.Semaphore(a.paralelo)
