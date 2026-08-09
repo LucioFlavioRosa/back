@@ -34,11 +34,19 @@ async def pronto(resposta: Response) -> dict[str, object]:
     # /readyz dizia 200 e `"fila": true` enquanto todo POST /runs dava 503. O pod
     # continuava no balanceador anunciando saude que nao tinha.
     fila_ok = await fila.saudavel()
-    if not banco or not fila_ok:
+
+    # Migracao faltando NAO deixa o pod pronto. Sem isto o servico subia, o probe
+    # dizia 200, e a falha aparecia depois — como 500 numa rota qualquer, longe da
+    # causa. Quem le "faltam: 003_usuario_acesso.sql" resolve em um minuto; quem le
+    # "Internal Server Error" abre investigacao.
+    faltam = await db.migracoes_faltando() if banco else []
+
+    if not banco or not fila_ok or faltam:
         resposta.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
 
     return {
         "banco": banco,
+        "migracoesFaltando": faltam,
         "filaConfigurada": bool(cfg.service_bus_conn),
         "fila": fila_ok,
         # Denuncia o modo sem autenticacao. Um servico que sobe em producao com o

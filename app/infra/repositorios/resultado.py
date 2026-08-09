@@ -21,6 +21,10 @@ def _p() -> str:
     return config().schema_resultado
 
 
+def _c() -> str:
+    return config().schema_controle
+
+
 def _i() -> str:
     return config().schema_input
 
@@ -82,6 +86,58 @@ async def historico(
     return [_resumo(l) for l in linhas]
 
 
+async def em_voo(unidade: str | None, usuario: str | None) -> list[dict[str, Any]]:
+    """As rodadas PEDIDAS que ainda nao publicaram resultado.
+
+    O historico saia so de `otim_vw_historico`, que le `public.otim_*` — ou seja,
+    so aparecia depois de PUBLICAR. Enquanto a rodada estava PENDENTE ou RODANDO
+    ela nao existia para a lista, e uma que morreu em ERRO nunca aparecia.
+
+    O efeito pratico: quem fechava o modal de acompanhamento perdia a rodada de
+    vista. Nao havia onde ver "o que esta rodando agora" nem "o que falhou hoje" —
+    a tela mais operacional do produto era cega justamente para o estado
+    operacional.
+
+    Sai de `controle.*`, que e onde a rodada nasce, e traz os campos que a lista
+    consegue mostrar. `metricas` fica AUSENTE, pela mesma razao que na rodada
+    inviavel: nao ha plano ainda, e um bloco de zeros seria lido como um plano que
+    nao construiu nada.
+    """
+    linhas = await db.buscar(
+        f"""SELECT r.run_id, r.unidade, r.solicitado_por, r.solicitado_em,
+                   r.rotulo,
+                   s.status, s.progresso, s.erro,
+                   u.unidade_name
+              FROM {_c()}.run_request r
+              JOIN {_c()}.run_status  s USING (run_id)
+              LEFT JOIN {_i()}.unidade_regional u ON u.unidade_id = r.unidade
+             WHERE NOT EXISTS (
+                   SELECT 1 FROM {_p()}.otim_meta m WHERE m.run_id = r.run_id)
+               AND ($1::text IS NULL OR r.unidade = $1)
+               AND ($2::text IS NULL OR r.solicitado_por = $2)
+             ORDER BY r.solicitado_em DESC""",
+        unidade,
+        usuario,
+    )
+    return [
+        {
+            "runId": l["run_id"],
+            "nome": l.get("rotulo"),
+            "unidadeId": l["unidade"],
+            "unidadeNome": l.get("unidade_name") or l["unidade"],
+            "dataHora": l["solicitado_em"].isoformat() if l.get("solicitado_em") else None,
+            "autor": l.get("solicitado_por"),
+            "duracaoS": None,
+            "status": l["status"],
+            "progresso": l.get("progresso") or 0,
+            "erro": l.get("erro"),
+            "favorita": False,
+            "publicada": False,
+        }
+        for l in linhas
+    ]
+
+
 def _resumo(l: dict[str, Any]) -> dict[str, Any]:
     """Molda uma linha para o `RunResumo` do front.
 
@@ -103,6 +159,10 @@ def _resumo(l: dict[str, Any]) -> dict[str, Any]:
         "duracaoS": l.get("tempo_s"),
         "status": situacao,
         "favorita": False,
+        # A tela precisa distinguir "terminou" de "ainda esta acontecendo" sem
+        # deduzir pelo status: `em_voo` devolve `publicada: False`, e so a rodada
+        # publicada tem drill-down para oferecer.
+        "publicada": True,
         "parametros": {
             "baseReceita": l.get("base_receita_param"),
             "usarCts": l.get("usar_cts"),

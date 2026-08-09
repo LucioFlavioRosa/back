@@ -73,11 +73,19 @@ async def main() -> None:
             if not runs:
                 ck("ha ao menos uma rodada publicada", False, "historico vazio")
                 return
-            rid = runs[0]["runId"]
+            # SO as PUBLICADAS: desde que o historico passou a incluir as rodadas em voo
+            # (PENDENTE/RODANDO/ERRO), `runs[0]` pode ser uma que ainda nao tem resultado
+            # nenhum — e o drill-down abaixo estourava com IndexError. `publicada` existe
+            # exatamente para essa distincao.
+            publicadas = [r for r in runs if r.get("publicada")]
+            if not publicadas:
+                ck("ha rodada publicada", False, "so ha rodadas em voo")
+                return
+            rid = publicadas[0]["runId"]
             print(f"  (rodada {rid})")
 
-            falta = [k for k in METRICAS if k not in (runs[0].get("metricas") or {})]
-            ck("runs[0].metricas completo", falta == [], f"faltam {falta}")
+            falta = [k for k in METRICAS if k not in (publicadas[0].get("metricas") or {})]
+            ck("metricas da rodada publicada completas", falta == [], f"faltam {falta}")
 
             meta = await g(f"/api/runs/{rid}/meta")
             ck("meta completo", [k for k in CAMPOS["meta"] if k not in meta] == [],

@@ -82,7 +82,13 @@ def _numero(v: Any, campo: str = "") -> Any:
     String vazia vira None: no contrato, campo em branco e ausencia — e `wacc`
     vazio significa "usa o WACC medio da unidade". Zero seria outra coisa.
     """
-    if v is None or isinstance(v, (int, float, bool)):
+    # `bool` ANTES de `int`: em Python `True` E `int`, entao `isinstance(True, int)`
+    # e verdadeiro e um JSON `{"preco": true}` era aceito e gravado como 1. Nao ha
+    # leitura razoavel de "preco verdadeiro" — e o cadastro passava a ter um valor
+    # que ninguem digitou, indistinguivel de um preco real de R$ 1,00.
+    if isinstance(v, bool):
+        return str(v)  # segue como texto: `_numerico` transforma em 422
+    if v is None or isinstance(v, (int, float)):
         return v
     s = str(v).strip()
     if not s:
@@ -107,7 +113,10 @@ _NAO_NEGATIVOS = {
 
 
 def _numerico(v: Any, campo: str) -> Any:
-    """Como `_numero`, mas para coluna que SO aceita numero: texto vira 422."""
+    """Como `_numero`, mas para coluna que SO aceita numero: texto vira 422.
+
+    Booleano tambem: `_numero` o devolve como texto justamente para cair aqui.
+    """
     n = _numero(v)
     if isinstance(n, str):
         raise ValorInvalido(

@@ -200,7 +200,19 @@ def executar(run_id: str, tempo: int) -> None:
     andar(run_id, SOLVER)
     batedor.start()
     try:
-        res = CP.resolver_por_sistema(cen, max_time_s=tempo, workers=8)
+        # MAX_TIME_S e WORKERS vem da RODADA quando a tela os manda. A tela
+        # oferece os dois como controle, o corpo os envia e o banco os grava —
+        # e este worker rodava `workers=8` fixo, ignorando o que o usuario
+        # escolheu. Controle que a tela promete e o motor descarta e pior que
+        # controle ausente: o usuario ajusta, o numero muda por outro motivo, e
+        # ele aprende uma relacao que nao existe.
+        #
+        # `--tempo` da linha de comando continua valendo como TETO da demo: nao
+        # adianta a tela pedir 600s num worker de laptop.
+        segundos = min(int(p.get("MAX_TIME_S") or tempo), tempo)
+        nucleos = int(p.get("WORKERS") or 8)
+        log(run_id, f"solver: max_time_s={segundos} workers={nucleos}")
+        res = CP.resolver_por_sistema(cen, max_time_s=segundos, workers=nucleos)
     finally:
         parar.set()
         batedor.join(timeout=2)

@@ -95,6 +95,44 @@ async def transacao() -> AsyncIterator[asyncpg.Connection]:
             yield con
 
 
+#: O que o servico EXIGE do banco alem do DDL base — cada linha e uma migracao
+#: de `migracoes/`. Sem elas o servico SOBE e so quebra em runtime, com 500
+#: obscuro numa rota qualquer: a autorizacao nao encontra `usuario_acesso` e
+#: recusa todo mundo, o status nao encontra `progresso` e derruba a tela de
+#: acompanhamento. Falha tardia e dificil de ler; aqui ela vira uma frase.
+_EXIGIDO = [
+    ("input", "override", None, "001_override.sql"),
+    ("controle", "run_status", "progresso", "002_progresso.sql"),
+    ("controle", "usuario_acesso", None, "003_usuario_acesso.sql"),
+    ("controle", "run_request", "rotulo", "004_run_request_rotulo.sql"),
+]
+
+
+async def migracoes_faltando() -> list[str]:
+    """Quais migracoes de `migracoes/` ainda nao foram aplicadas neste banco."""
+    faltam = []
+    for schema, tabela, coluna, arquivo in _EXIGIDO:
+        if coluna is None:
+            existe = await buscar_um(
+                "SELECT 1 FROM information_schema.tables"
+                " WHERE table_schema = $1 AND table_name = $2",
+                schema,
+                tabela,
+            )
+        else:
+            existe = await buscar_um(
+                "SELECT 1 FROM information_schema.columns"
+                " WHERE table_schema = $1 AND table_name = $2 AND column_name = $3",
+                schema,
+                tabela,
+                coluna,
+            )
+        if not existe:
+            alvo = f"{schema}.{tabela}" + (f".{coluna}" if coluna else "")
+            faltam.append(f"{arquivo} (falta {alvo})")
+    return faltam
+
+
 async def saudavel() -> bool:
     try:
         async with pool().acquire() as con:

@@ -156,8 +156,9 @@ async def abrir_rodada(
             return existente
 
         await con.execute(
-            f"""INSERT INTO {_c()}.run_request (run_id, unidade, params, solicitado_por)
-                VALUES ($1, $2, $3, $4)""",
+            f"""INSERT INTO {_c()}.run_request
+                    (run_id, unidade, params, solicitado_por, rotulo)
+                VALUES ($1, $2, $3, $4, $5)""",
             run_id,
             unidade_id,
             # O dict vai CRU. O pool registra um codec de json/jsonb (ver
@@ -167,6 +168,7 @@ async def abrir_rodada(
             # texto e nenhuma rodada funcionaria. So apareceu contra banco real.
             params,
             usuario,
+            rotulo,
         )
         await con.execute(
             f"""INSERT INTO {_c()}.run_status (run_id, status) VALUES ($1, $2)""",
@@ -181,16 +183,18 @@ async def abrir_rodada(
         # com nome morria em ERRO, e a mensagem falaria de `params`, sem relacao
         # visivel com o campo "nome" que o usuario preencheu.
         #
-        # Enquanto `controle.run_request` nao ganhar a coluna `rotulo` (esta na
-        # lista de migracoes do README), o nome se perde no caminho: `otim_meta.rotulo`
-        # sai vazio e o historico mostra a rodada sem nome. Perder o nome e ruim;
-        # perder a rodada inteira e pior.
+        # Ele vai em COLUNA PROPRIA (`migracoes/004_run_request_rotulo.sql`).
+        # Antes se perdia entre o POST e a publicacao — o que so incomodou quando o
+        # historico passou a mostrar as rodadas EM VOO: a lista exibia linhas sem
+        # nome durante toda a execucao, justamente quando ha varias ao mesmo tempo
+        # e o nome e a unica coisa que as distingue.
     return run_id
 
 
 async def status(run_id: str) -> dict[str, Any] | None:
     return await db.buscar_um(
-        # `progresso` EXIGE a coluna em `run_status` (dev/migracao_progresso.sql).
+        # `progresso` EXIGE a coluna em `run_status` (migracoes/002_progresso.sql;
+        # o /readyz recusa o pod se ela faltar).
         # O front ja tinha barra e nome de etapa por faixa; sem a coluna o
         # endpoint devolvia 0 sempre e a barra saltava de 0 a 100, prometendo um
         # acompanhamento que nao existia.

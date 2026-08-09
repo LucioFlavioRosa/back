@@ -96,7 +96,7 @@ Declarado em vez de escondido — cada item tem o motivo e o caminho:
   das rodadas carregadas têm os dois). O que ainda falta é `rotulo` e
   `reprocessa_de` em `controle.run_request`, para o nome sobreviver ao
   reprocessamento — hoje ele só existe depois que a rodada publica.
-- **`progresso` do status**: a coluna foi criada (`dev/migracao_progresso.sql`) e o
+- **`progresso` do status**: a coluna foi criada (`migracoes/002_progresso.sql`) e o
   endpoint a serve. **Aplique a migração antes de subir** — sem ela a consulta de
   status falha. Falta o JOB escrevê-la; `dev/worker.py` já escreve, nas mesmas
   faixas que o front usa para nomear a etapa.

@@ -54,7 +54,15 @@ async def descobrir(c: httpx.AsyncClient) -> list[str]:
         print("  --   nenhuma rodada publicada: as rotas de RESULTADO ficam de fora")
         return rotas
 
-    rid = runs[0]["runId"]
+    # SO as PUBLICADAS: desde que o historico passou a incluir as rodadas em voo
+    # (PENDENTE/RODANDO/ERRO), `runs[0]` pode ser uma que ainda nao tem resultado
+    # nenhum — e o drill-down abaixo estourava com IndexError. `publicada` existe
+    # exatamente para essa distincao.
+    publicadas = [r for r in runs if r.get("publicada")]
+    if not publicadas:
+        print("  --   nenhuma rodada PUBLICADA: as rotas de RESULTADO ficam de fora")
+        return rotas
+    rid = publicadas[0]["runId"]
     cidades = (await c.get(f"/api/runs/{rid}/cidades")).json()
     cid = cidades[0]["id"]
     sis = (await c.get(f"/api/runs/{rid}/cidades/{q(cid)}")).json()["sistemas"][0]["id"]

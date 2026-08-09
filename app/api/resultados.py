@@ -51,7 +51,12 @@ async def historico(
     """
     if not quem.admin:
         usuario = quem.login
-    linhas = await resultado.historico(unidade=unidade, usuario=usuario)
+    # As em voo vem de `controle.*` e as publicadas de `otim_*`: a rodada nasce na
+    # primeira e migra para a segunda. Sem juntar as duas, quem fechasse o modal
+    # perdia de vista o que estava rodando — a tela mais operacional do produto
+    # era cega justamente para o estado operacional.
+    linhas = await resultado.em_voo(unidade=unidade, usuario=usuario)
+    linhas += await resultado.historico(unidade=unidade, usuario=usuario)
     if quem.admin or quem.tudo:
         return linhas
     # Rodada de unidade fora do escopo nao aparece nem que seja da propria pessoa
