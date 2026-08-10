@@ -42,6 +42,10 @@ app/
                      cadastro_escrita.py (ficha + trilha) ·
                      pendencias.py (a mesma conta que a tela faz)
 migracoes/           001_override.sql — a trilha de auditoria do cadastro
+                     005_capex_derivado.sql — o banco recusa CAPEX que não seja
+                     quantidade × preco_unitario
+                     006_auditoria_cadastro.sql — última alteração e autor por
+                     ficha; substituiu o 409 de escrita
 tests/               a superfície da API não pode derivar do contrato do front
 ```
 
@@ -85,10 +89,14 @@ Declarado em vez de escondido — cada item tem o motivo e o caminho:
   produziu. A tela precisa das faixas para explicar a causalidade do degrau. Ou o
   job passa a publicá-las na rodada, ou este endpoint lê o cadastro — e aí o
   número deixa de ser o daquela rodada, o que é pior.
-- **`_BASE_SUBBACIA`** em `cadastro_escrita.py` é cópia de `BASE_OBRAS` do front.
-  O corpo manda só o que difere da base, por índice, então sem ela não há o que
-  gravar — mas cópia envelhece: se a base mudar lá e não aqui, a ficha salva com
-  valores de ontem sem nenhum sinal. O certo é o backend servir a base para a tela.
+- ~~**`_BASE_SUBBACIA`** em `cadastro_escrita.py` é cópia de `BASE_OBRAS` do
+  front~~ — **resolvido**, e não do jeito que este item propunha. A saída era
+  "o backend servir a base para a tela"; a certa era **não haver base**. As duas
+  listas saíram: a obra é materializada da linha gravada em
+  `componentes_*_capex`, o `GET` manda `nome` e `un`, e ficha sem o componente
+  vira **recusa** (422) em vez de preenchimento com valores de template.
+  `GET /prontidao` → `faltando[]` diz qual componente falta, que é o que a tela
+  não teria como saber. Ver `tests/test_obras_do_banco.py`.
 - **Validação do token do Entra ID** (`app/api/deps.py`): falta o JWKS do tenant.
   Está levantando erro em vez de decodificar sem verificar, de propósito.
 - **Cancelar rodada**: bloqueado por migração (ver abaixo).
@@ -205,6 +213,22 @@ Duas, no banco do pacote de produção:
    imutabilidade do `run_id` (`CONTRATO.md` §2.1): a reexecução depois de um
    `SUCESSO` gera id novo, e sem esse campo o histórico vira uma lista de rodadas
    soltas, sem como ligar a rodada à sua origem.
+5. ~~**`capex` derivado**~~ — **feita** (`migracoes/005_capex_derivado.sql`).
+   Mesma condição do item 3: aplicar nos bancos existentes e dobrar no
+   `ddl_input.sql` do repositório do otimizador. **E há uma segunda ponta lá:** o
+   `carregar_postgres.py` manda a coluna `capex` da planilha, e a constraint a
+   aceita só porque o arredondamento da origem cabe no centavo de tolerância. Se
+   um dia a planilha trouxer um `capex` que não seja `quantidade × preco_unitario`,
+   é a CARGA que passa a falhar — e falhar é o comportamento certo, porque o motor
+   ignoraria esse número de qualquer forma
+   (`otimizador_capex_v62.py:1165`).
+6. ~~**Auditoria de cadastro**~~ — **feita** (`migracoes/006_auditoria_cadastro.sql`).
+   `atualizado_em`/`atualizado_por` nas quatro tabelas de ficha. Mesma condição
+   dos itens 3 e 5: aplicar nos bancos existentes e dobrar no `ddl_input.sql`.
+   **Não quebra a carga**: a planilha não tem essas colunas, e o carregador só
+   manda as que existem nos dois lados. O que ela quebra, se faltar, é o
+   `/readyz` — de propósito. Ela substituiu o 409 de ficha, então um pod que sobe
+   sem ela deixa a escrita sem proteção **e** sem aviso.
 
 ## Uma divergência achada na leitura das fontes
 

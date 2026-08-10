@@ -105,6 +105,24 @@ _EXIGIDO = [
     ("controle", "run_status", "progresso", "002_progresso.sql"),
     ("controle", "usuario_acesso", None, "003_usuario_acesso.sql"),
     ("controle", "run_request", "rotulo", "004_run_request_rotulo.sql"),
+    # As quatro fichas de cadastro, uma linha cada: a migracao acrescenta as duas
+    # colunas nas quatro tabelas, e aplicar em tres e o engano provavel. Basta
+    # conferir `atualizado_por` — as duas entram no mesmo ALTER, entao uma sem a
+    # outra nao e um estado que a migracao produza.
+    ("input", "subbacia_operacional", "atualizado_por", "006_auditoria_cadastro.sql"),
+    ("input", "cts_operacional", "atualizado_por", "006_auditoria_cadastro.sql"),
+    ("input", "ete_capex", "atualizado_por", "006_auditoria_cadastro.sql"),
+    ("input", "cidade_operacional", "atualizado_por", "006_auditoria_cadastro.sql"),
+]
+
+#: Migracao que nao cria tabela nem coluna: a regra vive numa CONSTRAINT, sobre
+#: coluna que ja existia. Procurar a coluna diria "aplicada" com o banco ainda
+#: aceitando qualquer `capex` — e e exatamente isso que a migracao existe para
+#: impedir. As duas tabelas entram separadas de proposito: aplicar em uma e
+#: esquecer a outra e o engano provavel, e ai o nome da que falta e a correcao.
+_EXIGIDO_RESTRICAO = [
+    ("input", "componentes_subbacias_capex", "capex_e_derivado", "005_capex_derivado.sql"),
+    ("input", "componentes_cts_capex", "capex_e_derivado", "005_capex_derivado.sql"),
 ]
 
 
@@ -130,6 +148,16 @@ async def migracoes_faltando() -> list[str]:
         if not existe:
             alvo = f"{schema}.{tabela}" + (f".{coluna}" if coluna else "")
             faltam.append(f"{arquivo} (falta {alvo})")
+    for schema, tabela, restricao, arquivo in _EXIGIDO_RESTRICAO:
+        existe = await buscar_um(
+            "SELECT 1 FROM information_schema.table_constraints"
+            " WHERE table_schema = $1 AND table_name = $2 AND constraint_name = $3",
+            schema,
+            tabela,
+            restricao,
+        )
+        if not existe:
+            faltam.append(f"{arquivo} (falta {schema}.{tabela} CHECK {restricao})")
     return faltam
 
 

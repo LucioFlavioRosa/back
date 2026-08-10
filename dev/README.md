@@ -40,11 +40,20 @@ regressão do serviço quando era o teste olhando para dado que não está mais 
 python dev/smoke.py             # 21 GET + 1 POST: nenhum pode dar 5xx
 python dev/formas.py            # respostas de RESULTADO vs CONTRATO.md
 UNIDADE=uA1 python dev/formas_cadastro.py  # respostas de CADASTRO vs os tipos do front
-python dev/smoke_versao.py      # o ciclo do 409: ler, salvar, conflitar, fechar
 python dev/smoke_incons.py      # as CTS que existem pela metade
 python dev/smoke_ida_e_volta.py # ler a ficha e salvá-la de volta, sem tradução
 python dev/conferir_planilha.py # o banco reproduz a planilha? aba por aba
+python dev/limpar_rodadas_de_teste.py # o que o histórico herdou de teste (só mostra)
 ```
+
+`limpar_rodadas_de_teste.py` é o único destes que **escreve**, e só com `--apagar`
+— sem a flag ele lista e sai. Ele existe porque um banco de desenvolvimento
+acumula rodada de smoke, de seed sintético, execução morta em `ERRO` e a mesma
+rodada disparada vinte vezes num laço de tela: o histórico deixa de ser legível e
+a auditoria deixa de significar. **As regras dele não são lógica de aplicação e
+nunca devem virar:** o serviço não decide sozinho que uma rodada é de teste —
+rodada é imutável, e a única exclusão que o produto oferece é a que uma pessoa
+pede, uma por vez.
 
 `dev/legado_seed/` guarda os smokes presos ao seed sintético (`u1`, `b38_1`,
 `c_rio`), que **não rodam** contra o dado real — ver o README de lá. Não estão
@@ -66,7 +75,7 @@ acompanhamento não achava a rodada que a tela de resultados mostrava.)
 ## Os smokes NAO sao isolados
 
 Cada um espera o banco recem-semeado e altera dados. Rodar `smoke_seguranca` antes
-de `smoke_conflito`, por exemplo, faz o segundo falhar por sujeira e nao por bug.
+de `smoke_auditoria`, por exemplo, faz o segundo falhar por sujeira e nao por bug.
 Entre um e outro, reaplique os DDLs e o seed. Esta declarado porque ja custou
 diagnostico duas vezes.
 

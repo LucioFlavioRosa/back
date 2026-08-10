@@ -54,13 +54,24 @@ async def prontidao(unidade_id: str) -> dict[str, Any]:
         # "faltam 12 campos" e o usuario tem de procurar em cinco grupos. O front
         # ignora campo que nao conhece, entao acrescentar nao quebra nada.
         "porGrupo": conta["porGrupo"],
+        # `faltando` traz o que a tela NAO tem como descobrir: o componente de
+        # obra que a ficha nao tem. Campo em branco ela conta sozinha, a cada
+        # tecla; componente ausente nao aparece no payload da ficha — a ficha
+        # chega com quatro linhas em vez de cinco e nada diz que havia uma quinta.
+        # Sem isto, o `PUT` recusa a ficha incompleta e a pessoa nao sabe o que
+        # corrigir. Ver `pendencias.componentes_faltando`.
+        "faltando": conta["faltando"],
     }
 
 
 @router.post("/runs", status_code=status.HTTP_201_CREATED)
 async def criar(
     quem: Quem, corpo: Annotated[dict[str, Any], Body()], resposta: Response
-) -> dict[str, str]:
+) -> dict[str, Any]:
+    # `dict[str, Any]`, e nao `dict[str, str]`: o FastAPI usa a anotacao como
+    # response_model e COAGE os valores. Com `str`, o `jaExistia` booleano sairia
+    # como a string `"true"` — e toda string nao vazia e verdadeira em JavaScript,
+    # entao o front leria "ja existia" tambem quando a rodada acabou de nascer.
     unidade_id = corpo.get("unidade_id")
     if not unidade_id:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Informe a unidade.")
@@ -106,17 +117,22 @@ async def criar(
     params = montar_params(corpo, unidade_id=unidade_id, usuario=usuario)
 
     pedido = rid.novo()
-    run = await controle.abrir_rodada(
+    aberta = await controle.abrir_rodada(
         run_id=pedido,
         unidade_id=unidade_id,
         params=params,
         usuario=usuario,
         rotulo=corpo.get("nome"),
     )
-    if run != pedido:
-        # Pedido IDENTICO ja em voo, DA MESMA PESSOA — duplo clique, retry do
-        # navegador, reenvio do SDK. Devolve a rodada que ja existe, e o front
-        # navega para ela: para o usuario, o segundo clique leva ao mesmo lugar.
+    run = aberta["run_id"]
+    if aberta["ja_existia"]:
+        # Pedido IDENTICO da MESMA PESSOA. Dois casos, e agora os dois caem aqui:
+        #
+        #  em voo      duplo clique, retry do navegador, reenvio do SDK — o
+        #              segundo clique leva ao mesmo lugar;
+        #  concluida   a mesma simulacao ja rodou e esta publicada, e o cadastro
+        #              nao mudou desde entao (R5). Em vez de gastar o cluster para
+        #              produzir o mesmo resultado, aponta para o que existe.
         #
         # Duas PESSOAS pedindo a mesma coisa NAO caem aqui: o `USUARIO` entra no
         # digest. Cair aqui devolveria a Ciclana o `runId` do Fulano, e o guarda
@@ -124,10 +140,15 @@ async def criar(
         # depois negar que existe e pior que gastar cluster duas vezes.
         #
         # 200 e nao 201, porque nada foi criado. E nao 409: nao ha conflito a
-        # resolver, ha uma rodada pronta para acompanhar. Rodar a mesma unidade com
+        # resolver, ha uma rodada pronta para abrir. Rodar a mesma unidade com
         # parametros DIFERENTES continua livre — comparar cenarios e o uso normal.
+        #
+        # `jaExistia` no CORPO, e nao so o codigo 200: o cliente do front devolve
+        # o JSON e descarta o status (`comum/api/client.ts`), entao um front que
+        # so olhasse o codigo precisaria mudar o transporte inteiro para saber o
+        # que ja da para dizer aqui. O codigo continua correto para quem le HTTP.
         resposta.status_code = status.HTTP_200_OK
-        return {"runId": run, "status": st.Status.PENDENTE}
+        return {"runId": run, "status": aberta["status"], "jaExistia": True}
 
     try:
         await fila.pedir_execucao(run, unidade_id=unidade_id, usuario=usuario)
@@ -139,7 +160,7 @@ async def criar(
         # e o botao de reexecutar volta a funcionar.
         await controle.marcar(run, st.Status.ERRO, erro=str(e))
         raise
-    return {"runId": run, "status": st.Status.PENDENTE}
+    return {"runId": run, "status": st.Status.PENDENTE, "jaExistia": False}
 
 
 @router.get("/runs/{run_id}/status")

@@ -29,14 +29,14 @@ async def main():
             print(f"  (unidade {U}, sub-bacia {SUB})")
             # 1. ida e volta pura: o que veio do GET volta inteiro pelo PUT
             sb = (await c.get(f"/api/unidades/{U}/sub-bacias")).json()["subs"][SUB]
-            corpo = {k: sb[k] for k in ("db","params","obrasOverride","versao")}
+            corpo = {k: sb[k] for k in ("db","params","obrasOverride")}
             corpo["overrides"] = []
             r = await c.put(f"/api/unidades/{U}/sub-bacias/{SUB}", json=corpo)
             ck("a ficha lida pode ser salva de volta", r.status_code==200, f"{r.status_code} {r.text[:110]}")
 
             # 2. e com uma edicao, que e o caso real
             sb = (await c.get(f"/api/unidades/{U}/sub-bacias")).json()["subs"][SUB]
-            corpo = {k: sb[k] for k in ("db","params","obrasOverride","versao")}
+            corpo = {k: sb[k] for k in ("db","params","obrasOverride")}
             corpo["params"] = {**corpo["params"], "preco": "2.500,00"}
             corpo["overrides"] = []
             r = await c.put(f"/api/unidades/{U}/sub-bacias/{SUB}", json=corpo)
@@ -60,17 +60,17 @@ async def main():
             ]
             ck("tudo que o GET emite e aceito pelo parser do PUT", recusados == [], str(recusados[:4]))
 
-            # relê a versão: o PUT anterior mudou a ficha, e reusar a versão velha
-            # daria 409 antes de o formato ser sequer olhado.
+            # relê a ficha antes do proximo caso: o PUT anterior a mudou, e o que
+            # se testa aqui e o FORMATO, entao o corpo tem de partir do estado atual.
             atual = (await c.get(f"/api/unidades/{U}/sub-bacias")).json()["subs"][SUB]
-            corpo = {k: atual[k] for k in ("db","params","obrasOverride","versao")}
+            corpo = {k: atual[k] for k in ("db","params","obrasOverride")}
             corpo["overrides"] = []
             ruim = {**corpo, "params": {**corpo["params"], "preco": "1.234 hab"}}
             r = await c.put(f"/api/unidades/{U}/sub-bacias/{SUB}", json=ruim)
             ck("numero com unidade colada da 422", r.status_code==422, f"{r.status_code} {r.text[:90]}")
 
             sb = (await c.get(f"/api/unidades/{U}/sub-bacias")).json()["subs"][SUB]
-            base = {k: sb[k] for k in ("db","params","obrasOverride","versao")}
+            base = {k: sb[k] for k in ("db","params","obrasOverride")}
             base["overrides"] = []
             neg = {**base, "params": {**base["params"], "vaz": "-10"}}
             r = await c.put(f"/api/unidades/{U}/sub-bacias/{SUB}", json=neg)

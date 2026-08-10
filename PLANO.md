@@ -3,14 +3,18 @@
 Documento de passagem. Escrito no fim de uma conversa longa, para a próxima
 começar com o contexto certo em vez de reconstruí-lo.
 
-> **Leia `PLANO-REVISAO.md` antes de codar.** O Codex revisou este plano com
-> acesso ao ambiente e **a ordem numerada abaixo está errada**. A ordem certa é:
+> ## Os sete itens estão feitos.
+>
+> A numeração original estava errada, e o `PLANO-REVISAO.md` a corrigiu antes de
+> qualquer código. Foram aplicados nesta ordem, e cada seção abaixo conta o que
+> entrou:
 >
 > ```
 > 7  →  1+2 juntos  →  3+4 juntos  →  6  →  5
 > ```
 >
-> Os motivos, um por linha:
+> Os motivos da ordem, um por linha — valem como registro de por que agrupar
+> importava:
 >
 > - **7 antes de 3** — decidir o `capex` muda a leitura e a escrita de
 >   `componentes_*_capex`, que é justamente o que o item 3 reescreve.
@@ -45,88 +49,231 @@ nenhuma, ela não deveria estar no plano** — foi assim que a bagunça começou
 
 ### Estado de cada regra (medido)
 
-- **R1 — não cumprida.** `_BASE_SUBBACIA`/`_BASE_CTS` ainda recriam obra a partir
-  de literal quando falta componente. Reproduzido: `PUT` gerou
-  `Linha de recalque (LR) | qtd 0 | preco 900 | dur 15 | wacc 0,067`.
-- **R2 — não cumprida.** Mesmo caminho de R1.
-- **R3 — parcial.** Trava certo (prontidão 0 → 7 ao apagar uma obra; `POST /runs`
-  responde 422), mas a tela mostra só o **número**, não *qual* falta.
+- **R1 — cumprida.** As quatro bases literais saíram (duas no backend, duas no
+  front). A obra é materializada da linha gravada; ficha incompleta é recusa.
+  Guarda-corpo contra a volta: `tests/test_obras_do_banco.py`.
+- **R2 — cumprida.** Mesmo caminho de R1. E o `capex` deixou de ser inventado
+  quando falta fator: virou nulo em vez de zero (item 7).
+- **R3 — cumprida.** Trava (prontidão 0 → 7 ao apagar uma obra; `POST /runs`
+  responde 422) **e** diz o quê: `/prontidao` → `faltando[]` nomeia o componente
+  e a ficha, e o checklist da simulação o mostra linha a linha.
 - **R4 — cumprida.** Única escrita em `otim_*` fora da publicação é o `DELETE`,
   com cascata. Testado: `1|1|1` → `204` → `0|0|0`.
-- **R5 — parcial.** Dedupe já considera o usuário. Falta: **mensagem** na tela (hoje
-  volta 200 em silêncio) e alcançar as **concluídas** (hoje só `PENDENTE`/`RODANDO`).
-- **R6 — não feita.**
+- **R5 — cumprida.** Dedupe considera o usuário, alcança a rodada **concluída**
+  (publicada e posterior à última alteração do cadastro), `ERRO` continua
+  liberando execução nova, e a tela **avisa com link** em vez de navegar em
+  silêncio.
+- **R6 — cumprida.** As quatro fichas trazem `atualizadoEm`/`atualizadoPor`, o
+  `PUT` carimba com o usuário do token, e a tela mostra a linha. Medido: `PUT`
+  com `atualizadoPor` forjado no corpo grava o autor do token, e não o do corpo.
 
 ---
 
 ## O plano
 
-### 1. Auditoria de cadastro  *(R6)*
+### ~~1 + 2. Auditoria de cadastro, e o 409 de ficha sai~~ — **feito**
 
-- Migração `migracoes/005_auditoria_cadastro.sql`: `atualizado_em timestamptz` e
-  `atualizado_por text` em `subbacia_operacional`, `cts_operacional`,
-  `ete_capex`, `cidade_operacional`.
-- O `PUT` grava as duas em toda gravação, com o usuário **do token** — nunca do
-  corpo. (`cadastro_escrita.py`; o padrão de autoria já existe em
-  `_gravar_overrides`.)
-- O `GET` devolve junto da ficha; a tela mostra algo como
-  *"última alteração: ana@aegea, 10/08 14:32"*.
-- Acrescentar as colunas à lista `_EXIGIDO` em `app/infra/db.py`, para o
-  `/readyz` recusar o pod se a migração não rodou.
+Entraram juntos, como a revisão exigia: remover o `versao` antes de entregar a
+auditoria criaria *last-write-wins sem nenhum sinal visível*.
 
-### 2. Remover o 409 de ficha  *(R6 substitui)*
+**A troca, em uma frase:** o servidor não recusa mais a gravação de quem leu a
+ficha antes de um colega salvar — ele registra quem gravou, e a tela mostra.
 
-Não confundir com a dedupe de simulação, que **fica**.
+O 409 comparava o hash da ficha INTEIRA. Quem abriu de manhã e salvou à tarde
+perdia o trabalho por causa de um colega que mexeu em OUTRO campo da mesma ficha:
+cobrava o preço de um conflito onde quase nunca havia um.
 
-- **Backend:** `versao` do payload, `_exigir_versao`, `_versao_atual`, e o campo
-  no retorno dos três `salvar_*`.
-- **Front:** `versao` dos quatro tipos de domínio, de `ComOverrides`, de
-  `fichas.ts`, do `FICHA_SALVA` no reducer, e `conferirContrato` em
-  `mutations.ts`.
-- **Saem junto:** `dev/smoke_versao.py`, o bloco "o ciclo da versao" em
-  `escrita.test.tsx`, `apiFake.putSemVersao`, e o `versao` das fixtures.
-- O `CONTRATO.md`/`DEPLOY.md` mencionam 409 na escrita — atualizar.
+**O que se perde, dito sem enfeite:** duas pessoas na mesma ficha ainda se
+sobrescrevem, e agora sem aviso no momento da gravação. O sinal virou posterior e
+legível. Se um dia isso precisar ser barrado de novo, o caminho **não** é
+ressuscitar o hash da ficha inteira — é comparar por CAMPO.
 
-### 3. Tirar os literais de obra  *(R1, R2)* — **o mais arriscado**
+Backend:
 
-- Backend: apagar `_BASE_SUBBACIA`/`_BASE_CTS`. `_obras_da_ficha` materializa
-  **só** de `componentes_*_capex`; faltando componente, **recusa**.
-- Front: apagar `BASE_OBRAS`/`BASE_OBRAS_CTS`. O `GET` passa a mandar `nome` e
-  `un` (estão no banco e hoje não são enviados), e `mkObras` usa o que veio.
-- Sai junto: `tests/test_base_obras.py`, que existe só para comparar as duas
-  bases, e o `APELIDOS` dele.
-- **Confirmar antes:** hoje toda ficha tem 5 componentes (sub) e 4 (CTS) —
-  medido `min=max`. O front usa a base para montar a tabela **e** para decidir o
-  que é override; os dois usos precisam de substituto.
+- `migracoes/006_auditoria_cadastro.sql`: `atualizado_em timestamptz` e
+  `atualizado_por text` nas quatro tabelas de ficha. Sem `DEFAULT now()`, de
+  propósito: carimbaria a data da migração em 4.850 sub-bacias que ninguém tocou.
+- `_marcar_autoria` no lugar de `_exigir_versao`/`_versao_atual`. Roda em TODA
+  gravação, com o autor **do token**, e **devolve o carimbo** na resposta do
+  `PUT` — sem isso a ficha exibiria a alteração anterior logo depois de você
+  salvar.
+- Saíram: `FichaDesatualizada`, o handler de 409 em `api/erros.py`, `versao()` em
+  `cadastro.py`, `dev/smoke_versao.py`. O 409 de **simulação** fica.
+- `dev/legado_seed/smoke_conflito.py` virou `smoke_auditoria.py`: prova o que
+  existe agora, inclusive que **autor vindo no corpo é ignorado**.
+- `_EXIGIDO` cobre as quatro tabelas — o `/readyz` recusa o pod sem a migração.
 
-### 4. A tela dizer o que falta  *(R3)*
+Front:
 
-- `/prontidao` passa a devolver as pendências **por ficha** (sub-bacia, CTS, ETE,
-  cidade), não só o total por grupo.
-- A tela lista: *"sub-bacia a1b25_1_1 — falta o componente Coletor tronco"*.
-- Mesmo padrão da denúncia de CTS inconsistente, que já funciona assim
-  (`GET /cts` → `inconsistencias[]`).
+- `domain/auditoria.ts` (novo): o tipo, o formatador e o `auditoriaDe`, que
+  extrai só os dois campos da resposta. Os quatro tipos de ficha o estendem.
+- `components/UltimaAlteracao.tsx` (novo): a linha *"última alteração: ana@aegea,
+  10/08 14:32"*. Nas quatro telas — duas via `RecordSheet`, duas no
+  `GrupoHeader`, que são caminhos de renderização diferentes.
+- `erroAoSalvar.ts` perdeu o ramo do 409 e virou toast. O fluxo de **recarregar
+  do servidor** sobreviveu no outro gatilho que sempre teve: rascunho local sobre
+  dado que mudou no servidor — e os dois casos que só o bloco do 409 cobria
+  mudaram de gatilho em vez de sumir.
+- Fixtures atualizadas no mesmo passo (a lição do fim deste documento).
 
-### 5. Dedupe alcançar as concluídas  *(R5)*
+**Uma armadilha que quase passou:** as páginas passavam a resposta INTEIRA do
+`PUT` como auditoria, e o spread levava `id`/`overridesGravados` para dentro da
+ficha **sem trocar a auditoria** — a tela seguia creditando a gravação a quem
+salvara antes. Quem pegou foi o teste do servidor 2xx sem auditoria. Daí o
+`auditoriaDe`, e um teste próprio para ele.
 
-- `controle.rodada_em_voo` filtra `status IN ('PENDENTE','RODANDO')`. Passa a
-  considerar também `SUCESSO`. **`ERRO` continua liberando nova execução** — quem
-  repete depois de uma falha está corrigindo, e apontar para o fracasso anterior
-  impediria a correção.
-- O front precisa **distinguir 201 de 200** e mostrar a mensagem: *"já existe uma
-  simulação idêntica a esta"*, com link. Hoje ele navega em silêncio.
+### ~~3 + 4. Tirar os literais de obra, e a tela dizer o que falta~~ — **feito**
 
-### 6. Limpar as rodadas de teste
+Entraram juntos, como a revisão exigia: tirar a base sem mostrar *qual*
+componente faltou pioraria a R3 em vez de melhorar.
 
-`otim_meta` tem 27 rodadas, `run_request` 16 — com `dev@local`, `smoke`, `u1`,
-`u_par` e 7 em `ERRO`. Poluem histórico e auditoria. Ou limpar, ou separar o
-banco e2e do banco com dado real.
+**As duas bases literais não existem mais.** O que elas produziam, medido antes:
+um `PUT` numa ficha sem o componente gravado escrevia `Linha de recalque (LR) |
+qtd 0 | preco 900 | dur 15 | wacc 0,067`. Nenhum daqueles números veio do banco
+nem de alguém digitando, e iam para a simulação com cara de cadastro. Corrupção
+silenciosa é pior que perda silenciosa: a plausibilidade impede a desconfiança.
 
-### 7. Decidir o `capex`
+Backend:
 
-Sete linhas com precisão diferente da planilha (`204866.2556` × `204866.26`).
-Hoje está **misto**: em alguns lugares armazenado, em outros derivado
-(`quantidade × preco_unitario`, calculado no servidor). Precisa de uma regra só.
+- `_BASE_SUBBACIA`/`_BASE_CTS` apagadas. `_obras_da_ficha` materializa só de
+  `componentes_*_capex` e **recusa** (422) a ficha com menos componentes que a
+  régua — a mesma régua do `/prontidao` (`OBRAS_SUBBACIA`/`OBRAS_CTS`), para a
+  tela e o `PUT` nunca discordarem sobre o mesmo estado.
+- O `GET` passou a mandar `nome`, e com isso cada tabela conserva o vocabulário
+  dela: `componentes_cts_capex` chama `Tronco` o que a sub-bacia chama `Coletor
+  tronco`, e a base literal — que usava o vocabulário da sub-bacia nas duas —
+  regravava a CTS com nomes que o motor não reconhece.
+- `/prontidao` ganhou `faltando[]`, no padrão do `inconsistencias[]` de
+  `GET /cts`. **Os nomes esperados não são literal:** saem do `DISTINCT
+  componente` da própria tabela — "o que as outras 4.849 fichas têm".
+
+Front:
+
+- `BASE_OBRAS`/`BASE_OBRAS_CTS` apagadas; `mkObras` monta a linha só do que veio,
+  e campo ausente fica **vazio** (que conta pendência) em vez de preenchido.
+- `OBRAS_POR_SUBBACIA`/`OBRAS_POR_CTS` ficaram, e são cardinalidade, não valor:
+  servem para obra que FALTA pesar como obra em branco. Sem isso a ficha com
+  quatro componentes se declarava completa — o que não veio não tem campo vazio
+  para contar.
+- `withObraOverride` não apaga mais campo: o mapa carrega a obra inteira, e
+  apagar criaria buraco. O "digitou de volta o original" continua funcionando
+  pela comparação de conteúdo, que sempre foi quem respondia isso.
+- O checklist da simulação lista *"sub-bacia a1b25_1_1 — falta o componente
+  Coletor tronco"*, cortando em 5 e dizendo quantas ficaram de fora.
+
+Testes: `tests/test_base_obras.py` virou `tests/test_obras_do_banco.py`, como a
+revisão pediu — cardinalidade e nomes **contra o banco real** (pulado sem
+Postgres), mais um guarda-corpo contra a base voltar dos dois lados. As fixtures
+do front foram materializadas (`BASE ⊕ override`), que é o que o servidor manda
+agora.
+
+**Medido ponta a ponta:** apagando `Coletor tronco` de `b1b25_1_1`, o
+`/prontidao` nomeia o componente, o `GET` devolve 4 obras sem inventar a quinta,
+e o `PUT` responde 422 apontando para o `/prontidao`. Componente restaurado
+depois.
+
+### ~~5. Dedupe alcançar as concluídas~~ — **feito**
+
+`rodada_em_voo` virou `rodada_identica` — o nome antigo passou a mentir no
+instante em que ela deixou de olhar só o que está em voo.
+
+**Três condições para uma concluída deduplicar**, e a terceira é a que a revisão
+apontou e que só ficou possível depois do item 1:
+
+1. **`SUCESSO`** — `ERRO` continua liberando execução nova. Quem repete depois de
+   uma falha está corrigindo algo, e apontá-lo para o fracasso anterior impediria
+   a correção.
+2. **publicada em `otim_meta`** — `SUCESSO` sem resultado é um estado que mente, e
+   mandar alguém para ele é prometer uma tela vazia.
+3. **posterior à última alteração do cadastro** — os mesmos parâmetros de TELA não
+   são a mesma simulação se o CADASTRO mudou no meio: a rodada de ontem leu preços
+   e obras que não são os de hoje. A conta usa `atualizado_em`, que **só existe
+   desde a auditoria por ficha** (item 1). Antes dela não havia como fazer essa
+   pergunta — e sem ela a dedupe violaria a R1.
+
+Compara com `solicitado_em`, e não com a hora da publicação: é o instante em que a
+rodada começou a ler o cadastro. Alteração feita DURANTE a execução deixa
+`solicitado_em` anterior a ela e, corretamente, libera rodada nova.
+
+O limite, dito: só enxerga alteração que passou pelo `PUT`. Carga de planilha e SQL
+solto não carimbam nada — depois deles a régua é recarregar o banco.
+
+Front: o `POST /runs` devolve `jaExistia` **no corpo** (o cliente descarta o código
+HTTP), e a tela distingue os dois casos. Concluída → aviso com link, sem abrir o
+modal de acompanhamento de algo que terminou ontem. Em voo → segue acompanhando,
+que é o duplo clique levando ao mesmo lugar.
+
+**Medido contra o banco real**, com uma rodada concluída plantada e removida
+depois: pedido idêntico → `200 {jaExistia: true, status: SUCESSO}`; outro usuário
+→ não deduplica; cadastro alterado depois → não deduplica; carimbo restaurado →
+volta a deduplicar.
+
+### ~~6. Limpar as rodadas de teste~~ — **feito**
+
+Limpo, e não separando os bancos: `dev/limpar_rodadas_de_teste.py`, script
+explícito, **em modo relatório por padrão** — só escreve com `--apagar`.
+
+Como a revisão exigiu, **nada disto virou lógica de aplicação**. O serviço não
+decide sozinho que uma rodada é de teste: rodada é imutável (R4), e a única
+exclusão que o produto oferece continua sendo a que uma pessoa pede, uma por vez,
+pelo `DELETE /runs/{id}` — cuja ordem de exclusão o script reusa.
+
+Cinco regras, todas estreitas: unidade sintética (`u1`/`u_par`), autor que não é
+pessoa (`smoke`, `u1`, `u_par`), `ERRO`, `SUCESSO` sem publicação, e repetição do
+laço de tela (mesmo autor + mesma regional + mesmo rótulo, guardando a mais
+recente). **`dev@local` não é critério** — é a identidade de qualquer um com a
+autenticação desligada, inclusive nas rodadas boas; o que denuncia o laço é o
+rótulo repetido, não quem disparou.
+
+Resultado medido: fila **20 → 6**, publicadas **27 → 9**, zero linha órfã nas 13
+tabelas de resultado (a cascata do `otim_meta` deu conta). Ficaram as 3 rodadas
+de referência do `lucio.rosa`, uma `dev@local` por unidade, e as de
+ana/bruno/carlos.
+
+**O que isto destrava para o item 5:** toda rodada que sobrou na fila é `SUCESSO`
+E está publicada. Os dois `SUCESSO` órfãos que existiam eram de `u1` — e eram
+exatamente o que faria a dedupe de rodada concluída apontar para um sucesso sem
+resultado.
+
+### ~~7. Decidir o `capex`~~ — **feito**
+
+**A regra: `capex` é DERIVADO — `quantidade × preco_unitario`, calculado pelo
+servidor, e o banco recusa quem discordar.**
+
+A decisão não foi tomada aqui: o motor já a tinha tomado. Em
+`otimizador_capex_v62.py:1165` — *"CAPEX pode vir DECOMPOSTO em quantidade x
+preco unitario; se vier, ele manda"* —, e a linha 1192 loga aviso quando a coluna
+diverge. O cadastro guardava um número que a simulação ignorava.
+
+Medido antes de mexer: 24.250 componentes de sub-bacia e 1.348 de CTS, **nenhum**
+sem os dois fatores — a derivação sempre se aplica. As sete linhas do texto
+antigo eram as fichas `b1b25_1_1` e `e1b25_1_1`, tocadas por `PUT` em teste.
+Outras 205 divergiam da multiplicação em exatamente R$ 0,005: arredondamento da
+planilha, não opinião.
+
+O que entrou:
+
+- `migracoes/005_capex_derivado.sql`: constraint `capex_e_derivado` nas duas
+  tabelas, tolerando um centavo. **Este número tomou o 005 — a auditoria do item
+  1 passa a ser `006_auditoria_cadastro.sql`.**
+- `_gravar_obras` chama `_capex()`, função pura e testada
+  (`tests/test_capex_derivado.py`). Saiu o `or 0` que transformava fator ausente
+  em CAPEX zero — valor que ninguém digitou, com cara de cadastro preenchido.
+  Agora vira nulo, e a falta do fator já é pendência que trava a unidade.
+- `_EXIGIDO_RESTRICAO` em `app/infra/db.py`: o `/readyz` recusa o pod sem a
+  migração. Checar a coluna não serviria — ela já existia.
+
+**Por que CHECK e não `GENERATED ALWAYS`**, que seria mais forte: a coluna gerada
+recusa `INSERT` que mencione `capex`, e o carregador de produção
+(`carregar_postgres.py`, no repositório do otimizador) manda a coluna da planilha.
+Seria quebrar a carga de produção a partir de um repositório que não é dono do
+esquema. O CHECK deixa o arredondamento da origem passar e recusa uma segunda
+opinião de verdade.
+
+**O que NÃO foi feito, de propósito:** reescrever as 205 linhas para a precisão
+cheia. Meio centavo em valores de milhão, num número que o motor não lê — seria
+escrita em dado real para não ganhar nada. Elas se corrigem sozinhas no dia em
+que a ficha for salva.
 
 ---
 

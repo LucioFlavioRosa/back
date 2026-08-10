@@ -11,7 +11,7 @@ Estão aqui, e não apagados, porque o que eles cobrem não tem substituto:
 |---|---|
 | `smoke_seguranca.py` | token exigido, unidade não lê ficha de outra, trilha imutável |
 | `smoke_concorrencia.py` | dois PUT simultâneos na mesma ficha, lock por unidade |
-| `smoke_conflito.py` | 409 por conteúdo (hoje coberto por `../smoke_versao.py`) |
+| `smoke_auditoria.py` | última alteração e autor por ficha, autor vindo do token |
 | `smoke_fila.py` | Service Bus, dedup de rodada em voo |
 | `smoke_recorte.py` | recorte por unidade nos payloads de resumo |
 | `smoke_pendencias.py` | completude reagindo a campo apagado |
@@ -34,7 +34,7 @@ essas asserções eram válidas quando as rotas existiam.
 ## O caminho de volta
 
 O conserto certo não é adaptar os ids: é fazer cada um **descobrir** unidade e
-ficha pela própria API, como `../smoke_versao.py` e `../smoke_incons.py` fazem.
+ficha pela própria API, como `../smoke_ida_e_volta.py` e `../smoke_incons.py` fazem.
 Aí eles voltam para `dev/` e rodam contra qualquer banco. Enquanto isso não
 acontece, ficam aqui — visíveis e desarmados, em vez de no meio dos que
 funcionam, falhando e ensinando todo mundo a ignorar falha de smoke.
