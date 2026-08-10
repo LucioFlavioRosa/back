@@ -272,18 +272,62 @@ _BASE_SUBBACIA = [
 ]
 
 
-def _obras_da_ficha(override: Any, base: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Aplica o override sobre a base — a mesma conta que `mkObras` faz na tela.
+async def _obras_gravadas(
+    con: Any, tabela: str, chave: str, ficha_id: str
+) -> dict[str, dict[str, Any]]:
+    """As obras que a ficha JA TEM, na forma `{indice: {campo: valor}}`.
+
+    Mesma forma que o `GET` devolve em `obrasOverride`, para o merge abaixo ser
+    campo a campo. E o BANCO — nao um literal — que preenche o que o corpo omitir.
+    """
+    from app.infra.repositorios.cadastro import _INDICE_CTS, _INDICE_SUBBACIA
+
+    linhas = await con.fetch(
+        f"SELECT * FROM {_i()}.{tabela} WHERE {chave} = $1", ficha_id
+    )
+    pos = _INDICE_CTS if "cts" in tabela else _INDICE_SUBBACIA
+    atual: dict[str, dict[str, Any]] = {}
+    for l in linhas:
+        i = pos.get(l["componente"])
+        if i is not None:
+            atual[i] = {campo: l[col] for campo, col in _OBRA.items() if col in l}
+    return atual
+
+
+def _obras_da_ficha(
+    override: Any, base: list[dict[str, Any]], atual: dict[str, dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """O que vai para o banco: o corpo, completado pelo que JA ESTA gravado.
 
     O corpo chega como `Record<indice, Partial<Obra>>`, e nao como lista: a chave e
-    a POSICAO na base, e o valor traz so os campos que diferem. Eu tinha assumido
-    lista, e o payload real do front estourava com AttributeError na primeira ficha
-    salva — a revisao reproduziu.
+    a POSICAO, e o valor traz os campos daquela obra. Eu tinha assumido lista, e o
+    payload real do front estourava com AttributeError na primeira ficha salva.
+
+    A ORDEM do merge importa e mudou. Era `{**base, **override}` — um literal em
+    Python completando o que o corpo nao trouxe. Agora e
+    `{**base, **atual, **override}`: primeiro o literal (so para componente que
+    NUNCA existiu), depois a linha gravada, e o corpo por ultimo.
+
+    Com `DELETE`+`INSERT`, um campo ausente viraria NULL e um componente ausente
+    sumiria. O literal escondia as duas coisas com valores plausiveis; o banco
+    devolve o valor de verdade.
     """
     if isinstance(override, list):
         return override  # forma antiga; os smokes locais ainda a usam
     override = override or {}
-    return [{**b, **(override.get(str(i)) or {})} for i, b in enumerate(base)]
+    faltando = sorted(set(atual) - set(override), key=int)
+    if faltando:
+        nomes = ", ".join(base[int(i)]["nome"] for i in faltando if int(i) < len(base))
+        raise ValorInvalido(
+            f"A ficha tem {len(atual)} componentes e o corpo trouxe {len(override)}. "
+            f"Faltou: {nomes or faltando}. A gravacao substitui as obras em bloco, "
+            "entao componente omitido seria APAGADO — e a tela nao oferece remover "
+            "obra, logo a omissao nao e intencao."
+        )
+    return [
+        {**b, **(atual.get(str(i)) or {}), **(override.get(str(i)) or {})}
+        for i, b in enumerate(base)
+    ]
 
 
 async def _gravar_obras(
@@ -531,7 +575,9 @@ async def salvar_coleta(
                 chave=chave,
                 ficha_id=ficha_id,
                 obras=_obras_da_ficha(
-                    corpo.get("obrasOverride"), _BASE_CTS if e_cts else _BASE_SUBBACIA
+                    corpo.get("obrasOverride"),
+                    _BASE_CTS if e_cts else _BASE_SUBBACIA,
+                    await _obras_gravadas(con, tab_obra, chave, ficha_id),
                 ),
             )
         n = await _gravar_overrides(
