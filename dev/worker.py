@@ -123,13 +123,26 @@ def andar(run_id: str, progresso: int) -> None:
 def pedido(run_id: str) -> dict | None:
     with R.eng.begin() as con:
         linha = con.execute(
-            text("SELECT unidade, params FROM controle.run_request WHERE run_id = :r"),
+            text(
+                # `rotulo` e `solicitado_por` vem daqui, e nao de `params`: os dois
+                # tem COLUNA PROPRIA em `run_request`, e nenhum dos dois pode
+                # entrar em `params` — o job valida `params` contra `MAPA_PARAMS` +
+                # `CHAVES_DO_JOB` e uma chave desconhecida mata a rodada.
+                # Ver `migracoes/004_run_request_rotulo.sql`.
+                "SELECT unidade, params, rotulo, solicitado_por"
+                "  FROM controle.run_request WHERE run_id = :r"
+            ),
             {"r": run_id},
         ).first()
     if not linha:
         return None
     params = linha[1]
-    return {"unidade": linha[0], "params": json.loads(params) if isinstance(params, str) else params}
+    return {
+        "unidade": linha[0],
+        "params": json.loads(params) if isinstance(params, str) else params,
+        "rotulo": linha[2],
+        "solicitado_por": linha[3],
+    }
 
 
 def executar(run_id: str, tempo: int) -> None:
@@ -239,13 +252,30 @@ def executar(run_id: str, tempo: int) -> None:
     finally:
         parar_mat.set()
         bat_mat.join(timeout=2)
+    # O NOME E O AUTOR VEM DE `run_request`, e nao de `params`.
+    #
+    # Estava `p.get("ROTULO") or f"{unidade} — pela tela"`, e o efeito era pior
+    # que perder o nome: `ROTULO` nunca esta em `params` — ele foi tirado de la
+    # de proposito, porque o job valida `params` contra `MAPA_PARAMS` +
+    # `CHAVES_DO_JOB` e uma chave desconhecida mata a rodada
+    # (`migracoes/004_run_request_rotulo.sql`). Entao o `or` disparava SEMPRE, e
+    # toda rodada era publicada com o rotulo generico "uA1 — pela tela".
+    #
+    # O nome que a pessoa digitou sumia, e no lugar dele aparecia um texto
+    # plausivel que ninguem escreveu — no historico, que existe justamente para
+    # distinguir uma rodada da outra. Medido: as 27 rodadas publicadas do banco
+    # local tinham so tres rotulos diferentes, todos no formato do fallback.
+    #
+    # `usuario` idem: `USUARIO` ESTA em `params`, mas `solicitado_por` e a coluna
+    # que o backend usa para a posse da rodada (`app/api/deps.py`). Ler as duas
+    # fontes para o mesmo fato e como elas divergirem um dia.
     PUB.publicar(
         tabs,
         pg=R.PG,
         criar_schema=False,
         verbose=False,
-        rotulo=p.get("ROTULO") or f"{unidade} — pela tela",
-        usuario=p.get("USUARIO") or "dev@local",
+        rotulo=ped["rotulo"],
+        usuario=ped["solicitado_por"],
     )
     log(run_id, f"publicado: {len(tabs)} tabelas")
 

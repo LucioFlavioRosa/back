@@ -100,10 +100,12 @@ Declarado em vez de escondido — cada item tem o motivo e o caminho:
 - **Validação do token do Entra ID** (`app/api/deps.py`): falta o JWKS do tenant.
   Está levantando erro em vez de decodificar sem verificar, de propósito.
 - **Cancelar rodada**: bloqueado por migração (ver abaixo).
-- **Nome da rodada**: o job já publica `rotulo` e `usuario` em `otim_meta` (5/5
-  das rodadas carregadas têm os dois). O que ainda falta é `rotulo` e
-  `reprocessa_de` em `controle.run_request`, para o nome sobreviver ao
-  reprocessamento — hoje ele só existe depois que a rodada publica.
+- ~~**Nome da rodada**~~ — a coluna `controle.run_request.rotulo` existe desde
+  `migracoes/004`, e o nome agora sobrevive desde o `POST`. O que faltava de
+  verdade era o EXECUTOR lê-la: o `dev/worker.py` procurava `params["ROTULO"]`,
+  que nunca existe, e publicava um fallback genérico por cima do nome digitado.
+  Consertado — e é o primeiro item do contrato do executor, abaixo. Continua
+  faltando `reprocessa_de`, para ligar a rodada reexecutada à origem.
 - **`progresso` do status**: a coluna foi criada (`migracoes/002_progresso.sql`) e o
   endpoint a serve. **Aplique a migração antes de subir** — sem ela a consulta de
   status falha. Falta o JOB escrevê-la; `dev/worker.py` já escreve, nas mesmas
@@ -174,6 +176,105 @@ Isso não diminui a denúncia: ela é o que tornou os dois visíveis, e o mesmo
 estado pode ser produzido por qualquer carga parcial. `dev/smoke_incons.py` cobre isso perguntando ao banco quais
 deveriam aparecer e conferindo que a API disse exatamente aquilo — sem fixar ids,
 para não falhar no dia em que o cadastro for corrigido.
+
+## O contrato do EXECUTOR
+
+Quem executa a rodada é outro processo: hoje `dev/worker.py`, em produção o job do
+Databricks. **O backend não sabe qual dos dois é, e não deve saber.** Ele grava no
+banco, publica na fila, e para por aí.
+
+Trocar um pelo outro é **configuração**: `SERVICE_BUS_CONN` e `FILA_SIMULACOES`
+(`app/config.py`). Nenhuma linha de `app/` muda.
+
+O que não é configuração é o **contrato de banco** abaixo. Ele existia só implícito
+no `dev/worker.py` — e um contrato que mora numa imitação é um contrato que ninguém
+consegue implementar sem ler o código da imitação. Está aqui para o job poder ser
+escrito sem adivinhar.
+
+### O que o backend faz, e nesta ordem
+
+```
+1. INSERT controle.run_request  (run_id, unidade, params, solicitado_por, rotulo)
+2. INSERT controle.run_status   (run_id, 'PENDENTE')          — mesma transação
+3. publica na fila              {"run_id", "unidade_id", "solicitado_por"}
+```
+
+A ordem não é negociável: gravar depois de enfileirar deixaria o job acordar e não
+encontrar a `run_request`. Se o passo 3 falhar, o backend marca a rodada `ERRO`
+com a causa — nunca a deixa `PENDENTE`, porque `PENDENTE` é lido como "em voo" e o
+`/reexecutar` a recusaria para sempre.
+
+### A mensagem carrega o mínimo, DE PROPÓSITO
+
+```jsonc
+{ "run_id": "run_...", "unidade_id": "uA1", "solicitado_por": "ana@aegea" }
+```
+
+Os parâmetros **não** viajam nela. A fonte de verdade é `controle.run_request`, e
+uma cópia na mensagem envelheceria em relação ao banco. O executor lê por `run_id`.
+
+`message_id` = `run_id` no primeiro envio (protege contra o retry de rede do SDK
+virar duas execuções) e chave própria no reenvio pedido por gente. Duas execuções
+do mesmo `run_id` são seguras — a publicação é idempotente —, ao passo que uma
+rodada que nunca executa não é.
+
+### O que o executor DEVE fazer
+
+| # | passo | onde | se não fizer |
+| --- | --- | --- | --- |
+| 1 | ler `run_request` por `run_id` | `params`, `unidade`, **`rotulo`**, **`solicitado_por`** | roda com parâmetro errado, ou não roda |
+| 2 | marcar `RODANDO` | `controle.run_status.status` | a tela mostra "na fila" durante a execução inteira |
+| 3 | atualizar `progresso` (0–100) | `controle.run_status.progresso` | a barra salta de 0 a 100 e o modal promete um acompanhamento que não existe |
+| 4 | publicar o resultado | `public.otim_*`, **transacionalmente** | rodada meio publicada; a tela lê tabela incompleta |
+| 5 | `otim_meta.rotulo` e `.usuario` | **das colunas de `run_request`** | ver o aviso abaixo |
+| 6 | marcar `SUCESSO` — ou `ERRO` com a causa | `controle.run_status` | fica `RODANDO` para sempre |
+
+> **`rotulo` e `usuario` vêm das COLUNAS de `run_request`, nunca de `params`.**
+>
+> `ROTULO` foi tirado de `params` de propósito: o job valida `params` contra
+> `MAPA_PARAMS` + `CHAVES_DO_JOB` e uma chave desconhecida mata a rodada
+> (`migracoes/004_run_request_rotulo.sql`).
+>
+> O `dev/worker.py` lia `params["ROTULO"]`, que nunca existe, e caía num
+> *fallback* `"{unidade} — pela tela"`. Efeito medido no banco local: alguém
+> digitou **"Cenario com nome"** e o histórico publicou **"uA3 — pela tela"**.
+> Três das seis rodadas nomeadas tiveram o nome substituído por um texto plausível
+> que ninguém escreveu — no histórico, que existe justamente para distinguir uma
+> rodada da outra. Consertado; fica aqui como o erro a não repetir.
+
+### O vocabulário de `status`
+
+`PENDENTE` · `RODANDO` · `SUCESSO` · `FALHOU_QUALIDADE` · `ERRO`
+(`app/dominio/status.py`).
+
+`FALHOU_QUALIDADE` **não** é falha técnica: a rodada foi calculada e reprovou no
+portão — o texto de `erro` é o que explica a diferença ao usuário. `CANCELADA`
+existe no domínio e **não é aceito pelo CHECK do banco**; ver as migrações.
+
+Quem escreve o quê: o backend só cria `PENDENTE` (e `ERRO`, quando a fila falha).
+**Todas as demais transições são do executor.**
+
+### O que o backend NUNCA faz
+
+Não escreve em `public.otim_*`. A única exceção é o `DELETE /runs/{id}`, que
+exclui uma rodada inteira a pedido de uma pessoa (`resultado.excluir`) — R4: a
+simulação, uma vez escrita, só pode ser excluída.
+
+Isso é o que torna a troca de executor barata, e é a parte da tese que se sustenta
+inteira: o resultado é de quem executa, do começo ao fim.
+
+### Onde o backend PASSOU a depender do executor
+
+Duas dependências novas, e vale saberem-se explícitas:
+
+- **`public.otim_meta` como prova de publicação.** A dedupe de rodada concluída
+  (R5) só reaproveita uma rodada `SUCESSO` que exista em `otim_meta`
+  (`controle.rodada_identica`). Um executor que marque `SUCESSO` sem publicar
+  deixa a rodada fora da dedupe — o que é o comportamento certo, mas é uma
+  dependência que não existia antes.
+- **`controle.run_diagnostico`** é lida e excluída pelo backend, e **nada no
+  código disponível a popula**. Se o job de produção for escrever nela, o formato
+  precisa ser combinado; se não for, a tabela é peso morto e merece sair.
 
 ## O que este serviço precisa do JOB
 
