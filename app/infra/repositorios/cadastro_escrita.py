@@ -251,6 +251,13 @@ _BASE_CTS = [
      "opex": "0", "tPred": "0", "dur": "15", "anoObrig": "0", "proibAte": "0", "wacc": "0,067"},
 ]
 
+#: A MESMA base existe no front (`src/cadastro/domain/subbacia.ts: BASE_OBRAS`), e
+#: as duas TEM de concordar: a ficha manda so o que difere da base, entao quem
+#: materializa a linha e este arquivo. Front muda o preco, usuario nao toca no
+#: campo, backend grava o valor antigo — sem erro nenhum.
+#:
+#: `tests/test_base_obras.py` compara as duas e falha quando divergem. Mexeu aqui,
+#: mexa la (ou o contrario) e rode o teste.
 _BASE_SUBBACIA = [
     {"nome": "Ligacao de esgoto", "un": "ligacao", "qtd": "244", "preco": "2.497,70",
      "opex": "2.738", "tPred": "11", "dur": "9", "anoObrig": "0", "proibAte": "0", "wacc": "0,091"},
