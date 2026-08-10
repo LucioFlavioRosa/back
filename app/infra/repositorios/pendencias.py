@@ -40,9 +40,15 @@ Duas sutilezas que vieram do outro lado e não são óbvias:
   - **a régua da cidade muda a conta da sub-bacia.** Trocar uma cidade para medir
     por população acrescenta pendência às sub-bacias dela na hora. É o efeito
     desejado: a simulação não pode rodar com o denominador da meta em branco.
-  - **sem linha em `componentes_*_capex`, a obra não é pendência.** A tela parte de
-    uma obra-base com todos os campos preenchidos, e a tabela só guarda o que
-    difere dela. Ausência de linha = nenhum override = base intacta.
+  - **obra AUSENTE conta como pendência**, com o peso de uma obra toda em branco.
+    Antes não contava — o `SUM` só percorre linha gravada —, e a unidade se
+    declarava 100% completa com uma obra faltando, liberando a simulação sobre
+    cadastro incompleto.
+
+    (O texto antigo dizia que a tabela "só guarda o que difere da base". Não
+    guarda: o `GET` devolve todos os campos da linha gravada, e é o banco que
+    completa o que o corpo omitir — ver `_obras_da_ficha`. A base literal só
+    alcança componente que nunca existiu.)
 """
 
 from typing import Any
@@ -62,6 +68,12 @@ _PARAMS = [
 _PARAMS_POP = ["universo_populacao", "populacao_atual"]
 
 #: Campos de obra que a simulação exige. `wacc` fora, de propósito.
+#: Quantas obras cada ficha TEM DE ter. E a base do cadastro (5 para sub-bacia,
+#: 4 para CTS), e o que permite contar a obra AUSENTE — que nao aparece em
+#: `componentes_*_capex` e por isso passava despercebida.
+OBRAS_SUBBACIA = 5
+OBRAS_CTS = 4
+
 _OBRA = [
     "quantidade",
     "preco_unitario",
@@ -140,7 +152,14 @@ async def contar(unidade_id: str) -> dict[str, Any]:
                   JOIN {_i()}.subbacia_operacional b ON b.sub_bacia = c.id
              ),
              sb_obras AS (
-                SELECT o.sub_bacia AS id, SUM({_vazios(_OBRA, "o")}) AS pend
+                -- Campos vazios das obras que EXISTEM, mais as que NAO existem.
+                -- O segundo termo faltava: o SUM so percorre linha gravada, entao
+                -- obra ausente contribuia zero e a ficha se declarava completa
+                -- sem ela. Uma obra que falta pesa o mesmo que uma obra toda em
+                -- branco, que e exatamente o que ela e.
+                SELECT o.sub_bacia AS id,
+                       SUM({_vazios(_OBRA, "o")})
+                         + ({OBRAS_SUBBACIA} - count(*)) * {len(_OBRA)} AS pend
                   FROM {_i()}.componentes_subbacias_capex o
                   JOIN comps c ON c.id = o.sub_bacia
                  GROUP BY o.sub_bacia
@@ -155,7 +174,9 @@ async def contar(unidade_id: str) -> dict[str, Any]:
                   JOIN {_i()}.cts_operacional o ON o.cts = p.cts
              ),
              ct_obras AS (
-                SELECT o.cts AS id, SUM({_vazios(_OBRA, "o")}) AS pend
+                SELECT o.cts AS id,
+                       SUM({_vazios(_OBRA, "o")})
+                         + ({OBRAS_CTS} - count(*)) * {len(_OBRA)} AS pend
                   FROM {_i()}.componentes_cts_capex o
                   JOIN ct ON ct.id = o.cts
                  GROUP BY o.cts
