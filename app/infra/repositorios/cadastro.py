@@ -793,3 +793,81 @@ async def _cts_inconsistentes(unidade_id: str) -> list[dict[str, Any]]:
             ", ".join(f"{a['tipo']}:{a['id']}" for a in achados[:5]),
         )
     return [dict(a) for a in achados]
+
+
+#: Quantas alterações a leitura devolve por vez. Não é paginação — é um teto.
+#:
+#: A trilha é append-only e cresce com o uso: uma ficha muito editada acumula
+#: centenas de linhas, e mandar todas para desenhar uma lista que ninguém rola
+#: até o fim gasta banda para nada. O teto é generoso o bastante para a pergunta
+#: real ("o que andou mudando aqui") e a resposta DIZ quando cortou, para a tela
+#: não afirmar que aquilo é o histórico inteiro.
+LIMITE_ALTERACOES = 200
+
+
+async def alteracoes(
+    unidade_id: str,
+    *,
+    tipo: str | None = None,
+    ficha_id: str | None = None,
+    limite: int = LIMITE_ALTERACOES,
+) -> dict[str, Any]:
+    """A trilha de auditoria do cadastro — quem mudou o quê, quando.
+
+    ## Por que esta função existe
+
+    A trilha era gravada desde a migração 001 e **nunca foi lida por ninguém**. O
+    único `SELECT` nela, em todo o serviço, servia para deduplicar contra a última
+    linha — e saiu quando o servidor passou a comparar com o dado gravado. Ou
+    seja: o registro existia, crescia, e respondê-lo exigia SQL na mão.
+
+    Auditoria que só o DBA alcança não é auditoria do produto. É por isso que este
+    endpoint veio junto da trilha completa, e não depois: gravar mais e continuar
+    sem mostrar teria piorado a mesma situação.
+
+    ## A forma
+
+    `de`/`para` em vez de `valorAntigo`/`valorNovo`: é a leitura que a tela faz
+    ("de 2.472,6 para 3.000"), e os dois lados podem ser nulos, com significados
+    diferentes — `de` nulo é criação, `para` nulo é remoção
+    (`migracoes/007_trilha_do_cadastro.sql`).
+
+    `cortado` diz que o teto foi atingido. Sem ele a tela mostraria as 200 mais
+    recentes afirmando, em silêncio, que aquilo é tudo.
+    """
+    filtros = ["o.unidade_id = $1"]
+    args: list[Any] = [unidade_id]
+    if tipo:
+        args.append(tipo)
+        filtros.append(f"o.tipo = ${len(args)}")
+    if ficha_id:
+        args.append(ficha_id)
+        filtros.append(f"o.ficha_id = ${len(args)}")
+    args.append(limite + 1)  # +1 só para saber se havia mais
+
+    linhas = await db.buscar(
+        f"""SELECT o.tipo, o.ficha_id, o.campo, o.valor_antigo, o.valor_novo,
+                   o.autor, o.gravado_em, o.origem
+              FROM {_i()}.override o
+             WHERE {" AND ".join(filtros)}
+             ORDER BY o.gravado_em DESC, o.override_id DESC
+             LIMIT ${len(args)}""",
+        *args,
+    )
+    cortado = len(linhas) > limite
+    return {
+        "alteracoes": [
+            {
+                "tipo": l["tipo"],
+                "fichaId": l["ficha_id"],
+                "campo": l["campo"],
+                "de": l["valor_antigo"],
+                "para": l["valor_novo"],
+                "autor": l["autor"],
+                "quando": l["gravado_em"].isoformat(),
+                "origem": l["origem"],
+            }
+            for l in linhas[:limite]
+        ],
+        "cortado": cortado,
+    }

@@ -15,16 +15,18 @@ Duas regras atravessam tudo aqui:
 """
 
 import re
-from typing import Any
+from typing import Any, NamedTuple
 
 from app.config import config
 from app.infra import db
 from app.infra.repositorios.cadastro import (
     _COLETA,
+    _DO_DATABRICKS,
     CAMPOS_DB,
     CAMPOS_PARAMS,
     NAO_MODELADOS,
     _ficha_coleta,
+    pt_br,
 )
 
 # A cardinalidade vem de `pendencias`, e nao de um numero repetido aqui: e a MESMA
@@ -137,14 +139,113 @@ def _texto(v: Any) -> str | None:
     return None if v is None else str(v)
 
 
-async def _gravar_overrides(
+class Alteracao(NamedTuple):
+    """Uma linha da trilha, antes de ir para o banco.
+
+    `antes`/`depois` já em TEXTO, e no formato que a tela mostra (pt-BR): a trilha
+    é lida por gente, meses depois, e `2497.7` numa reunião obriga quem lê a
+    traduzir de cabeça o que a tela sempre mostrou como `2.497,70`.
+
+    `None` tem significado nos dois lados, e são significados diferentes:
+    `antes=None` é "não existia" (foi criado), `depois=None` é "deixou de existir"
+    (foi removido). Ver `migracoes/007_trilha_do_cadastro.sql`.
+    """
+
+    campo: str
+    antes: str | None
+    depois: str | None
+    origem: str
+
+
+#: As duas origens. `databricks` é correção de número que veio de fora;
+#: `regional` é campo que a Regional preenche. Na tela viram verbos diferentes.
+DATABRICKS = "databricks"
+REGIONAL = "regional"
+
+
+def _origem_do_campo(nome: str) -> str:
+    """`fat` veio do Databricks; `preco` é da Regional. A régua é uma só.
+
+    `_DO_DATABRICKS` é a mesma lista que decide o que a tela trava e o que ela
+    deixa editar (`cadastro.py`) — se as duas divergissem, a trilha chamaria de
+    correção o que a tela nem oferece corrigir.
+    """
+    return DATABRICKS if nome in _DO_DATABRICKS else REGIONAL
+
+
+def _igual(a: Any, b: Any) -> bool:
+    """Os dois valores dizem a mesma coisa?
+
+    Número compara como NÚMERO: o banco devolve `float` e o corpo traz string
+    pt-BR, e `"244" != 244.0` como texto — comparar assim geraria uma linha de
+    trilha a cada salvamento, dizendo que 244 virou 244.
+
+    A tolerância é de ponto flutuante, e não de negócio: existe porque
+    `2472.6 != 2472.5999999999995` depois de uma ida e volta pelo driver.
+    """
+    if a is None or b is None:
+        return a is None and b is None
+    if isinstance(a, bool) or isinstance(b, bool):
+        return str(a) == str(b)
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return abs(float(a) - float(b)) < 1e-9
+    return str(a) == str(b)
+
+
+def _texto_trilha(v: Any) -> str | None:
+    """O valor como a tela o mostra. `None` continua `None` — ver `Alteracao`."""
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        return "Sim" if v else "Nao"
+    if isinstance(v, (int, float)):
+        return pt_br(v)
+    texto = str(v).strip()
+    return texto or None
+
+
+def diferencas(
+    antes: dict[str, Any],
+    depois: dict[str, Any],
+    *,
+    prefixo: str = "",
+    origem: Any = None,
+) -> list[Alteracao]:
+    """As chaves em que os dois dicionários discordam, na ordem em que aparecem.
+
+    Serve os quatro caminhos de gravação porque todos acabam na mesma pergunta:
+    o que estava lá, o que chegou, e em que eles diferem. Chave presente num só
+    dos lados também é diferença — é criação ou remoção.
+
+    `origem` aceita uma função (para decidir campo a campo, como na ficha de
+    coleta, que mistura Databricks e Regional na mesma linha) ou uma string
+    (quando a resposta é a mesma para o bloco inteiro, como nas obras).
+    """
+    de_origem = origem if callable(origem) else (lambda _c: origem or REGIONAL)
+    saida: list[Alteracao] = []
+    for chave in list(antes) + [k for k in depois if k not in antes]:
+        a, b = antes.get(chave), depois.get(chave)
+        if _igual(a, b):
+            continue
+        saida.append(
+            Alteracao(
+                campo=f"{prefixo}{chave}",
+                antes=_texto_trilha(a),
+                depois=_texto_trilha(b),
+                origem=de_origem(chave),
+            )
+        )
+    return saida
+
+
+async def _registrar(
     con: Any,
     *,
     tipo: str,
     ficha_id: str,
     unidade_id: str,
     autor: str,
-    overrides: list[dict[str, Any]],
+    mudancas: list[Alteracao],
 ) -> int:
     """Acrescenta a trilha — APPEND-ONLY. Nada aqui apaga nada.
 
@@ -155,54 +256,50 @@ async def _gravar_overrides(
     revisao provou: override datado de 01/07 virou 07/08 depois de um PUT que nem
     o mencionava.
 
-    Em troca, so entra o que MUDOU em relacao a ultima linha daquele campo. Sem
-    isso, salvar a mesma ficha dez vezes gravaria dez linhas identicas, e quem
-    procurasse "quando isto mudou" acharia dez respostas para um evento so.
+    ## Quem calcula a diferença mudou, e isso conserta duas coisas
 
-    O campo que volta ao valor original simplesmente para de vir no corpo. A trilha
-    guarda que a correcao existiu — o que e verdade: ela existiu.
+    Antes a trilha chegava PRONTA no corpo do `PUT`: o front dizia o que tinha
+    mudado, e o backend gravava. Auditoria que pergunta ao auditado o que ele
+    mudou tem o defeito no desenho — um bug no cliente, e o rastro some sem sinal.
+    Era o caso de metade da ficha: `params`, obras, cidade e ETE nunca geraram
+    linha, porque o front só montava override para o bloco do Databricks.
+
+    Agora quem compara é o servidor, que tem as duas pontas: o que está gravado e
+    o que chegou. Some junto um erro sutil — o front usava como `valorAntigo` o
+    valor lido no SEED, então duas edições na mesma sessão gravavam `A -> B` e
+    depois `A -> C`, quando o segundo salto foi `B -> C`.
+
+    E a deduplicação some por construção: comparando com o dado gravado, salvar a
+    mesma ficha dez vezes não produz diferença nenhuma, e não há o que deduplicar.
+    A consulta que existia para isso saiu.
     """
-    if not overrides:
-        return 0
-
-    atuais = {
-        l["campo"]: l["valor_novo"]
-        for l in await con.fetch(
-            f"""SELECT DISTINCT ON (campo) campo, valor_novo
-                  FROM {_i()}.override
-                 WHERE tipo = $1 AND ficha_id = $2
-                 ORDER BY campo, gravado_em DESC, override_id DESC""",
-            tipo,
-            ficha_id,
-        )
-    }
-
-    novas = [
-        (
-            tipo,
-            ficha_id,
-            unidade_id,
-            o.get("campo"),
-            _texto(o.get("valorAntigo")),
-            _texto(o.get("valorNovo")),
-            # O autor vem SEMPRE do token. Aceita-lo do corpo — como esta funcao
-            # fazia, com `o.get("autor") or autor` — deixava qualquer um assinar a
-            # correcao de outro, e uma revisao gravou "forjado@corp" para provar.
-            # Numa trilha de auditoria isso e o defeito que a anula inteira.
-            autor,
-        )
-        for o in overrides
-        if _texto(o.get("valorNovo")) != atuais.get(o.get("campo"))
-    ]
-    if not novas:
+    if not mudancas:
         return 0
     await con.executemany(
         f"""INSERT INTO {_i()}.override
-                (tipo, ficha_id, unidade_id, campo, valor_antigo, valor_novo, autor)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)""",
-        novas,
+                (tipo, ficha_id, unidade_id, campo, valor_antigo, valor_novo,
+                 autor, origem)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)""",
+        [
+            (
+                tipo,
+                ficha_id,
+                unidade_id,
+                m.campo,
+                m.antes,
+                m.depois,
+                # O autor vem SEMPRE do token. Aceita-lo do corpo — como esta
+                # funcao ja fez, com `o.get("autor") or autor` — deixava qualquer
+                # um assinar a correcao de outro, e uma revisao gravou
+                # "forjado@corp" para provar. Numa trilha de auditoria isso e o
+                # defeito que a anula inteira.
+                autor,
+                m.origem,
+            )
+            for m in mudancas
+        ],
     )
-    return len(novas)
+    return len(mudancas)
 
 
 #: Componentes da ficha de obra -> colunas. `capex` NÃO entra: é calculado
@@ -349,8 +446,14 @@ def _capex(o: dict[str, Any]) -> float | None:
 
 
 async def _gravar_obras(
-    con: Any, *, tabela: str, chave: str, ficha_id: str, obras: list[dict[str, Any]]
-) -> None:
+    con: Any,
+    *,
+    tabela: str,
+    chave: str,
+    ficha_id: str,
+    obras: list[dict[str, Any]],
+    atual: dict[str, dict[str, Any]],
+) -> list[Alteracao]:
     """As obras da ficha, substituídas em bloco.
 
     `capex` não vem do corpo: é derivado (`_capex`) porque a tela não o manda e
@@ -361,10 +464,41 @@ async def _gravar_obras(
     `anoObrig` e `proibAte` são CÓDIGOS, não anos quaisquer (`0` = sem restrição,
     `-1` = obrigatória em qualquer ano). Por isso vão como vieram, sem `or 0`:
     tratar ausência como zero afirmaria "sem restrição" onde a resposta é silêncio.
+
+    ## O diff sai ANTES do `DELETE`, e é por isso que ele existe aqui
+
+    A gravação é `DELETE` + `INSERT` do bloco inteiro, e depois do `DELETE` não há
+    com o que comparar: a informação de quem mudou o quê desaparece com as linhas.
+    Por isso `atual` — o que `_obras_gravadas` já tinha lido para materializar a
+    ficha — entra como parâmetro em vez de ser relido: é o mesmo retrato, dentro
+    da mesma transação, e reler abriria janela para ele mudar no meio.
+
+    O campo na trilha é `obra:<componente>:<campo>` porque a obra não tem
+    identidade própria na tela — quem a identifica é o NOME do componente, que é o
+    que a pessoa lê na linha da tabela. Índice (`obra:2:qtd`) seria mais curto e
+    não diria nada a quem consulta a auditoria seis meses depois.
     """
+    novas = {
+        str(i): {"nome": o.get("nome"), **{k: _numero(o.get(k)) for k in _OBRA}}
+        for i, o in enumerate(obras)
+    }
+    mudancas: list[Alteracao] = []
+    for indice in sorted(set(atual) | set(novas), key=int):
+        antiga = atual.get(indice) or {}
+        nova = novas.get(indice) or {}
+        nome = nova.get("nome") or antiga.get("nome") or f"índice {indice}"
+        mudancas += diferencas(
+            {k: antiga.get(k) for k in _OBRA},
+            {k: nova.get(k) for k in _OBRA},
+            prefixo=f"obra:{nome}:",
+            # Obra é cadastro da Regional inteiro: não há número de obra vindo do
+            # Databricks para "corrigir".
+            origem=REGIONAL,
+        )
+
     await con.execute(f"DELETE FROM {_i()}.{tabela} WHERE {chave} = $1", ficha_id)
     if not obras:
-        return
+        return mudancas
 
     colunas = [chave, "componente", *_OBRA.values(), "capex"]
     marc = ", ".join(f"${i + 1}" for i in range(len(colunas)))
@@ -375,6 +509,7 @@ async def _gravar_obras(
     await con.executemany(
         f"INSERT INTO {_i()}.{tabela} ({', '.join(colunas)}) VALUES ({marc})", linhas
     )
+    return mudancas
 
 
 async def _gravar_coleta(
@@ -385,12 +520,17 @@ async def _gravar_coleta(
     ficha_id: str,
     params: dict[str, Any],
     bloco_db: dict[str, Any],
-) -> None:
+) -> list[Alteracao]:
     """A ficha de coleta (sub-bacia ou CTS) — os dois blocos na mesma linha.
 
     `params` viaja sempre inteiro, inclusive `popU`/`popA`. A régua de cobertura da
     cidade decide se esses dois APARECEM na tela e se contam pendência; não se são
     gravados. Trocar a régua de uma cidade não pode apagar o que alguém preencheu.
+
+    Devolve o que MUDOU. A leitura de antes acontece dentro da mesma transação e
+    depois do lock da ficha (`salvar_coleta`), então ninguém escreve entre ler e
+    comparar — sem isso a trilha registraria como "de X" um X que já não era o
+    valor no instante da gravação.
     """
     juntos = {**bloco_db, **params}
     frente_para_coluna = {v: k for k, v in _COLETA.items()}
@@ -400,8 +540,19 @@ async def _gravar_coleta(
         if k in frente_para_coluna and k not in NAO_MODELADOS
     ]
     if not colunas:
-        return
+        return []
     valores = [_numerico(juntos[_COLETA[c]], _COLETA[c]) for c in colunas]
+
+    # O ANTES, pelas mesmas colunas que vão ser escritas. Ficha que ainda não
+    # existe devolve linha nenhuma, e aí todo campo preenchido é criação — que é
+    # a leitura certa, e é diferente de "mudou de vazio para X".
+    linha = await con.fetchrow(
+        f"SELECT {', '.join(colunas)} FROM {_i()}.{tabela} WHERE {chave} = $1",
+        ficha_id,
+    )
+    antes = {_COLETA[c]: (linha[c] if linha else None) for c in colunas}
+    depois = {_COLETA[c]: v for c, v in zip(colunas, valores, strict=True)}
+
     marc = ", ".join(f"${i + 2}" for i in range(len(colunas)))
     sets = ", ".join(f"{c} = ${i + 2}" for i, c in enumerate(colunas))
     await con.execute(
@@ -411,6 +562,7 @@ async def _gravar_coleta(
         ficha_id,
         *valores,
     )
+    return diferencas(antes, depois, origem=_origem_do_campo)
 
 
 # ---------------------------------------------------------------- pertencimento
@@ -511,9 +663,9 @@ async def _marcar_autoria(
     quem mexeu no campo A perdia a gravação porque um colega tinha mexido no
     campo B. Barrava em nome de um conflito que quase nunca era um.
 
-    **O autor vem do TOKEN, e o parâmetro `autor` é o mesmo que a trilha de
-    override usa (`_gravar_overrides`).** Nunca do corpo: um cliente que pudesse
-    escolher o nome que assina transformaria a auditoria em decoração.
+    **O autor vem do TOKEN, e o parâmetro `autor` é o mesmo que a trilha usa
+    (`_registrar`).** Nunca do corpo: um cliente que pudesse escolher o nome que
+    assina transformaria a auditoria em decoração.
 
     `now()` e não `clock_timestamp()`: dentro da transação, `now()` é o instante
     em que ela COMEÇOU, então a ficha, suas obras e sua trilha ficam com o mesmo
@@ -563,7 +715,7 @@ async def salvar_coleta(
         # ficha termina com metade de cada uma. Ordenar não é o mesmo que barrar.
         await con.execute("SELECT pg_advisory_xact_lock(hashtext($1))", ficha_id)
         _exigir_ficha_inteira(corpo)
-        await _gravar_coleta(
+        mudancas = await _gravar_coleta(
             con,
             tabela=tabela,
             chave=chave,
@@ -574,30 +726,114 @@ async def salvar_coleta(
         # `in` e não `or []`: ficha SEM a chave não mexe nas obras; ficha COM a
         # chave e lista vazia apaga todas. São intenções diferentes.
         if "obrasOverride" in corpo:
-            await _gravar_obras(
+            gravadas = await _obras_gravadas(con, tab_obra, chave, ficha_id)
+            mudancas += await _gravar_obras(
                 con,
                 tabela=tab_obra,
                 chave=chave,
                 ficha_id=ficha_id,
                 obras=_obras_da_ficha(
                     corpo.get("obrasOverride"),
-                    await _obras_gravadas(con, tab_obra, chave, ficha_id),
+                    gravadas,
                     esperadas=OBRAS_CTS if e_cts else OBRAS_SUBBACIA,
                     rotulo=tipo,
                 ),
+                atual=gravadas,
             )
-        n = await _gravar_overrides(
+        n = await _registrar(
             con,
-            tipo="cts" if e_cts else "sub-bacia",
+            tipo=tipo,
             ficha_id=ficha_id,
             unidade_id=unidade_id,
             autor=autor,
-            overrides=corpo.get("overrides") or [],
+            mudancas=mudancas,
         )
         auditoria = await _marcar_autoria(
             con, tabela=tabela, chave=chave, ficha_id=ficha_id, autor=autor
         )
-    return {"id": ficha_id, "overridesGravados": n, **auditoria}
+    return {"id": ficha_id, "alteracoesGravadas": n, **auditoria}
+
+
+async def _diff_da_cidade(
+    con: Any, cidade_id: str, corpo: dict[str, Any]
+) -> list[Alteracao]:
+    """O que muda na ficha de cidade — as três tabelas, antes de qualquer escrita.
+
+    Tem de rodar ANTES, e não depois: metas e faixas são apagadas e reinseridas em
+    bloco, e depois do `DELETE` não sobra com o que comparar.
+
+    ## Metas e faixas são COLEÇÕES, e por isso a chave importa
+
+    A meta é identificada pelo ANO, e a faixa pela COBERTURA — não pela posição na
+    lista. Comparar por posição diria que remover a primeira meta mudou todas as
+    outras, quando o que houve foi uma remoção só.
+
+    Com a chave certa, a leitura sai limpa nos três casos, e a convenção de NULL
+    da migração 007 dá conta dos dois extremos:
+
+        meta:2030:pct   ""   -> "85"    a meta passou a existir
+        meta:2030:pct   "80" -> "85"    o valor mudou
+        meta:2030:pct   "80" -> NULL    a meta foi removida
+    """
+    mudancas: list[Alteracao] = []
+    cidade = corpo.get("cidade") or {}
+
+    linha = await con.fetchrow(
+        f"""SELECT data_fim_concessao, unidade_cobertura
+              FROM {_i()}.cidade_operacional WHERE cidade_id = $1""",
+        cidade_id,
+    )
+    mudancas += diferencas(
+        {
+            "fim": linha["data_fim_concessao"] if linha else None,
+            "cob": linha["unidade_cobertura"] if linha else None,
+        },
+        {
+            "fim": _numerico(cidade.get("fim"), "cidade.fim"),
+            "cob": cidade.get("cob"),
+        },
+        origem=REGIONAL,
+    )
+
+    if "metas" in corpo:
+        antes = {
+            _texto_trilha(l["ano"]): l["cobertura_pct"]
+            for l in await con.fetch(
+                f"SELECT ano, cobertura_pct FROM {_i()}.metas_cobertura WHERE cidade_id = $1",
+                cidade_id,
+            )
+        }
+        depois = {
+            _texto_trilha(_numerico(m.get("ano"), "meta.ano")): _numerico(
+                m.get("pct"), "meta.pct"
+            )
+            for m in corpo.get("metas") or []
+        }
+        mudancas += [
+            Alteracao(f"meta:{a.campo}:pct", a.antes, a.depois, REGIONAL)
+            for a in diferencas(antes, depois, origem=REGIONAL)
+        ]
+
+    if "fator" in corpo:
+        antes = {
+            _texto_trilha(l["cobertura_pct"]): l["paridade"]
+            for l in await con.fetch(
+                f"SELECT cobertura_pct, paridade FROM {_i()}.fator_esgoto WHERE cidade_id = $1",
+                cidade_id,
+            )
+        }
+        depois = {
+            _texto_trilha(_numerico(f.get("cob"), "fator.cob")): _numerico(
+                f.get("par"), "fator.par"
+            )
+            for f in corpo.get("fator") or []
+        }
+        mudancas += [
+            Alteracao(f"faixa:{a.campo}:paridade", a.antes, a.depois, REGIONAL)
+            for a in diferencas(antes, depois, origem=REGIONAL)
+        ]
+
+    return mudancas
 
 
 async def salvar_contrato(
@@ -613,6 +849,7 @@ async def salvar_contrato(
     await exigir_dona("cidade", cidade_id, unidade_id)
     async with db.transacao() as con:
         await con.execute("SELECT pg_advisory_xact_lock(hashtext($1))", cidade_id)
+        mudancas = await _diff_da_cidade(con, cidade_id, corpo)
         await con.execute(
             f"""INSERT INTO {_i()}.cidade_operacional
                     (cidade_id, data_fim_concessao, unidade_cobertura)
@@ -655,13 +892,13 @@ async def salvar_contrato(
                     for f in corpo.get("fator") or []
                 ],
             )
-        n = await _gravar_overrides(
+        n = await _registrar(
             con,
             tipo="cidade",
             ficha_id=cidade_id,
             unidade_id=unidade_id,
             autor=autor,
-            overrides=corpo.get("overrides") or [],
+            mudancas=mudancas,
         )
         # A ficha de cidade sai de três tabelas e o carimbo mora só em
         # `cidade_operacional`. É de propósito: quem editou uma meta editou a ficha
@@ -674,7 +911,7 @@ async def salvar_contrato(
             ficha_id=cidade_id,
             autor=autor,
         )
-    return {"id": cidade_id, "overridesGravados": n, **auditoria}
+    return {"id": cidade_id, "alteracoesGravadas": n, **auditoria}
 
 
 #: Nomes do tipo `Ete` do front -> colunas. Tem de casar com o que `cadastro.etes`
@@ -722,8 +959,25 @@ async def salvar_ete(
     presentes = [k for k in _ETE if k in ete]
     async with db.transacao() as con:
         await con.execute("SELECT pg_advisory_xact_lock(hashtext($1))", ete_id)
+        mudancas: list[Alteracao] = []
         if presentes:
             colunas = [_ETE[k] for k in presentes]
+            valores = [
+                _numerico(ete[k], f"ete.{k}") if k in _ETE_NUM else ete[k]
+                for k in presentes
+            ]
+            # O upsert toca SÓ os campos presentes, e o diff segue a mesma régua:
+            # campo que o corpo não trouxe não foi alterado, e afirmar que foi
+            # encheria a trilha de mudanças que ninguém fez.
+            linha = await con.fetchrow(
+                f"SELECT {', '.join(colunas)} FROM {_i()}.ete_capex WHERE ete_id = $1",
+                ete_id,
+            )
+            mudancas = diferencas(
+                {k: (linha[_ETE[k]] if linha else None) for k in presentes},
+                dict(zip(presentes, valores, strict=True)),
+                origem=REGIONAL,
+            )
             marc = ", ".join(f"${i + 2}" for i in range(len(colunas)))
             sets = ", ".join(f"{c} = ${i + 2}" for i, c in enumerate(colunas))
             await con.execute(
@@ -731,23 +985,20 @@ async def salvar_ete(
                     VALUES ($1, {marc})
                     ON CONFLICT (ete_id) DO UPDATE SET {sets}""",
                 ete_id,
-                *[
-                    _numerico(ete[k], f"ete.{k}") if k in _ETE_NUM else ete[k]
-                    for k in presentes
-                ],
+                *valores,
             )
-        n = await _gravar_overrides(
+        n = await _registrar(
             con,
             tipo="ete",
             ficha_id=ete_id,
             unidade_id=unidade_id,
             autor=autor,
-            overrides=corpo.get("overrides") or [],
+            mudancas=mudancas,
         )
         auditoria = await _marcar_autoria(
             con, tabela="ete_capex", chave="ete_id", ficha_id=ete_id, autor=autor
         )
-    return {"id": ete_id, "overridesGravados": n, **auditoria}
+    return {"id": ete_id, "alteracoesGravadas": n, **auditoria}
 
 
 # ---------------------------------------------------------------------- CTS

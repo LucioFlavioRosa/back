@@ -42,6 +42,8 @@ app/
                      cadastro_escrita.py (ficha + trilha) ·
                      pendencias.py (a mesma conta que a tela faz)
 migracoes/           001_override.sql — a trilha de auditoria do cadastro
+                     007_trilha_do_cadastro.sql — ela passa a cobrir a ficha
+                     inteira, e quem calcula o diff é o servidor
                      005_capex_derivado.sql — o banco recusa CAPEX que não seja
                      quantidade × preco_unitario
                      006_auditoria_cadastro.sql — última alteração e autor por
@@ -176,6 +178,44 @@ Isso não diminui a denúncia: ela é o que tornou os dois visíveis, e o mesmo
 estado pode ser produzido por qualquer carga parcial. `dev/smoke_incons.py` cobre isso perguntando ao banco quais
 deveriam aparecer e conferindo que a API disse exatamente aquilo — sem fixar ids,
 para não falhar no dia em que o cadastro for corrigido.
+
+## A trilha de auditoria do cadastro
+
+Quem mudou o quê, quando — e **quem calcula é este serviço**, não o cliente.
+
+A `input.override` nasceu com um escopo estreito ("que número do Databricks a
+Regional sobrescreveu?") e dois defeitos de desenho que são o mesmo erro visto de
+dois ângulos: ela era **montada pelo front** e mandada pronta no corpo do `PUT`.
+
+O que isso produzia, medido antes de sair:
+
+| parte da ficha | tinha trilha? |
+| --- | --- |
+| bloco `db` (Databricks) | sim |
+| bloco `params` | **não** |
+| obras | **não** |
+| cidade, metas, faixas | **não** |
+| ETE | **não** |
+
+E, mesmo onde havia, o `valorAntigo` era o valor lido no seed da tela: duas
+edições na mesma sessão gravavam `A → B` e depois `A → C`, quando o segundo salto
+foi `B → C`.
+
+Hoje `cadastro_escrita.diferencas` compara o que está gravado com o que chegou,
+campo a campo, **antes** de cada gravação — inclusive antes dos `DELETE`+`INSERT`
+em bloco das obras e das metas, onde depois não sobraria com o que comparar. O
+`autor` vem do token, como sempre veio.
+
+Três consequências que valem saber:
+
+- **Não há dedupe.** Ela existia porque o cliente reenviava a trilha inteira a
+  cada `PUT`; comparando com o dado gravado, salvar sem mudar nada não produz
+  diferença nenhuma. A consulta saiu.
+- **`GET /unidades/{id}/alteracoes` existe.** A trilha era gravada desde a 001 e
+  **nunca foi lida por ninguém** — o único `SELECT` nela servia para deduplicar.
+  Auditoria que só o DBA alcança não é auditoria do produto.
+- **O volume é do uso, não da carga.** A trilha só registra o que passa pelo
+  `PUT`; recarregar a planilha não gera uma linha sequer.
 
 ## O contrato do EXECUTOR
 
@@ -330,6 +370,12 @@ Duas, no banco do pacote de produção:
    manda as que existem nos dois lados. O que ela quebra, se faltar, é o
    `/readyz` — de propósito. Ela substituiu o 409 de ficha, então um pod que sobe
    sem ela deixa a escrita sem proteção **e** sem aviso.
+7. ~~**Trilha do cadastro completa**~~ — **feita**
+   (`migracoes/007_trilha_do_cadastro.sql`). Acrescenta `origem` a
+   `input.override` e deixa `valor_novo` aceitar NULL. Mesma condição das
+   anteriores: aplicar nos bancos existentes e dobrar no `ddl_input.sql`.
+   **Não quebra nada existente**: a coluna nova tem default, e o `NOT NULL` que
+   saiu era mais restritivo, não menos.
 
 ## Uma divergência achada na leitura das fontes
 
