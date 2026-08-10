@@ -3,11 +3,28 @@
 Documento de passagem. Escrito no fim de uma conversa longa, para a próxima
 começar com o contexto certo em vez de reconstruí-lo.
 
-> **Leia antes de codar:** a revisão do Codex sobre este plano ficou em
-> `%TEMP%\claude\...\scratchpad\rev_plano.md` (o caminho completo aparece na
-> conversa anterior). Ela responde se a ordem abaixo tem retrabalho e se algum
-> item quebra alguma coisa. Se o arquivo não estiver mais lá, rode a revisão de
-> novo antes do item 3, que é o mais arriscado.
+> **Leia `PLANO-REVISAO.md` antes de codar.** O Codex revisou este plano com
+> acesso ao ambiente e **a ordem numerada abaixo está errada**. A ordem certa é:
+>
+> ```
+> 7  →  1+2 juntos  →  3+4 juntos  →  6  →  5
+> ```
+>
+> Os motivos, um por linha:
+>
+> - **7 antes de 3** — decidir o `capex` muda a leitura e a escrita de
+>   `componentes_*_capex`, que é justamente o que o item 3 reescreve.
+> - **1 e 2 juntos** — mexem no mesmo `PUT`. Remover o `versao` antes de entregar
+>   a auditoria cria *last-write-wins sem nenhum sinal visível*: perde a proteção
+>   e não entrega a compensação que a R6 pede.
+> - **3 e 4 juntos** — tirar o literal sem já mostrar *qual componente faltou*
+>   piora a experiência da R3 em vez de melhorar.
+> - **6 antes de validar o 5** — há `SUCESSO` em `controle` sem publicação em
+>   `otim_meta`, e isso polui a dedupe se a consulta for feita errado.
+>
+> E uma correção ao item 3: o `test_base_obras.py` **não deve simplesmente sair**.
+> Deve virar teste de cardinalidade contra o banco — sub-bacia = 5, CTS = 4, nomes
+> esperados, e recusa quando falta componente.
 
 ---
 
