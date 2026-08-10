@@ -27,6 +27,8 @@ from app.infra.repositorios.cadastro import (
     NAO_MODELADOS,
     _ficha_coleta,
     pt_br,
+    pt_br_ano,
+    SEM_SEPARADOR,
 )
 
 # A cardinalidade vem de `pendencias`, e nao de um numero repetido aqui: e a MESMA
@@ -192,14 +194,25 @@ def _igual(a: Any, b: Any) -> bool:
     return str(a) == str(b)
 
 
-def _texto_trilha(v: Any) -> str | None:
-    """O valor como a tela o mostra. `None` continua `None` — ver `Alteracao`."""
+def _texto_trilha(v: Any, campo: str = "") -> str | None:
+    """O valor como a tela o mostra. `None` continua `None` — ver `Alteracao`.
+
+    **ANO e CÓDIGO não levam separador de milhar**, e a régua é a mesma da
+    leitura (`cadastro.SEM_SEPARADOR`): `fim`, `ano`, `anoObrig`, `proibAte`.
+
+    Sem isto a trilha registrava o ano 2044 como `2.044` — e pior, o ano vira
+    CHAVE da meta (`meta:2044:pct`), então a chave saía formatada como
+    `meta:2.044:pct`. Um ano com ponto é erro de leitura na tela, e uma chave com
+    ponto é um identificador que não existe em lugar nenhum. Pego navegando a
+    ficha de Contrato & Metas depois de pronto, e não pelos testes: eles
+    exercitavam preço e quantidade, onde o separador está certo.
+    """
     if v is None:
         return None
     if isinstance(v, bool):
         return "Sim" if v else "Nao"
     if isinstance(v, (int, float)):
-        return pt_br(v)
+        return (pt_br_ano if campo in SEM_SEPARADOR else pt_br)(v)
     texto = str(v).strip()
     return texto or None
 
@@ -230,8 +243,10 @@ def diferencas(
         saida.append(
             Alteracao(
                 campo=f"{prefixo}{chave}",
-                antes=_texto_trilha(a),
-                depois=_texto_trilha(b),
+                # A chave NUA decide o formato, e não o campo com prefixo:
+                # `obra:Rede coletora:anoObrig` continua sendo um `anoObrig`.
+                antes=_texto_trilha(a, chave),
+                depois=_texto_trilha(b, chave),
                 origem=de_origem(chave),
             )
         )
@@ -797,14 +812,14 @@ async def _diff_da_cidade(
 
     if "metas" in corpo:
         antes = {
-            _texto_trilha(l["ano"]): l["cobertura_pct"]
+            _texto_trilha(l["ano"], "ano"): l["cobertura_pct"]
             for l in await con.fetch(
                 f"SELECT ano, cobertura_pct FROM {_i()}.metas_cobertura WHERE cidade_id = $1",
                 cidade_id,
             )
         }
         depois = {
-            _texto_trilha(_numerico(m.get("ano"), "meta.ano")): _numerico(
+            _texto_trilha(_numerico(m.get("ano"), "meta.ano"), "ano"): _numerico(
                 m.get("pct"), "meta.pct"
             )
             for m in corpo.get("metas") or []

@@ -83,6 +83,28 @@ def test_valores_em_pt_br_porque_a_trilha_e_lida_por_gente():
     assert "," in m[0].depois
 
 
+def test_ano_e_codigo_nao_levam_separador_de_milhar():
+    """`2044`, e não `2.044`.
+
+    Pego navegando a ficha de Contrato & Metas, e não pelos testes: eles
+    exercitavam preço e quantidade, onde o separador ESTÁ certo. A régua é a
+    mesma da leitura (`cadastro.SEM_SEPARADOR`).
+
+    Num ano, o ponto é erro de leitura. E como o ano é a CHAVE da meta, ele
+    contaminava o identificador: a trilha gravava `meta:2.044:pct`, uma chave que
+    não corresponde a nada.
+    """
+    assert diferencas({"fim": 2041.0}, {"fim": 2055.0})[0].antes == "2041"
+    assert diferencas({"ano": None}, {"ano": 2044.0})[0].depois == "2044"
+
+    # Prefixo não muda a régua: `obra:X:anoObrig` continua sendo um `anoObrig`.
+    m = diferencas({"anoObrig": 0.0}, {"anoObrig": 2030.0}, prefixo="obra:Rede coletora:")
+    assert m[0].depois == "2030"
+
+    # E quantidade continua com separador — é o outro lado da mesma régua.
+    assert diferencas({"qtd": 1.0}, {"qtd": 2841.5})[0].depois == "2.841,5"
+
+
 def test_criacao_e_remocao_sao_distinguiveis():
     """`None` tem significado nos dois lados, e são significados diferentes.
 
