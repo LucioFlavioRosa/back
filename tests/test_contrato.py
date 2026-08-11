@@ -50,6 +50,10 @@ FORMAS_DO_CONTRATO = {
     "GET /unidades/{}/sub-bacias",
     "GET /unidades/{}/etes",
     "GET /unidades/{}/cts",
+    # A trilha de auditoria do cadastro. Entrou junto com o diff calculado no
+    # servidor: gravar mais e continuar sem como ler teria piorado o que ja era
+    # ruim — a trilha existia desde a 001 e nunca foi lida por ninguem.
+    "GET /unidades/{}/alteracoes",
     # DEPLOY.md §3 — cadastro (escrita). Uma ficha por vez; o corpo e a ficha
     # inteira, e a trilha de override viaja junto.
     #
@@ -97,7 +101,7 @@ def test_nenhum_endpoint_a_mais():
 def test_a_lista_nao_esta_vazia():
     # Guarda contra o teste passar por não encontrar rota nenhuma — se `_expostas`
     # quebrar com uma mudança do FastAPI, os dois testes acima passariam vazios.
-    assert len(_expostas()) == len(FORMAS_DO_CONTRATO) == 27
+    assert len(_expostas()) == len(FORMAS_DO_CONTRATO) == 28
 
 
 @pytest.mark.parametrize("run_id", ["r1' OR 1=1", "../etc", "com espaco", ""])

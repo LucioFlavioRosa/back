@@ -17,8 +17,6 @@ das colunas. A tradução mora aqui de propósito: é o único lugar onde as dua
 convenções se encontram, e espalhá-la faria cada endpoint inventar a sua.
 """
 
-import hashlib
-import json
 import logging
 from typing import Any
 
@@ -80,27 +78,27 @@ def pt_br_ano(v: Any) -> str:
     return pt_br(v)
 
 
-def versao(ficha: Any) -> str:
-    """A versão de uma ficha é o HASH do conteúdo que o `GET` devolveu.
+def _auditoria(linha: dict[str, Any]) -> dict[str, Any]:
+    """`atualizadoEm` e `atualizadoPor` — a última gravação desta ficha.
 
-    Não é um contador: é a resposta a "isto ainda está como quando você leu?".
+    A escrita de cadastro não tem controle otimista: a tela usa este carimbo para
+    mostrar quem gravou por último e quando (R6). Duas pessoas na mesma ficha
+    podem se sobrescrever, e é aqui que isso fica visível — depois, não no momento
+    da gravação.
 
-    A escolha do hash sobre uma coluna `versao` tem três motivos, e o primeiro é o
-    que decide: **não precisa de migração**. As tabelas de cadastro vivem no
-    repositório do otimizador, e acrescentar coluna em cinco delas é uma migração
-    coordenada para resolver um problema que o conteúdo já responde.
+    **ISO-8601 com fuso, e não data formatada.** Quem lê pode estar em outro fuso,
+    e uma data formatada no servidor congela o formato. A formatação é do front.
 
-    Os outros dois: uma ficha pode nascer de mais de uma tabela (a de cidade sai de
-    `cidade_operacional` + `metas_cobertura` + `fator_esgoto`, e combinar três
-    contadores é pior que hashear o resultado); e duas pessoas fazendo a MESMA
-    edição não geram conflito, porque o conteúdo final é o mesmo — com contador,
-    a segunda levaria um 409 que não protege nada.
-
-    `sort_keys` porque a ordem das chaves de um JSON não significa nada: sem ele, a
-    mesma ficha lida duas vezes poderia dar versões diferentes.
+    **Vazio, e não nulo.** A tela trata todo campo de ficha como string editável e
+    chama `.trim()`; um `null` ali derruba a tela inteira, não só o campo. Ficha
+    nunca gravada pela tela devolve os dois vazios — a coluna não tem
+    `DEFAULT now()`, para não afirmar uma alteração que não houve.
     """
-    bruto = json.dumps(ficha, sort_keys=True, ensure_ascii=False, default=str)
-    return hashlib.sha256(bruto.encode("utf-8")).hexdigest()[:16]
+    quando = linha.get("atualizado_em")
+    return {
+        "atualizadoEm": quando.isoformat() if quando else "",
+        "atualizadoPor": linha.get("atualizado_por") or "",
+    }
 
 
 def _cidades_cte() -> str:
@@ -258,7 +256,8 @@ async def contrato(unidade_id: str) -> dict[str, Any]:
     cidades = await db.buscar(
         f"""SELECT c.cidade_id AS id, c.cidade_name AS nome,
                    o.data_fim_concessao AS fim,
-                   o.unidade_cobertura AS cob
+                   o.unidade_cobertura AS cob,
+                   o.atualizado_em, o.atualizado_por
               FROM ({_cidades_cte()}) c
               LEFT JOIN {_i()}.cidade_operacional o USING (cidade_id)
              ORDER BY c.cidade_name""",
@@ -290,20 +289,24 @@ async def contrato(unidade_id: str) -> dict[str, Any]:
             for k, v in linha.items()
         }
 
-    cidades = [_txt(c, ("id", "nome")) for c in cidades]
+    # A auditoria sai do `_txt` porque não é campo de ficha: `pt_br` a trataria
+    # como número e a devolveria mastigada. Ela entra depois, pelo `_auditoria`,
+    # que é o único lugar que sabe a forma dela.
+    #
+    # E ela cobre a ficha de cidade INTEIRA, mesmo saindo só de `cidade_operacional`:
+    # a ficha nasce de três tabelas, mas o `PUT` grava as três de uma vez e carimba
+    # a cidade em toda gravação — quem mexeu numa meta aparece aqui.
+    _AUDITADAS = ("atualizado_em", "atualizado_por")
+    cidades = [
+        {
+            **_txt({k: v for k, v in c.items() if k not in _AUDITADAS}, ("id", "nome")),
+            **_auditoria(c),
+        }
+        for c in cidades
+    ]
     metas = [_txt(m, ("cid",)) for m in metas]
     fator = [_txt(f, ("cid",)) for f in fator]
 
-    # A ficha de cidade sai de TRÊS tabelas — a versão cobre as três, senão editar
-    # uma meta não invalidaria a leitura de quem tem a cidade aberta.
-    for c in cidades:
-        c["versao"] = versao(
-            {
-                "cidade": {k: v for k, v in c.items() if k != "id"},
-                "metas": [m for m in metas if m["cid"] == c["id"]],
-                "fator": [f for f in fator if f["cid"] == c["id"]],
-            }
-        )
     return {"cidades": cidades, "metas": metas, "fator": fator}
 
 
@@ -399,7 +402,11 @@ def _ficha_coleta(linha: dict[str, Any], chave: str) -> dict[str, Any]:
     db_bloco = {v: pt_br(linha[k]) for k, v in _COLETA.items() if v in _DO_DATABRICKS}
     params = {v: pt_br(linha[k]) for k, v in _COLETA.items() if v not in _DO_DATABRICKS}
     db_bloco["ticket"] = _ticket(linha)
-    return {"id": linha[chave], "db": db_bloco, "params": params}
+    # A auditoria fica FORA de `db` e de `params`: os dois blocos são o contrato do
+    # que o `PUT` devolve inteiro (`_exigir_ficha_inteira`), e quem gravou não é
+    # campo de ficha — é fato sobre a ficha. Dentro de um bloco, o cliente passaria
+    # a ser obrigado a reenviá-la, e reenviar autoria é justamente o que não pode.
+    return {"id": linha[chave], "db": db_bloco, "params": params, **_auditoria(linha)}
 
 
 async def sub_bacias(unidade_id: str) -> dict[str, Any]:
@@ -459,13 +466,6 @@ async def sub_bacias(unidade_id: str) -> dict[str, Any]:
             "jusante": l["jusante"] or "",
             "obrasOverride": obras.get(sid, {}),
         }
-        # A versão é calculada sobre o que MUDA — `db`, `params` e as obras. Nome,
-        # sistema e jusante vêm da topologia e não são editáveis por esta ficha;
-        # incluí-los faria uma mudança na hierarquia invalidar edições em curso
-        # sem que ninguém tivesse tocado no dado.
-        ficha["versao"] = versao(
-            {k: ficha[k] for k in ("db", "params", "obrasOverride")}
-        )
         subs[sid] = ficha
 
     return {"arvore": _arvore(linhas, com_ficha=set(subs)), "subs": subs}
@@ -508,8 +508,21 @@ def _arvore(linhas: list[dict[str, Any]], com_ficha: set[str]) -> list[dict[str,
     ]
 
 
-#: Colunas de obra -> nomes do front. Inverso do `_OBRA` da escrita.
+#: Colunas de obra -> nomes do front. Inverso do `_OBRA` da escrita, mais o
+#: `componente`.
+#:
+#: `nome` NAO tem contrapartida em `_OBRA`, e a assimetria e proposital: o nome
+#: identifica a obra, nao e editavel na tela, e a escrita o grava a partir da
+#: linha que ja esta no banco. Aceita-lo de volta no corpo deixaria um cliente
+#: renomear componente — e o nome e justamente o que o motor casa com
+#: `componentes_*_capex` (`otimizador_capex_v62.py:1136`).
+#:
+#: Ele passou a viajar quando a base literal de obras saiu do front: sem base, e
+#: daqui que a tela tira o rotulo de cada linha. `pt_br` devolve texto intacto
+#: (`str(v)` para o que nao e numero), entao nome e unidade atravessam o mesmo
+#: caminho dos numeros sem tratamento especial.
 _OBRA_LEITURA = {
+    "componente": "nome",
     "quantidade": "qtd",
     "unidade": "un",
     "preco_unitario": "preco",
@@ -596,7 +609,7 @@ async def etes(unidade_id: str) -> dict[str, Any]:
                    e.capacidade_por_modulo, e.capex_por_modulo, e.opex_por_modulo,
                    e.tempo_de_execucao, e.capacidade_nominal_atual,
                    e.vazao_de_operacao_atual, e.capex_terreno, e.modulos, e.wacc,
-                   e.nova
+                   e.nova, e.atualizado_em, e.atualizado_por
               FROM {_i()}.ete_capex e
               JOIN {_i()}.sistema_topologia t ON t.componente_sistema_id = e.ete_id
               JOIN {_i()}.cidade_sistema s USING (sistema_id)
@@ -626,8 +639,8 @@ async def etes(unidade_id: str) -> dict[str, Any]:
             "cidId": l["cidade_id"] or "",
             "nova": (l["nova"] or "Nao"),
             **{destino: pt_br(l[col]) for col, destino in MAPA.items()},
+            **_auditoria(l),
         }
-        e["versao"] = versao({k: v for k, v in e.items() if k != "id"})
         etes.append(e)
     return {"etes": etes}
 
@@ -686,9 +699,6 @@ async def cts(unidade_id: str) -> dict[str, Any]:
             "jusante": l["jusante"] or "",
             "obrasOverride": obras.get(cid, {}),
         }
-        ficha["versao"] = versao(
-            {k: ficha[k] for k in ("db", "params", "obrasOverride")}
-        )
         ctss[cid] = ficha
 
     return {
@@ -775,3 +785,81 @@ async def _cts_inconsistentes(unidade_id: str) -> list[dict[str, Any]]:
             ", ".join(f"{a['tipo']}:{a['id']}" for a in achados[:5]),
         )
     return [dict(a) for a in achados]
+
+
+#: Quantas alterações a leitura devolve por vez. Não é paginação — é um teto.
+#:
+#: A trilha é append-only e cresce com o uso: uma ficha muito editada acumula
+#: centenas de linhas, e mandar todas para desenhar uma lista que ninguém rola
+#: até o fim gasta banda para nada. O teto é generoso o bastante para a pergunta
+#: real ("o que andou mudando aqui") e a resposta DIZ quando cortou, para a tela
+#: não afirmar que aquilo é o histórico inteiro.
+LIMITE_ALTERACOES = 200
+
+
+async def alteracoes(
+    unidade_id: str,
+    *,
+    tipo: str | None = None,
+    ficha_id: str | None = None,
+    limite: int = LIMITE_ALTERACOES,
+) -> dict[str, Any]:
+    """A trilha de auditoria do cadastro — quem mudou o quê, quando.
+
+    ## Por que esta função existe
+
+    A trilha era gravada desde a migração 001 e **nunca foi lida por ninguém**. O
+    único `SELECT` nela, em todo o serviço, servia para deduplicar contra a última
+    linha — e saiu quando o servidor passou a comparar com o dado gravado. Ou
+    seja: o registro existia, crescia, e respondê-lo exigia SQL na mão.
+
+    Auditoria que só o DBA alcança não é auditoria do produto. É por isso que este
+    endpoint veio junto da trilha completa, e não depois: gravar mais e continuar
+    sem mostrar teria piorado a mesma situação.
+
+    ## A forma
+
+    `de`/`para` em vez de `valorAntigo`/`valorNovo`: é a leitura que a tela faz
+    ("de 2.472,6 para 3.000"), e os dois lados podem ser nulos, com significados
+    diferentes — `de` nulo é criação, `para` nulo é remoção
+    (`migracoes/007_trilha_do_cadastro.sql`).
+
+    `cortado` diz que o teto foi atingido. Sem ele a tela mostraria as 200 mais
+    recentes afirmando, em silêncio, que aquilo é tudo.
+    """
+    filtros = ["o.unidade_id = $1"]
+    args: list[Any] = [unidade_id]
+    if tipo:
+        args.append(tipo)
+        filtros.append(f"o.tipo = ${len(args)}")
+    if ficha_id:
+        args.append(ficha_id)
+        filtros.append(f"o.ficha_id = ${len(args)}")
+    args.append(limite + 1)  # +1 só para saber se havia mais
+
+    linhas = await db.buscar(
+        f"""SELECT o.tipo, o.ficha_id, o.campo, o.valor_antigo, o.valor_novo,
+                   o.autor, o.gravado_em, o.origem
+              FROM {_i()}.override o
+             WHERE {" AND ".join(filtros)}
+             ORDER BY o.gravado_em DESC, o.override_id DESC
+             LIMIT ${len(args)}""",
+        *args,
+    )
+    cortado = len(linhas) > limite
+    return {
+        "alteracoes": [
+            {
+                "tipo": l["tipo"],
+                "fichaId": l["ficha_id"],
+                "campo": l["campo"],
+                "de": l["valor_antigo"],
+                "para": l["valor_novo"],
+                "autor": l["autor"],
+                "quando": l["gravado_em"].isoformat(),
+                "origem": l["origem"],
+            }
+            for l in linhas[:limite]
+        ],
+        "cortado": cortado,
+    }

@@ -123,15 +123,52 @@ async def cts(unidade_id: str) -> dict[str, Any]:
     return await cadastro.cts(unidade_id)
 
 
+@router.get("/unidades/{unidade_id}/alteracoes")
+async def alteracoes(
+    unidade_id: str,
+    tipo: str | None = None,
+    fichaId: str | None = None,  # noqa: N803 — camelCase e a convencao do contrato
+    limite: int = cadastro.LIMITE_ALTERACOES,
+) -> dict[str, Any]:
+    """A trilha de auditoria do cadastro: quem mudou o quê, quando.
+
+    Sem filtro, e o que mudou na UNIDADE — a pergunta de quem audita. Com
+    `tipo` e `fichaId`, e o historico de UMA ficha, que e o que a tela abre a
+    partir da linha "ultima alteracao".
+
+    Esta rota e nova, e a ausencia dela era o defeito: a trilha existia desde a
+    migracao 001, crescia a cada gravacao, e nao havia como le-la pelo produto.
+    Auditoria que so o DBA alcanca nao e auditoria — alguem ia confiar nela numa
+    discussao sobre um numero e descobrir que ninguem conseguia abrir.
+
+    `GET` e nao parte da ficha: o historico e volumoso, muda por outro motivo que
+    a ficha, e ninguem quer paga-lo em toda abertura de tela. Quem quiser so o
+    ultimo evento ja o tem em `atualizadoEm`/`atualizadoPor`, dentro da ficha.
+    """
+    return await cadastro.alteracoes(
+        unidade_id,
+        tipo=tipo,
+        ficha_id=fichaId,
+        limite=max(1, min(limite, cadastro.LIMITE_ALTERACOES)),
+    )
+
+
 # ---------------------------------------------------------------------------
 # ESCRITA — uma ficha por vez, e o corpo e a ficha inteira
 # ---------------------------------------------------------------------------
-# O `autor` sai do TOKEN, nunca do corpo. Ele vai para a trilha de override, e
-# aceita-lo do cliente seria aceitar que alguem assinasse a correcao de outro —
-# numa trilha de auditoria isso e o defeito que a anula inteira.
+# O `autor` sai do TOKEN, nunca do corpo. Ele assina a trilha, e aceita-lo do
+# cliente seria aceitar que alguem assinasse a correcao de outro — numa trilha de
+# auditoria isso e o defeito que a anula inteira.
 #
-# A resposta traz `overridesGravados` de proposito: e o unico jeito de quem chamou
-# conferir que a trilha foi junto, sem consultar o banco.
+# O CORPO NAO CARREGA MAIS A TRILHA. Ele ja trouxe um `overrides` pronto, montado
+# pelo front, e o backend o gravava — auditoria que pergunta ao auditado o que ele
+# mudou tem o defeito no desenho. Hoje o servidor COMPARA o que esta gravado com o
+# que chegou (`cadastro_escrita.diferencas`), e cobre a ficha inteira: antes so o
+# bloco do Databricks gerava linha, e `params`, obras, cidade e ETE nao deixavam
+# rastro nenhum.
+#
+# A resposta traz `alteracoesGravadas` de proposito: e o unico jeito de quem
+# chamou conferir que a trilha foi junto, sem consultar o banco.
 #
 # E TODA escrita passa por `exigir_dona`: o `unidade_id` do caminho recorta a
 # ficha, e nao so assina a trilha. Sem isso dava para gravar na sub-bacia de

@@ -236,4 +236,90 @@ async def contar(unidade_id: str) -> dict[str, Any]:
             "etes": grupos["g4"],
             "cts": grupos["g5"],
         },
+        "faltando": await componentes_faltando(unidade_id),
     }
+
+
+async def componentes_faltando(unidade_id: str) -> list[dict[str, Any]]:
+    """Quais componentes de obra a ficha NÃO tem — nome por nome.
+
+    ## Por que isto existe, e por que só isto
+
+    A tela mostrava o NÚMERO de pendências e mais nada. Para campo em branco isso
+    bastava: o campo está na tela, destacado, e quem abre a ficha o encontra. Para
+    componente AUSENTE não bastava, e a diferença é de natureza — o componente que
+    falta não aparece em lugar nenhum. A ficha vem do `GET` com quatro linhas em
+    vez de cinco, e nada na tela diz que havia uma quinta.
+
+    Era pior antes: a base literal preenchia a linha que faltava com números de
+    template, então a tela mostrava CINCO e a quinta era invenção. A base saiu
+    (`cadastro_escrita._obras_da_ficha`), o `PUT` passou a recusar a ficha
+    incompleta, e sem esta lista a pessoa levaria a recusa sem saber o que
+    corrigir.
+
+    Por isso a lista traz **só o que a tela não tem como saber**. Campo vazio ela
+    conta sozinha, a cada tecla, sem ida ao servidor (`subPend`/`ctsPend` no
+    front); componente ausente só o banco sabe.
+
+    ## Os nomes não são literal
+
+    O conjunto esperado sai do PRÓPRIO banco: é o `DISTINCT componente` da tabela,
+    ou seja, "os componentes que as outras 4.849 fichas têm". Uma lista de nomes
+    aqui seria a base literal voltando pela porta dos fundos — e envelheceria do
+    mesmo jeito, com o mesmo silêncio.
+
+    O custo dessa escolha, dito: se TODAS as fichas perderem o mesmo componente,
+    ele deixa de ser esperado e ninguém é avisado. É improvável (a carga vem de
+    uma planilha, por aba inteira) e tem rede: `tests/test_obras_do_banco.py`
+    fixa a cardinalidade e os nomes contra o banco real.
+
+    Segue a forma do `inconsistencias[]` de `GET /cts` — `{tipo, id, detalhe}` —,
+    que já é como esta base denuncia cadastro meio existente.
+    """
+    return await db.buscar(
+        f"""
+        WITH cidades AS (
+            SELECT c.cidade_id
+              FROM {_i()}.superintendencia_cidade c
+              JOIN {_i()}.regional_superintendencia s USING (superintendencia_id)
+             WHERE s.unidade_id = $1
+        ),
+        comps AS (
+            SELECT t.componente_sistema_id AS id
+              FROM {_i()}.sistema_topologia t
+              JOIN {_i()}.cidade_sistema cs USING (sistema_id)
+              JOIN cidades c ON c.cidade_id = cs.cidade_id
+        ),
+        -- O que uma ficha DEVE ter é o que as fichas têm — não uma lista aqui.
+        esperado_sub AS (SELECT DISTINCT componente FROM {_i()}.componentes_subbacias_capex),
+        esperado_cts AS (SELECT DISTINCT componente FROM {_i()}.componentes_cts_capex)
+
+        SELECT 'sub-bacia' AS tipo, b.sub_bacia AS id, e.componente,
+               'Falta o componente ' || e.componente || ' nesta sub-bacia. '
+               'A simulação da unidade fica travada até o cadastro ter os '
+               'componentes, e o servidor recusa salvar a ficha assim.' AS detalhe
+          FROM {_i()}.subbacia_operacional b
+          JOIN comps c ON c.id = b.sub_bacia
+          CROSS JOIN esperado_sub e
+         WHERE NOT EXISTS (
+                SELECT 1 FROM {_i()}.componentes_subbacias_capex o
+                 WHERE o.sub_bacia = b.sub_bacia AND o.componente = e.componente)
+
+        UNION ALL
+
+        SELECT 'cts', p.cts, e.componente,
+               'Falta o componente ' || e.componente || ' nesta CTS. '
+               'A simulação da unidade fica travada até o cadastro ter os '
+               'componentes, e o servidor recusa salvar a ficha assim.'
+          FROM {_i()}.subbacia_cts p
+          JOIN comps c ON c.id = p.sub_bacia
+          JOIN {_i()}.cts_operacional o ON o.cts = p.cts
+          CROSS JOIN esperado_cts e
+         WHERE NOT EXISTS (
+                SELECT 1 FROM {_i()}.componentes_cts_capex k
+                 WHERE k.cts = p.cts AND k.componente = e.componente)
+
+         ORDER BY 1, 2, 3
+        """,
+        unidade_id,
+    )

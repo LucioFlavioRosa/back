@@ -62,8 +62,14 @@ async def historico(
                    h.metas_total, h.metas_nao_atingidas, h.tempo_s,
                    m.receita_total, m.opex_total,
                    m.regional, m.unidade_id, m.base_receita_param, m.usar_cts,
-                   m.foco_cobertura, m.incluir_industrial
+                   m.foco_cobertura, m.incluir_industrial,
+                   -- O PEDIDO, como ele foi feito. Ver `_pedido`.
+                   -- LEFT JOIN: rodada publicada direto pelo pacote (sem passar
+                   -- pela fila) nao tem `run_request`, e continua aparecendo na
+                   -- lista — sem o pedido, e nao ausente da tela.
+                   rq.params AS pedido
               FROM {_p()}.otim_vw_historico h
+              LEFT JOIN {_c()}.run_request rq ON rq.run_id = h.run_id
               JOIN LATERAL (
                    SELECT regional,
                           (SELECT u.unidade_id FROM {_i()}.unidade_regional u
@@ -105,7 +111,7 @@ async def em_voo(unidade: str | None, usuario: str | None) -> list[dict[str, Any
     """
     linhas = await db.buscar(
         f"""SELECT r.run_id, r.unidade, r.solicitado_por, r.solicitado_em,
-                   r.rotulo,
+                   r.rotulo, r.params AS pedido,
                    s.status, s.progresso, s.erro,
                    u.unidade_name
               FROM {_c()}.run_request r
@@ -133,9 +139,49 @@ async def em_voo(unidade: str | None, usuario: str | None) -> list[dict[str, Any
             "erro": l.get("erro"),
             "favorita": False,
             "publicada": False,
+            # A rodada em voo tem pedido desde o `POST` — e e a UNICA coisa que
+            # da para mostrar dela: metricas e parametros so existem depois da
+            # publicacao. Sem isto, abrir os detalhes de uma rodada em execucao
+            # nao mostraria nada alem do nome.
+            "pedido": _pedido(l.get("pedido")),
         }
         for l in linhas
     ]
+
+
+#: Chaves do pedido que a resposta JA expoe como campo proprio. Repeti-las dentro
+#: de `pedido` faria a tela mostrar a unidade duas vezes, e o autor duas vezes —
+#: com nomes tecnicos na segunda, que e pior que nao mostrar.
+_PEDIDO_REDUNDANTE = frozenset({"UNIDADE", "USUARIO", "REGIONAL"})
+
+
+def _pedido(bruto: Any) -> dict[str, Any] | None:
+    """As variaveis com que a rodada foi PEDIDA.
+
+    ## Por que ela existe, alem de `parametros`
+
+    `parametros` traz seis campos tipados, que sao os que o card do historico
+    mostra e a tela sabe formatar. Mas o formulario de simulacao tem mais de vinte
+    (`dominio/parametros.CHAVES_ACEITAS`): penalidade de cobertura, curva de
+    adocao, peso por cidade, anos extras de conclusao, teto de execucao, solver,
+    workers. Nenhum deles aparecia em lugar nenhum depois de a rodada existir.
+
+    Quem abre "o que foi usado nesta simulacao" e alguem tentando reproduzir ou
+    explicar um resultado. Seis de vinte e tres responde a pergunta errada.
+
+    ## De onde sai, e o que isso implica
+
+    De `controle.run_request.params` — o PEDIDO, e nao o que o motor ecoou. Sao
+    coisas diferentes: `otim_meta.params_extra` guarda cinco chaves que o job
+    escolheu devolver, enquanto o pedido e o que a pessoa mandou.
+
+    Consequencia honesta: rodada publicada sem passar pela fila (o pacote de
+    producao publica direto) nao tem pedido, e o campo vem `null`. A tela diz
+    isso em vez de inventar.
+    """
+    if not isinstance(bruto, dict):
+        return None
+    return {k: v for k, v in bruto.items() if k not in _PEDIDO_REDUNDANTE} or None
 
 
 def _resumo(l: dict[str, Any]) -> dict[str, Any]:
@@ -163,6 +209,7 @@ def _resumo(l: dict[str, Any]) -> dict[str, Any]:
         # deduzir pelo status: `em_voo` devolve `publicada: False`, e so a rodada
         # publicada tem drill-down para oferecer.
         "publicada": True,
+        "pedido": _pedido(l.get("pedido")),
         "parametros": {
             "baseReceita": l.get("base_receita_param"),
             "usarCts": l.get("usar_cts"),

@@ -15,17 +15,27 @@ Duas regras atravessam tudo aqui:
 """
 
 import re
-from typing import Any
+from typing import Any, NamedTuple
 
 from app.config import config
 from app.infra import db
 from app.infra.repositorios.cadastro import (
     _COLETA,
+    _DO_DATABRICKS,
     CAMPOS_DB,
     CAMPOS_PARAMS,
     NAO_MODELADOS,
     _ficha_coleta,
+    pt_br,
+    pt_br_ano,
+    SEM_SEPARADOR,
 )
+
+# A cardinalidade vem de `pendencias`, e nao de um numero repetido aqui: e a MESMA
+# regua que o `/prontidao` usa para denunciar obra ausente. Duas copias dela
+# fariam a tela dizer que a ficha esta incompleta e o `PUT` aceita-la — ou o
+# contrario, que e pior.
+from app.infra.repositorios.pendencias import OBRAS_CTS, OBRAS_SUBBACIA
 
 
 class FichaIncompleta(ValueError):
@@ -43,16 +53,6 @@ class FichaIncompleta(ValueError):
     Recusar e melhor que aceitar E ZERAR o que faltou: o segundo tambem honraria o
     contrato, mas apagaria dado de verdade por causa de um bug de cliente. Aqui, o
     pior caso e uma requisicao recusada com a lista do que falta.
-    """
-
-
-class FichaDesatualizada(RuntimeError):
-    """Alguem gravou esta ficha depois que voce a leu — 409.
-
-    Sem isto, duas pessoas na mesma ficha eram last-write-wins: a segunda gravacao
-    apagava a primeira em silencio, e quem perdeu o trabalho so descobria ao
-    recarregar. O front ja tem o fluxo de 409 pronto (oferece recarregar do
-    servidor); faltava o servidor ter como perceber.
     """
 
 
@@ -141,72 +141,161 @@ def _texto(v: Any) -> str | None:
     return None if v is None else str(v)
 
 
-async def _gravar_overrides(
+class Alteracao(NamedTuple):
+    """Uma linha da trilha, antes de ir para o banco.
+
+    `antes`/`depois` já em TEXTO, e no formato que a tela mostra (pt-BR): a trilha
+    é lida por gente, meses depois, e `2497.7` numa reunião obriga quem lê a
+    traduzir de cabeça o que a tela sempre mostrou como `2.497,70`.
+
+    `None` tem significado nos dois lados, e são significados diferentes:
+    `antes=None` é "não existia" (foi criado), `depois=None` é "deixou de existir"
+    (foi removido). Ver `migracoes/007_trilha_do_cadastro.sql`.
+    """
+
+    campo: str
+    antes: str | None
+    depois: str | None
+    origem: str
+
+
+#: As duas origens. `databricks` é correção de número que veio de fora;
+#: `regional` é campo que a Regional preenche. Na tela viram verbos diferentes.
+DATABRICKS = "databricks"
+REGIONAL = "regional"
+
+
+def _origem_do_campo(nome: str) -> str:
+    """`fat` veio do Databricks; `preco` é da Regional. A régua é uma só.
+
+    `_DO_DATABRICKS` é a mesma lista que decide o que a tela trava e o que ela
+    deixa editar (`cadastro.py`) — se as duas divergissem, a trilha chamaria de
+    correção o que a tela nem oferece corrigir.
+    """
+    return DATABRICKS if nome in _DO_DATABRICKS else REGIONAL
+
+
+def _igual(a: Any, b: Any) -> bool:
+    """Os dois valores dizem a mesma coisa?
+
+    Número compara como NÚMERO: o banco devolve `float` e o corpo traz string
+    pt-BR, e `"244" != 244.0` como texto — comparar assim geraria uma linha de
+    trilha a cada salvamento, dizendo que 244 virou 244.
+
+    A tolerância é de ponto flutuante, e não de negócio: existe porque
+    `2472.6 != 2472.5999999999995` depois de uma ida e volta pelo driver.
+    """
+    if a is None or b is None:
+        return a is None and b is None
+    if isinstance(a, bool) or isinstance(b, bool):
+        return str(a) == str(b)
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return abs(float(a) - float(b)) < 1e-9
+    return str(a) == str(b)
+
+
+def _texto_trilha(v: Any, campo: str = "") -> str | None:
+    """O valor como a tela o mostra. `None` continua `None` — ver `Alteracao`.
+
+    **ANO e CÓDIGO não levam separador de milhar**, e a régua é a mesma da
+    leitura (`cadastro.SEM_SEPARADOR`): `fim`, `ano`, `anoObrig`, `proibAte`. O
+    ano também é CHAVE de meta (`meta:2044:pct`), e uma chave formatada não
+    corresponde a registro nenhum.
+    """
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        return "Sim" if v else "Nao"
+    if isinstance(v, (int, float)):
+        return (pt_br_ano if campo in SEM_SEPARADOR else pt_br)(v)
+    texto = str(v).strip()
+    return texto or None
+
+
+def diferencas(
+    antes: dict[str, Any],
+    depois: dict[str, Any],
+    *,
+    prefixo: str = "",
+    origem: Any = None,
+) -> list[Alteracao]:
+    """As chaves em que os dois dicionários discordam, na ordem em que aparecem.
+
+    Serve os quatro caminhos de gravação porque todos acabam na mesma pergunta:
+    o que estava lá, o que chegou, e em que eles diferem. Chave presente num só
+    dos lados também é diferença — é criação ou remoção.
+
+    `origem` aceita uma função (para decidir campo a campo, como na ficha de
+    coleta, que mistura Databricks e Regional na mesma linha) ou uma string
+    (quando a resposta é a mesma para o bloco inteiro, como nas obras).
+    """
+    de_origem = origem if callable(origem) else (lambda _c: origem or REGIONAL)
+    saida: list[Alteracao] = []
+    for chave in list(antes) + [k for k in depois if k not in antes]:
+        a, b = antes.get(chave), depois.get(chave)
+        if _igual(a, b):
+            continue
+        saida.append(
+            Alteracao(
+                campo=f"{prefixo}{chave}",
+                # A chave NUA decide o formato, e não o campo com prefixo:
+                # `obra:Rede coletora:anoObrig` continua sendo um `anoObrig`.
+                antes=_texto_trilha(a, chave),
+                depois=_texto_trilha(b, chave),
+                origem=de_origem(chave),
+            )
+        )
+    return saida
+
+
+async def _registrar(
     con: Any,
     *,
     tipo: str,
     ficha_id: str,
     unidade_id: str,
     autor: str,
-    overrides: list[dict[str, Any]],
+    mudancas: list[Alteracao],
 ) -> int:
     """Acrescenta a trilha — APPEND-ONLY. Nada aqui apaga nada.
 
-    A primeira versao apagava a trilha da ficha e regravava o conjunto que veio no
-    corpo. Era mais simples e estava errada: uma correcao feita ha um mes voltava
-    com `gravado_em` de hoje e `override_id` novo. Auditoria que reescreve a data
-    do fato nao e auditoria — e um retrato do presente com cara de historico. Uma
-    revisao provou: override datado de 01/07 virou 07/08 depois de um PUT que nem
-    o mencionava.
+    Cada gravação acrescenta só as diferenças que o servidor observou na
+    transação atual; as linhas antigas conservam o autor, a data e o id que
+    tiveram. Auditoria que reescreve a data do fato não é auditoria.
 
-    Em troca, so entra o que MUDOU em relacao a ultima linha daquele campo. Sem
-    isso, salvar a mesma ficha dez vezes gravaria dez linhas identicas, e quem
-    procurasse "quando isto mudou" acharia dez respostas para um evento so.
+    **Quem compara é o servidor**, que tem as duas pontas: o que está gravado e o
+    que chegou no corpo. O cliente não informa o que mudou — auditoria que
+    pergunta ao auditado tem o defeito no desenho, e um cliente com bug apagaria
+    o rastro sem sinal.
 
-    O campo que volta ao valor original simplesmente para de vir no corpo. A trilha
-    guarda que a correcao existiu — o que e verdade: ela existiu.
+    Não há deduplicação, e nem é preciso: comparando com o dado gravado, salvar a
+    mesma ficha dez vezes não produz diferença nenhuma.
     """
-    if not overrides:
-        return 0
-
-    atuais = {
-        l["campo"]: l["valor_novo"]
-        for l in await con.fetch(
-            f"""SELECT DISTINCT ON (campo) campo, valor_novo
-                  FROM {_i()}.override
-                 WHERE tipo = $1 AND ficha_id = $2
-                 ORDER BY campo, gravado_em DESC, override_id DESC""",
-            tipo,
-            ficha_id,
-        )
-    }
-
-    novas = [
-        (
-            tipo,
-            ficha_id,
-            unidade_id,
-            o.get("campo"),
-            _texto(o.get("valorAntigo")),
-            _texto(o.get("valorNovo")),
-            # O autor vem SEMPRE do token. Aceita-lo do corpo — como esta funcao
-            # fazia, com `o.get("autor") or autor` — deixava qualquer um assinar a
-            # correcao de outro, e uma revisao gravou "forjado@corp" para provar.
-            # Numa trilha de auditoria isso e o defeito que a anula inteira.
-            autor,
-        )
-        for o in overrides
-        if _texto(o.get("valorNovo")) != atuais.get(o.get("campo"))
-    ]
-    if not novas:
+    if not mudancas:
         return 0
     await con.executemany(
         f"""INSERT INTO {_i()}.override
-                (tipo, ficha_id, unidade_id, campo, valor_antigo, valor_novo, autor)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)""",
-        novas,
+                (tipo, ficha_id, unidade_id, campo, valor_antigo, valor_novo,
+                 autor, origem)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)""",
+        [
+            (
+                tipo,
+                ficha_id,
+                unidade_id,
+                m.campo,
+                m.antes,
+                m.depois,
+                # O autor vem SEMPRE do token, nunca do corpo: quem pudesse
+                # escolher o nome que assina poderia assinar a correcao de outro,
+                # e uma trilha assim nao vale nada.
+                autor,
+                m.origem,
+            )
+            for m in mudancas
+        ],
     )
-    return len(novas)
+    return len(mudancas)
 
 
 #: Componentes da ficha de obra -> colunas. `capex` NÃO entra: é calculado
@@ -225,53 +314,6 @@ _OBRA = {
 }
 
 
-#: As obras-base, na ordem dos indices que o front usa como chave do override.
-#: Vem de `BASE_OBRAS`/`BASE_OBRAS_CTS` em `src/cadastro/domain/` — o corpo manda
-#: SO o que difere delas, por indice, entao sem a base aqui nao ha o que gravar.
-#: E copia de outra fonte, e copia envelhece: se a base mudar la e nao aqui, a
-#: ficha salva com valores de ontem, sem nenhum sinal. Esta na lista de riscos do
-#: README, e o certo e o backend servir a base para a tela, e nao o contrario.
-#: A CTS tem base PROPRIA: 4 obras, comecando pelo coletor de tempo seco. Usar a
-#: base da sub-bacia para ela — como este arquivo fazia — regravava a CTS com 5
-#: obras, com os nomes errados e os valores da outra base. Nao dava erro: so
-#: destruia a ficha, em silencio, a cada salvamento.
-_BASE_CTS = [
-    {"nome": "Coletor de tempo seco", "un": "m", "qtd": "0", "preco": "1.480,00",
-     "opex": "0", "tPred": "0", "dur": "0", "anoObrig": "0", "proibAte": "0", "wacc": "0,091"},
-    # Os NOMES aqui sao os do BANCO, e nao os da base do front: `Tronco` e nao
-    # `Coletor tronco`, `EEE` e nao `Estacao elevatoria (EEE)`. A leitura tolera as
-    # duas grafias, mas a escrita tem de gravar a que o MOTOR le — reescrever a
-    # tabela com o vocabulario do front faria a simulacao deixar de reconhecer os
-    # componentes da CTS, sem erro nenhum no caminho.
-    {"nome": "Tronco", "un": "m", "qtd": "0", "preco": "1.200,00",
-     "opex": "0", "tPred": "0", "dur": "0", "anoObrig": "0", "proibAte": "0", "wacc": "0,091"},
-    {"nome": "EEE", "un": "un", "qtd": "0", "preco": "0",
-     "opex": "0", "tPred": "0", "dur": "0", "anoObrig": "0", "proibAte": "0", "wacc": ""},
-    {"nome": "Linha de recalque", "un": "m", "qtd": "0", "preco": "900,00",
-     "opex": "0", "tPred": "0", "dur": "15", "anoObrig": "0", "proibAte": "0", "wacc": "0,067"},
-]
-
-#: A MESMA base existe no front (`src/cadastro/domain/subbacia.ts: BASE_OBRAS`), e
-#: as duas TEM de concordar: a ficha manda so o que difere da base, entao quem
-#: materializa a linha e este arquivo. Front muda o preco, usuario nao toca no
-#: campo, backend grava o valor antigo — sem erro nenhum.
-#:
-#: `tests/test_base_obras.py` compara as duas e falha quando divergem. Mexeu aqui,
-#: mexa la (ou o contrario) e rode o teste.
-_BASE_SUBBACIA = [
-    {"nome": "Ligacao de esgoto", "un": "ligacao", "qtd": "244", "preco": "2.497,70",
-     "opex": "2.738", "tPred": "11", "dur": "9", "anoObrig": "0", "proibAte": "0", "wacc": "0,091"},
-    {"nome": "Rede coletora", "un": "m", "qtd": "2.472,6", "preco": "449,99",
-     "opex": "35.659", "tPred": "4", "dur": "6", "anoObrig": "0", "proibAte": "0", "wacc": "0,091"},
-    {"nome": "Coletor tronco", "un": "m", "qtd": "0", "preco": "1.200,00",
-     "opex": "0", "tPred": "0", "dur": "0", "anoObrig": "0", "proibAte": "0", "wacc": "0,091"},
-    {"nome": "Estacao elevatoria (EEE)", "un": "un", "qtd": "0", "preco": "0",
-     "opex": "0", "tPred": "0", "dur": "0", "anoObrig": "0", "proibAte": "0", "wacc": ""},
-    {"nome": "Linha de recalque (LR)", "un": "m", "qtd": "0", "preco": "900,00",
-     "opex": "0", "tPred": "0", "dur": "15", "anoObrig": "0", "proibAte": "0", "wacc": "0,067"},
-]
-
-
 async def _obras_gravadas(
     con: Any, tabela: str, chave: str, ficha_id: str
 ) -> dict[str, dict[str, Any]]:
@@ -279,6 +321,13 @@ async def _obras_gravadas(
 
     Mesma forma que o `GET` devolve em `obrasOverride`, para o merge abaixo ser
     campo a campo. E o BANCO — nao um literal — que preenche o que o corpo omitir.
+
+    O `nome` vem junto, e e ele que volta para a coluna `componente` na gravacao.
+    Antes vinha da base literal, e a base usava o vocabulario da SUB-BACIA nas
+    duas tabelas: regravar uma CTS trocava `Tronco` por `Coletor tronco` e `EEE`
+    por `Estacao elevatoria (EEE)`, e o motor deixava de reconhecer o componente
+    (`otimizador_capex_v62.py:1136` casa pelo nome). Vindo da linha gravada, cada
+    tabela conserva o vocabulario dela sem ninguem precisar saber disso.
     """
     from app.infra.repositorios.cadastro import _INDICE_CTS, _INDICE_SUBBACIA
 
@@ -290,82 +339,173 @@ async def _obras_gravadas(
     for l in linhas:
         i = pos.get(l["componente"])
         if i is not None:
-            atual[i] = {campo: l[col] for campo, col in _OBRA.items() if col in l}
+            atual[i] = {
+                "nome": l["componente"],
+                **{campo: l[col] for campo, col in _OBRA.items() if col in l},
+            }
     return atual
 
 
 def _obras_da_ficha(
-    override: Any, base: list[dict[str, Any]], atual: dict[str, dict[str, Any]]
+    override: Any,
+    atual: dict[str, dict[str, Any]],
+    *,
+    esperadas: int,
+    rotulo: str,
 ) -> list[dict[str, Any]]:
-    """O que vai para o banco: o corpo, completado pelo que JA ESTA gravado.
+    """O que vai para o banco: a linha GRAVADA, com o que o corpo mudou por cima.
 
-    O corpo chega como `Record<indice, Partial<Obra>>`, e nao como lista: a chave e
-    a POSICAO, e o valor traz os campos daquela obra. Eu tinha assumido lista, e o
-    payload real do front estourava com AttributeError na primeira ficha salva.
+    **Não há mais base literal.** Havia duas — uma aqui e outra em
+    `src/cadastro/domain/` —, e elas eram a violação mais cara das regras R1 e R2:
+    um componente ausente no banco reaparecia com `qtd 0 | preco 900 | dur 15 |
+    wacc 0,067`, números plausíveis que ninguém digitou, indo direto para a
+    simulação. Corrupção silenciosa é pior que perda silenciosa, porque a
+    plausibilidade impede a desconfiança.
 
-    A ORDEM do merge importa e mudou. Era `{**base, **override}` — um literal em
-    Python completando o que o corpo nao trouxe. Agora e
-    `{**base, **atual, **override}`: primeiro o literal (so para componente que
-    NUNCA existiu), depois a linha gravada, e o corpo por ultimo.
+    Sem a base, a materialização tem uma fonte só: `atual`, que é o que
+    `_obras_gravadas` leu de `componentes_*_capex`. O corpo só sobrepõe campo.
 
-    Com `DELETE`+`INSERT`, um campo ausente viraria NULL e um componente ausente
-    sumiria. O literal escondia as duas coisas com valores plausiveis; o banco
-    devolve o valor de verdade.
+    **Cardinalidade ausente é RECUSA, e não preenchimento.** Se a ficha tem menos
+    componentes que os `esperadas`, gravá-la exigiria inventar os que faltam — e
+    inventar é o que acabou de sair daqui. A régua é a mesma que a prontidão usa
+    (`pendencias.OBRAS_SUBBACIA`/`OBRAS_CTS`), então uma ficha que o `/prontidao`
+    denuncia como incompleta é exatamente a que este `PUT` recusa. Duas respostas
+    diferentes para o mesmo estado seriam um convite a acreditar na mais gentil.
+
+    A recusa por componente OMITIDO no corpo continua: a gravação substitui as
+    obras em bloco, a tela não oferece remover obra, logo a omissão não é intenção.
     """
     if isinstance(override, list):
         return override  # forma antiga; os smokes locais ainda a usam
     override = override or {}
+
+    if len(atual) != esperadas:
+        raise ValorInvalido(
+            f"A ficha de {rotulo} tem {len(atual)} componentes gravados e a "
+            f"simulação exige {esperadas}. Não dá para gravar: os que faltam não "
+            "existem no banco, e completá-los aqui seria inventar obra. Veja em "
+            "/prontidao qual componente falta e corrija o cadastro na origem."
+        )
+
     faltando = sorted(set(atual) - set(override), key=int)
     if faltando:
-        nomes = ", ".join(base[int(i)]["nome"] for i in faltando if int(i) < len(base))
+        nomes = ", ".join(atual[i].get("nome") or f"índice {i}" for i in faltando)
         raise ValorInvalido(
             f"A ficha tem {len(atual)} componentes e o corpo trouxe {len(override)}. "
-            f"Faltou: {nomes or faltando}. A gravacao substitui as obras em bloco, "
+            f"Faltou: {nomes}. A gravacao substitui as obras em bloco, "
             "entao componente omitido seria APAGADO — e a tela nao oferece remover "
             "obra, logo a omissao nao e intencao."
         )
+
+    sobrando = sorted(set(override) - set(atual), key=int)
+    if sobrando:
+        raise ValorInvalido(
+            f"O corpo trouxe os índices {sobrando}, que não existem nesta ficha. "
+            "O índice é a POSIÇÃO do componente, e gravar um que o banco não tem "
+            "criaria obra a partir do payload — que é o que a base literal fazia."
+        )
+
     return [
-        {**b, **(atual.get(str(i)) or {}), **(override.get(str(i)) or {})}
-        for i, b in enumerate(base)
+        {**atual[i], **(override.get(i) or {})} for i in sorted(atual, key=int)
     ]
 
 
+def _capex(o: dict[str, Any]) -> float | None:
+    """`quantidade × preco_unitario` — a única conta que existe para o CAPEX.
+
+    A REGRA não nasce aqui, e é por isso que ela é esta: o motor já a aplica. Em
+    `otimizador_capex_v62.py:1165` — *"CAPEX pode vir DECOMPOSTO em quantidade x
+    preco unitario; se vier, ELE MANDA"* — e a linha 1192 loga aviso quando a
+    coluna do banco discorda da multiplicação. Guardar no cadastro um `capex` que
+    a simulação ignora é manter dois números para uma pergunta só.
+
+    A tela nunca manda `capex` (não está em `_OBRA`, nem viaja no `GET`), e o
+    front não o calcula: quem materializa é este arquivo, e a constraint
+    `capex_e_derivado` (`migracoes/005_capex_derivado.sql`) recusa quem discordar
+    por mais de um centavo.
+
+    Sem `or 0`, que estava aqui e inventava valor: quantidade ausente não é
+    quantidade zero. Zero afirmaria "esta obra não custa nada" — um número que
+    ninguém digitou, gravado com cara de cadastro. Nulo diz o que é verdade, e a
+    falta do fator já é pendência (`pendencias.py:_OBRA`), que trava a unidade.
+
+    `_numerico` e nao `_numero`: o segundo devolvia a string crua quando nao
+    reconhecia o formato, e a multiplicacao estourava
+    `TypeError: can't multiply sequence by non-int` -> 500. Numero torto numa obra
+    e erro de quem chamou, e merece 422 dizendo o campo.
+    """
+    qtd = _numerico(o.get("qtd"), "obra.qtd")
+    preco = _numerico(o.get("preco"), "obra.preco")
+    if qtd is None or preco is None:
+        return None
+    return qtd * preco
+
+
 async def _gravar_obras(
-    con: Any, *, tabela: str, chave: str, ficha_id: str, obras: list[dict[str, Any]]
-) -> None:
+    con: Any,
+    *,
+    tabela: str,
+    chave: str,
+    ficha_id: str,
+    obras: list[dict[str, Any]],
+    atual: dict[str, dict[str, Any]],
+) -> list[Alteracao]:
     """As obras da ficha, substituídas em bloco.
 
-    `capex` é derivado aqui (`quantidade × preco_unitario`) porque a tela não o
-    manda. Calcular no servidor mantém uma conta só: se os dois lados calculassem,
-    divergiriam por arredondamento e ninguém saberia qual está no plano.
+    `capex` não vem do corpo: é derivado (`_capex`) porque a tela não o manda e
+    porque o motor não o leria de qualquer forma. Calcular no servidor mantém uma
+    conta só — se os dois lados calculassem, divergiriam por arredondamento e
+    ninguém saberia qual está no plano.
 
     `anoObrig` e `proibAte` são CÓDIGOS, não anos quaisquer (`0` = sem restrição,
     `-1` = obrigatória em qualquer ano). Por isso vão como vieram, sem `or 0`:
     tratar ausência como zero afirmaria "sem restrição" onde a resposta é silêncio.
+
+    ## O diff sai ANTES do `DELETE`, e é por isso que ele existe aqui
+
+    A gravação é `DELETE` + `INSERT` do bloco inteiro, e depois do `DELETE` não há
+    com o que comparar: a informação de quem mudou o quê desaparece com as linhas.
+    Por isso `atual` — o que `_obras_gravadas` já tinha lido para materializar a
+    ficha — entra como parâmetro em vez de ser relido: é o mesmo retrato, dentro
+    da mesma transação, e reler abriria janela para ele mudar no meio.
+
+    O campo na trilha é `obra:<componente>:<campo>` porque a obra não tem
+    identidade própria na tela — quem a identifica é o NOME do componente, que é o
+    que a pessoa lê na linha da tabela. Índice (`obra:2:qtd`) seria mais curto e
+    não diria nada a quem consulta a auditoria seis meses depois.
     """
+    novas = {
+        str(i): {"nome": o.get("nome"), **{k: _numero(o.get(k)) for k in _OBRA}}
+        for i, o in enumerate(obras)
+    }
+    mudancas: list[Alteracao] = []
+    for indice in sorted(set(atual) | set(novas), key=int):
+        antiga = atual.get(indice) or {}
+        nova = novas.get(indice) or {}
+        nome = nova.get("nome") or antiga.get("nome") or f"índice {indice}"
+        mudancas += diferencas(
+            {k: antiga.get(k) for k in _OBRA},
+            {k: nova.get(k) for k in _OBRA},
+            prefixo=f"obra:{nome}:",
+            # Obra é cadastro da Regional inteiro: não há número de obra vindo do
+            # Databricks para "corrigir".
+            origem=REGIONAL,
+        )
+
     await con.execute(f"DELETE FROM {_i()}.{tabela} WHERE {chave} = $1", ficha_id)
     if not obras:
-        return
+        return mudancas
 
     colunas = [chave, "componente", *_OBRA.values(), "capex"]
     marc = ", ".join(f"${i + 1}" for i in range(len(colunas)))
     linhas = [
-        (
-            ficha_id,
-            o.get("nome"),
-            *[_numero(o.get(k)) for k in _OBRA],
-            # `_numerico` e nao `_numero`: o segundo devolvia a string crua quando
-            # nao reconhecia o formato, e a multiplicacao estourava
-            # `TypeError: can't multiply sequence by non-int` -> 500. Numero torto
-            # numa obra e erro de quem chamou, e merece 422 dizendo o campo.
-            (_numerico(o.get("qtd"), "obra.qtd") or 0)
-            * (_numerico(o.get("preco"), "obra.preco") or 0),
-        )
+        (ficha_id, o.get("nome"), *[_numero(o.get(k)) for k in _OBRA], _capex(o))
         for o in obras
     ]
     await con.executemany(
         f"INSERT INTO {_i()}.{tabela} ({', '.join(colunas)}) VALUES ({marc})", linhas
     )
+    return mudancas
 
 
 async def _gravar_coleta(
@@ -376,12 +516,17 @@ async def _gravar_coleta(
     ficha_id: str,
     params: dict[str, Any],
     bloco_db: dict[str, Any],
-) -> None:
+) -> list[Alteracao]:
     """A ficha de coleta (sub-bacia ou CTS) — os dois blocos na mesma linha.
 
     `params` viaja sempre inteiro, inclusive `popU`/`popA`. A régua de cobertura da
     cidade decide se esses dois APARECEM na tela e se contam pendência; não se são
     gravados. Trocar a régua de uma cidade não pode apagar o que alguém preencheu.
+
+    Devolve o que MUDOU. A leitura de antes acontece dentro da mesma transação e
+    depois do lock da ficha (`salvar_coleta`), então ninguém escreve entre ler e
+    comparar — sem isso a trilha registraria como "de X" um X que já não era o
+    valor no instante da gravação.
     """
     juntos = {**bloco_db, **params}
     frente_para_coluna = {v: k for k, v in _COLETA.items()}
@@ -391,8 +536,19 @@ async def _gravar_coleta(
         if k in frente_para_coluna and k not in NAO_MODELADOS
     ]
     if not colunas:
-        return
+        return []
     valores = [_numerico(juntos[_COLETA[c]], _COLETA[c]) for c in colunas]
+
+    # O ANTES, pelas mesmas colunas que vão ser escritas. Ficha que ainda não
+    # existe devolve linha nenhuma, e aí todo campo preenchido é criação — que é
+    # a leitura certa, e é diferente de "mudou de vazio para X".
+    linha = await con.fetchrow(
+        f"SELECT {', '.join(colunas)} FROM {_i()}.{tabela} WHERE {chave} = $1",
+        ficha_id,
+    )
+    antes = {_COLETA[c]: (linha[c] if linha else None) for c in colunas}
+    depois = {_COLETA[c]: v for c, v in zip(colunas, valores, strict=True)}
+
     marc = ", ".join(f"${i + 2}" for i in range(len(colunas)))
     sets = ", ".join(f"{c} = ${i + 2}" for i, c in enumerate(colunas))
     await con.execute(
@@ -402,6 +558,7 @@ async def _gravar_coleta(
         ficha_id,
         *valores,
     )
+    return diferencas(antes, depois, origem=_origem_do_campo)
 
 
 # ---------------------------------------------------------------- pertencimento
@@ -491,53 +648,42 @@ def _exigir_ficha_inteira(corpo: dict[str, Any]) -> None:
         )
 
 
-async def _versao_atual(tipo: str, ficha_id: str, unidade_id: str) -> str | None:
-    """A versão que a ficha tem AGORA no banco, pela mesma conta que o `GET` usa.
+async def _marcar_autoria(
+    con: Any, *, tabela: str, chave: str, ficha_id: str, autor: str
+) -> dict[str, str]:
+    """Quem gravou esta ficha, e quando. Em TODA gravação.
 
-    Reusa as funções de leitura de propósito: se a versão fosse calculada por um
-    caminho próprio, os dois lados divergiriam na primeira mudança de payload e o
-    409 passaria a disparar sem conflito nenhum.
+    **O autor vem do TOKEN, e o parâmetro `autor` é o mesmo que a trilha usa
+    (`_registrar`).** Nunca do corpo: um cliente que pudesse escolher o nome que
+    assina transformaria a auditoria em decoração.
+
+    `now()` e não `clock_timestamp()`: dentro da transação, `now()` é o instante
+    em que ela COMEÇOU, então a ficha, suas obras e sua trilha ficam com o mesmo
+    carimbo. Três horários com milissegundos de diferença para uma gravação só
+    fariam parecer que houve três.
+
+    `INSERT ... ON CONFLICT` e não `UPDATE`: a ficha operacional pode não existir
+    ainda — o `PUT` de uma sub-bacia que nunca teve linha em
+    `subbacia_operacional` a cria. Com `UPDATE`, a primeira gravação de uma ficha
+    nova seria justamente a que não deixaria rastro.
+
+    **Devolve o carimbo** porque a resposta do `PUT` o leva de volta para a tela:
+    sem isso a ficha exibiria a alteração anterior logo depois de você salvar, até
+    alguém recarregar.
     """
-    from app.infra.repositorios import cadastro
-
-    if tipo == "sub-bacia":
-        return (await cadastro.sub_bacias(unidade_id))["subs"].get(ficha_id, {}).get("versao")
-    if tipo == "cts":
-        return (await cadastro.cts(unidade_id))["ctss"].get(ficha_id, {}).get("versao")
-    if tipo == "ete":
-        return next(
-            (e["versao"] for e in (await cadastro.etes(unidade_id))["etes"] if e["id"] == ficha_id),
-            None,
-        )
-    return next(
-        (c["versao"] for c in (await cadastro.contrato(unidade_id))["cidades"] if c["id"] == ficha_id),
-        None,
+    linha = await con.fetchrow(
+        f"""INSERT INTO {_i()}.{tabela} ({chave}, atualizado_em, atualizado_por)
+            VALUES ($1, now(), $2)
+            ON CONFLICT ({chave}) DO UPDATE
+              SET atualizado_em  = EXCLUDED.atualizado_em,
+                  atualizado_por = EXCLUDED.atualizado_por
+            RETURNING atualizado_em, atualizado_por""",
+        ficha_id,
+        autor,
     )
+    from app.infra.repositorios.cadastro import _auditoria
 
-
-async def _exigir_versao(corpo: dict[str, Any], tipo: str, ficha_id: str, unidade_id: str) -> None:
-    """Recusa a gravação se a ficha mudou desde a leitura.
-
-    `versao` AUSENTE no corpo passa, de propósito: é um script de operação, ou um
-    cliente antigo, e recusá-lo transformaria uma melhoria de segurança numa
-    quebra de compatibilidade. Quem manda, é protegido.
-
-    O contraponto disso é que a tolerância esconde o cliente que DEVERIA mandar e
-    não manda — e foi o que aconteceu: o front montava a ficha sem `versao` e a
-    proteção inteira nunca disparou em produção, enquanto o teste de 409 passava
-    porque mockava a resposta do servidor. Hoje o front manda, e
-    `dev/smoke_versao.py` prova o ciclo contra a API de verdade em vez de contra
-    um mock.
-    """
-    enviada = corpo.get("versao")
-    if not enviada:
-        return
-    atual = await _versao_atual(tipo, ficha_id, unidade_id)
-    if atual and atual != enviada:
-        raise FichaDesatualizada(
-            "Esta ficha foi alterada por outra pessoa depois que você a abriu. "
-            "Recarregue do servidor para ver a versão atual antes de salvar."
-        )
+    return _auditoria(dict(linha))
 
 
 # ------------------------------------------------------------------ as fichas
@@ -552,13 +698,13 @@ async def salvar_coleta(
     await exigir_dona(tipo, ficha_id, unidade_id)
 
     async with db.transacao() as con:
-        # Lock ANTES de conferir a versao. Sem ele, duas requisicoes leem a mesma
-        # versao, as duas concordam, e as duas gravam — o conflito passaria batido
-        # justamente no caso em que ele existe. E o mesmo padrao do POST /runs.
+        # O lock SERIALIZA os PUTs da mesma ficha. Ele nunca detectou conflito —
+        # quem fazia isso era o 409, que saiu —, mas continua necessário: sem ele
+        # duas gravações simultâneas intercalam o `DELETE`+`INSERT` das obras e a
+        # ficha termina com metade de cada uma. Ordenar não é o mesmo que barrar.
         await con.execute("SELECT pg_advisory_xact_lock(hashtext($1))", ficha_id)
         _exigir_ficha_inteira(corpo)
-        await _exigir_versao(corpo, tipo, ficha_id, unidade_id)
-        await _gravar_coleta(
+        mudancas = await _gravar_coleta(
             con,
             tabela=tabela,
             chave=chave,
@@ -569,30 +715,114 @@ async def salvar_coleta(
         # `in` e não `or []`: ficha SEM a chave não mexe nas obras; ficha COM a
         # chave e lista vazia apaga todas. São intenções diferentes.
         if "obrasOverride" in corpo:
-            await _gravar_obras(
+            gravadas = await _obras_gravadas(con, tab_obra, chave, ficha_id)
+            mudancas += await _gravar_obras(
                 con,
                 tabela=tab_obra,
                 chave=chave,
                 ficha_id=ficha_id,
                 obras=_obras_da_ficha(
                     corpo.get("obrasOverride"),
-                    _BASE_CTS if e_cts else _BASE_SUBBACIA,
-                    await _obras_gravadas(con, tab_obra, chave, ficha_id),
+                    gravadas,
+                    esperadas=OBRAS_CTS if e_cts else OBRAS_SUBBACIA,
+                    rotulo=tipo,
                 ),
+                atual=gravadas,
             )
-        n = await _gravar_overrides(
+        n = await _registrar(
             con,
-            tipo="cts" if e_cts else "sub-bacia",
+            tipo=tipo,
             ficha_id=ficha_id,
             unidade_id=unidade_id,
             autor=autor,
-            overrides=corpo.get("overrides") or [],
+            mudancas=mudancas,
         )
-    return {
-        "id": ficha_id,
-        "overridesGravados": n,
-        "versao": await _versao_atual(tipo, ficha_id, unidade_id),
-    }
+        auditoria = await _marcar_autoria(
+            con, tabela=tabela, chave=chave, ficha_id=ficha_id, autor=autor
+        )
+    return {"id": ficha_id, "alteracoesGravadas": n, **auditoria}
+
+
+async def _diff_da_cidade(
+    con: Any, cidade_id: str, corpo: dict[str, Any]
+) -> list[Alteracao]:
+    """O que muda na ficha de cidade — as três tabelas, antes de qualquer escrita.
+
+    Tem de rodar ANTES, e não depois: metas e faixas são apagadas e reinseridas em
+    bloco, e depois do `DELETE` não sobra com o que comparar.
+
+    ## Metas e faixas são COLEÇÕES, e por isso a chave importa
+
+    A meta é identificada pelo ANO, e a faixa pela COBERTURA — não pela posição na
+    lista. Comparar por posição diria que remover a primeira meta mudou todas as
+    outras, quando o que houve foi uma remoção só.
+
+    Com a chave certa, a leitura sai limpa nos três casos, e a convenção de NULL
+    da migração 007 dá conta dos dois extremos:
+
+        meta:2030:pct   ""   -> "85"    a meta passou a existir
+        meta:2030:pct   "80" -> "85"    o valor mudou
+        meta:2030:pct   "80" -> NULL    a meta foi removida
+    """
+    mudancas: list[Alteracao] = []
+    cidade = corpo.get("cidade") or {}
+
+    linha = await con.fetchrow(
+        f"""SELECT data_fim_concessao, unidade_cobertura
+              FROM {_i()}.cidade_operacional WHERE cidade_id = $1""",
+        cidade_id,
+    )
+    mudancas += diferencas(
+        {
+            "fim": linha["data_fim_concessao"] if linha else None,
+            "cob": linha["unidade_cobertura"] if linha else None,
+        },
+        {
+            "fim": _numerico(cidade.get("fim"), "cidade.fim"),
+            "cob": cidade.get("cob"),
+        },
+        origem=REGIONAL,
+    )
+
+    if "metas" in corpo:
+        antes = {
+            _texto_trilha(l["ano"], "ano"): l["cobertura_pct"]
+            for l in await con.fetch(
+                f"SELECT ano, cobertura_pct FROM {_i()}.metas_cobertura WHERE cidade_id = $1",
+                cidade_id,
+            )
+        }
+        depois = {
+            _texto_trilha(_numerico(m.get("ano"), "meta.ano"), "ano"): _numerico(
+                m.get("pct"), "meta.pct"
+            )
+            for m in corpo.get("metas") or []
+        }
+        mudancas += [
+            Alteracao(f"meta:{a.campo}:pct", a.antes, a.depois, REGIONAL)
+            for a in diferencas(antes, depois, origem=REGIONAL)
+        ]
+
+    if "fator" in corpo:
+        antes = {
+            _texto_trilha(l["cobertura_pct"]): l["paridade"]
+            for l in await con.fetch(
+                f"SELECT cobertura_pct, paridade FROM {_i()}.fator_esgoto WHERE cidade_id = $1",
+                cidade_id,
+            )
+        }
+        depois = {
+            _texto_trilha(_numerico(f.get("cob"), "fator.cob")): _numerico(
+                f.get("par"), "fator.par"
+            )
+            for f in corpo.get("fator") or []
+        }
+        mudancas += [
+            Alteracao(f"faixa:{a.campo}:paridade", a.antes, a.depois, REGIONAL)
+            for a in diferencas(antes, depois, origem=REGIONAL)
+        ]
+
+    return mudancas
 
 
 async def salvar_contrato(
@@ -608,7 +838,7 @@ async def salvar_contrato(
     await exigir_dona("cidade", cidade_id, unidade_id)
     async with db.transacao() as con:
         await con.execute("SELECT pg_advisory_xact_lock(hashtext($1))", cidade_id)
-        await _exigir_versao(corpo, "cidade", cidade_id, unidade_id)
+        mudancas = await _diff_da_cidade(con, cidade_id, corpo)
         await con.execute(
             f"""INSERT INTO {_i()}.cidade_operacional
                     (cidade_id, data_fim_concessao, unidade_cobertura)
@@ -651,19 +881,26 @@ async def salvar_contrato(
                     for f in corpo.get("fator") or []
                 ],
             )
-        n = await _gravar_overrides(
+        n = await _registrar(
             con,
             tipo="cidade",
             ficha_id=cidade_id,
             unidade_id=unidade_id,
             autor=autor,
-            overrides=corpo.get("overrides") or [],
+            mudancas=mudancas,
         )
-    return {
-        "id": cidade_id,
-        "overridesGravados": n,
-        "versao": await _versao_atual("cidade", cidade_id, unidade_id),
-    }
+        # A ficha de cidade sai de três tabelas e o carimbo mora só em
+        # `cidade_operacional`. É de propósito: quem editou uma meta editou a ficha
+        # da cidade, e é a ficha que a tela mostra. Três carimbos separados
+        # responderiam uma pergunta que ninguém faz.
+        auditoria = await _marcar_autoria(
+            con,
+            tabela="cidade_operacional",
+            chave="cidade_id",
+            ficha_id=cidade_id,
+            autor=autor,
+        )
+    return {"id": cidade_id, "alteracoesGravadas": n, **auditoria}
 
 
 #: Nomes do tipo `Ete` do front -> colunas. Tem de casar com o que `cadastro.etes`
@@ -711,9 +948,25 @@ async def salvar_ete(
     presentes = [k for k in _ETE if k in ete]
     async with db.transacao() as con:
         await con.execute("SELECT pg_advisory_xact_lock(hashtext($1))", ete_id)
-        await _exigir_versao(corpo, "ete", ete_id, unidade_id)
+        mudancas: list[Alteracao] = []
         if presentes:
             colunas = [_ETE[k] for k in presentes]
+            valores = [
+                _numerico(ete[k], f"ete.{k}") if k in _ETE_NUM else ete[k]
+                for k in presentes
+            ]
+            # O upsert toca SÓ os campos presentes, e o diff segue a mesma régua:
+            # campo que o corpo não trouxe não foi alterado, e afirmar que foi
+            # encheria a trilha de mudanças que ninguém fez.
+            linha = await con.fetchrow(
+                f"SELECT {', '.join(colunas)} FROM {_i()}.ete_capex WHERE ete_id = $1",
+                ete_id,
+            )
+            mudancas = diferencas(
+                {k: (linha[_ETE[k]] if linha else None) for k in presentes},
+                dict(zip(presentes, valores, strict=True)),
+                origem=REGIONAL,
+            )
             marc = ", ".join(f"${i + 2}" for i in range(len(colunas)))
             sets = ", ".join(f"{c} = ${i + 2}" for i, c in enumerate(colunas))
             await con.execute(
@@ -721,24 +974,20 @@ async def salvar_ete(
                     VALUES ($1, {marc})
                     ON CONFLICT (ete_id) DO UPDATE SET {sets}""",
                 ete_id,
-                *[
-                    _numerico(ete[k], f"ete.{k}") if k in _ETE_NUM else ete[k]
-                    for k in presentes
-                ],
+                *valores,
             )
-        n = await _gravar_overrides(
+        n = await _registrar(
             con,
             tipo="ete",
             ficha_id=ete_id,
             unidade_id=unidade_id,
             autor=autor,
-            overrides=corpo.get("overrides") or [],
+            mudancas=mudancas,
         )
-    return {
-        "id": ete_id,
-        "overridesGravados": n,
-        "versao": await _versao_atual("ete", ete_id, unidade_id),
-    }
+        auditoria = await _marcar_autoria(
+            con, tabela="ete_capex", chave="ete_id", ficha_id=ete_id, autor=autor
+        )
+    return {"id": ete_id, "alteracoesGravadas": n, **auditoria}
 
 
 # ---------------------------------------------------------------------- CTS

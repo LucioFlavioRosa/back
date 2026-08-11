@@ -31,13 +31,19 @@ ESPERADO = {
     "cidadeH": ["id","nome","supId"],
     "sistemaH":["id","nome","cidId"],
     "topo":    ["sis","id","nome","jus"],
+    # `atualizadoEm`/`atualizadoPor` estao nas QUATRO fichas: e a auditoria que
+    # substituiu o 409 (R6). Se sumirem do payload, a tela perde o unico aviso que
+    # sobrou sobre gravacao concorrente — por isso sao exigidos aqui.
     "ete":     ["id","sub","cidId","nova","capMod","capexMod","opexMod","tExec",
-                "capNom","vazOp","terreno","modulos","wacc"],
-    "cidade": ["id","nome","fim","cob"],
+                "capNom","vazOp","terreno","modulos","wacc",
+                "atualizadoEm","atualizadoPor"],
+    "cidade": ["id","nome","fim","cob","atualizadoEm","atualizadoPor"],
     "meta":   ["cid","ano","pct"],
     "fator":  ["cid","cob","par"],
-    "sub":    ["id","nome","sisId","sistema","jusante","db","params","obrasOverride"],
-    "cts":    ["id","nome","subId","sisId","sistema","jusante","db","params","obrasOverride"],
+    "sub":    ["id","nome","sisId","sistema","jusante","db","params","obrasOverride",
+               "atualizadoEm","atualizadoPor"],
+    "cts":    ["id","nome","subId","sisId","sistema","jusante","db","params","obrasOverride",
+               "atualizadoEm","atualizadoPor"],
     "par":    ["sub","cts"],
 }
 # Campos que o front trata como TEXTO editavel (chama .trim()).
@@ -81,7 +87,7 @@ async def main():
             if et:
                 falta = [k for k in ESPERADO["ete"] if k not in et[0]]
                 ck("ETE tem os campos do front", falta==[], f"faltam {falta}")
-                nao_str = [k for k,v in et[0].items() if k!="versao" and not isinstance(v,str)]
+                nao_str = [k for k,v in et[0].items() if not isinstance(v,str)]
                 ck("ETE: todo campo e string", nao_str==[], str(nao_str))
 
             h = (await c.get(f"/api/unidades/{U}/hierarquia")).json()

@@ -22,6 +22,10 @@ def _i() -> str:
     return config().schema_input
 
 
+def _p() -> str:
+    return config().schema_resultado
+
+
 async def acesso(login: str) -> list[dict[str, Any]]:
     """As concessoes deste login: papel + escopo (regional, unidade, ou total).
 
@@ -144,25 +148,103 @@ def digest(params: dict[str, Any]) -> str:
     return hashlib.sha256(bruto.encode("utf-8")).hexdigest()
 
 
-async def rodada_em_voo(con: Any, unidade_id: str, params: dict[str, Any]) -> str | None:
-    """Já existe uma rodada IGUAL desta unidade esperando ou executando?
+#: A última vez que alguém gravou QUALQUER ficha do cadastro desta unidade.
+#:
+#: Existe por causa da dedupe de rodada CONCLUÍDA, e é o que a torna correta. Ver
+#: `rodada_identica`. As colunas vêm de `migracoes/006_auditoria_cadastro.sql`.
+_CADASTRO_ALTERADO_EM = """
+WITH cidades AS (
+    SELECT c.cidade_id
+      FROM {i}.superintendencia_cidade c
+      JOIN {i}.regional_superintendencia s USING (superintendencia_id)
+     WHERE s.unidade_id = $1
+),
+comps AS (
+    SELECT t.componente_sistema_id AS id
+      FROM {i}.sistema_topologia t
+      JOIN {i}.cidade_sistema cs USING (sistema_id)
+      JOIN cidades c ON c.cidade_id = cs.cidade_id
+)
+SELECT max(quando) AS em FROM (
+    SELECT max(b.atualizado_em)
+      FROM {i}.subbacia_operacional b JOIN comps c ON c.id = b.sub_bacia
+    UNION ALL
+    SELECT max(o.atualizado_em)
+      FROM {i}.cts_operacional o
+      JOIN {i}.subbacia_cts p ON p.cts = o.cts
+      JOIN comps c ON c.id = p.sub_bacia
+    UNION ALL
+    SELECT max(e.atualizado_em)
+      FROM {i}.ete_capex e JOIN comps c ON c.id = e.ete_id
+    UNION ALL
+    SELECT max(o.atualizado_em)
+      FROM {i}.cidade_operacional o JOIN cidades c USING (cidade_id)
+) t(quando)
+"""
+
+
+async def rodada_identica(
+    con: Any, unidade_id: str, params: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Já existe uma rodada IGUAL desta unidade — em voo OU concluída?
 
     "Igual" é pelo conteúdo do pedido, não pela unidade: rodar a mesma unidade com
     parâmetros diferentes é o uso normal do produto — a tela de histórico existe
     para comparar cenários. O que não pode é o mesmo pedido virar duas execuções.
+
+    ## As três condições da concluída, e nenhuma é enfeite
+
+    **`SUCESSO`, e não qualquer término.** `ERRO` continua liberando execução
+    nova, de propósito: quem repete depois de uma falha está corrigindo algo, e
+    apontá-lo para o fracasso anterior impediria a correção.
+
+    **Publicada em `public.otim_meta`.** `SUCESSO` sem publicação é um estado que
+    mente — diz que deu certo e não há resultado para abrir. Mandar alguém para
+    ele seria prometer uma tela vazia.
+
+    **Posterior à última alteração do cadastro.** Esta é a que não é óbvia, e sem
+    ela a dedupe violaria a R1. Os mesmos parâmetros de TELA não são a mesma
+    simulação se o CADASTRO mudou no meio: a rodada de ontem leu preços, vazões e
+    obras que não são os de hoje, e devolvê-la afirmaria que o resultado continua
+    valendo. A conta usa `atualizado_em` das fichas da unidade.
+
+    Comparo com `solicitado_em`, e não com a hora da publicação: é o instante em
+    que a rodada começou a ler o cadastro. Uma alteração feita DURANTE a execução
+    deixa `solicitado_em` anterior a ela e, corretamente, libera nova rodada.
+
+    O limite disso, dito: só enxerga alteração que passou pelo `PUT`. Carga da
+    planilha e SQL solto não carimbam nada — e depois deles a régua certa é
+    recarregar o banco, que é o que `dev/recarregar_tudo.py` faz.
+
+    Devolve `{run_id, status}` porque quem chama precisa dos dois: o `POST /runs`
+    responde com o status REAL da rodada encontrada, e dizer `PENDENTE` para uma
+    rodada que terminou ontem faria a tela abrir o modal de acompanhamento de algo
+    que não está acompanhando nada.
     """
     alvo = digest(params)
     linhas = await con.fetch(
-        f"""SELECT r.run_id, r.params
+        f"""SELECT r.run_id, r.params, s.status
               FROM {_c()}.run_request r
               JOIN {_c()}.run_status s USING (run_id)
-             WHERE r.unidade = $1 AND s.status = ANY($2::text[])""",
+             WHERE r.unidade = $1
+               AND (
+                 s.status = ANY($2::text[])
+                 OR (
+                   s.status = $3
+                   AND EXISTS (SELECT 1 FROM {_p()}.otim_meta m WHERE m.run_id = r.run_id)
+                   AND r.solicitado_em > COALESCE(
+                         ({_CADASTRO_ALTERADO_EM.format(i=_i())}),
+                         '-infinity'::timestamptz)
+                 )
+               )
+             ORDER BY r.solicitado_em DESC""",
         unidade_id,
         [Status.PENDENTE.value, Status.RODANDO.value],
+        Status.SUCESSO.value,
     )
     for l in linhas:
         if digest(l["params"] or {}) == alvo:
-            return l["run_id"]
+            return {"run_id": l["run_id"], "status": l["status"]}
     return None
 
 
@@ -173,15 +255,20 @@ async def abrir_rodada(
     params: dict[str, Any],
     usuario: str,
     rotulo: str | None,
-) -> str:
+) -> dict[str, Any]:
     """`run_request` + `run_status` PENDENTE numa transacao so.
 
     Juntas porque o front consulta o status logo depois do 201: se houvesse um
     instante com request gravada e status ausente, a primeira consulta daria 404 e
     a tela mostraria "rodada não encontrada" para uma rodada que acabou de criar.
 
-    Devolve o `run_id` que o chamador deve usar — que **pode não ser o que entrou**:
-    se um pedido idêntico já estiver em voo, devolve o dele e não grava nada.
+    Devolve `{run_id, status, ja_existia}`. O `run_id` **pode não ser o que
+    entrou**: se um pedido idêntico já existir — em voo ou concluído —, devolve o
+    dele e não grava nada.
+
+    `ja_existia` é o que o endpoint traduz em 200 vs 201, e o `status` é o REAL da
+    rodada encontrada: para uma concluída ontem, dizer `PENDENTE` faria a tela
+    abrir o modal de acompanhamento de algo que já terminou.
 
     O `pg_advisory_xact_lock` é o que torna isso correto sob concorrência. Sem ele,
     duas requisições simultâneas fazem a busca, nenhuma acha nada, e as duas
@@ -192,9 +279,9 @@ async def abrir_rodada(
     async with db.transacao() as con:
         await con.execute("SELECT pg_advisory_xact_lock(hashtext($1))", unidade_id)
 
-        existente = await rodada_em_voo(con, unidade_id, params)
+        existente = await rodada_identica(con, unidade_id, params)
         if existente:
-            return existente
+            return {**existente, "ja_existia": True}
 
         await con.execute(
             f"""INSERT INTO {_c()}.run_request
@@ -229,7 +316,7 @@ async def abrir_rodada(
         # historico passou a mostrar as rodadas EM VOO: a lista exibia linhas sem
         # nome durante toda a execucao, justamente quando ha varias ao mesmo tempo
         # e o nome e a unica coisa que as distingue.
-    return run_id
+    return {"run_id": run_id, "status": Status.PENDENTE.value, "ja_existia": False}
 
 
 async def status(run_id: str) -> dict[str, Any] | None:

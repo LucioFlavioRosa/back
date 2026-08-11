@@ -16,7 +16,16 @@ negar que existe é pior que gastar cluster duas vezes.
 Os dois lados são testados juntos de propósito. Deduplicar demais quebra a posse;
 deduplicar de menos gasta cluster à toa — e é a combinação que define a regra, não
 cada metade sozinha.
+
+A dedupe passou a alcançar a rodada **concluída** (R5), e o `digest` não mudou por
+causa disso: quem decide "é o mesmo pedido" continua sendo ele, e quem decide "essa
+rodada ainda serve" é o SQL de `rodada_identica`. A parte SQL é verificada contra o
+banco real pelos smokes — aqui fica a régua que não precisa de banco, mais a
+conferência de que a consulta afirma as três condições que a tornam correta.
 """
+
+import re
+from pathlib import Path
 
 from app.infra.repositorios.controle import digest
 
@@ -58,3 +67,50 @@ def test_ordem_das_chaves_nao_muda_o_digest():
     a = digest({"USUARIO": "ana@aegea", **PEDIDO})
     b = digest({**{k: PEDIDO[k] for k in reversed(list(PEDIDO))}, "USUARIO": "ana@aegea"})
     assert a == b
+
+
+# --------------------------------------------------------------------------
+# A dedupe de rodada CONCLUÍDA. O que dá para provar sem banco é que a consulta
+# continua exigindo as três condições — cada uma existe por um motivo diferente,
+# e perder qualquer uma produz um defeito diferente.
+
+FONTE = (Path(__file__).resolve().parents[1] / "app/infra/repositorios/controle.py").read_text(
+    encoding="utf-8"
+)
+
+
+def test_a_concluida_so_conta_se_estiver_publicada():
+    """`SUCESSO` sem linha em `otim_meta` diz que deu certo e não tem o que abrir.
+
+    Mandar alguém para uma rodada assim é prometer uma tela vazia.
+    """
+    assert "otim_meta m WHERE m.run_id = r.run_id" in FONTE
+
+
+def test_a_concluida_so_conta_se_o_cadastro_nao_mudou_depois():
+    """A condição que impede a dedupe de violar a R1.
+
+    Os mesmos parâmetros de TELA não são a mesma simulação se o CADASTRO mudou no
+    meio: a rodada de ontem leu preços e obras que não são os de hoje. A conta usa
+    `atualizado_em`, que só existe desde a auditoria por ficha.
+    """
+    assert "solicitado_em > COALESCE(" in FONTE
+    assert "atualizado_em" in FONTE
+
+
+def test_erro_continua_liberando_execucao_nova():
+    """Quem repete depois de uma falha está corrigindo algo.
+
+    Apontá-lo para o fracasso anterior impediria a correção — por isso a consulta
+    lista `PENDENTE`/`RODANDO` e `SUCESSO`, e nunca `ERRO`.
+    """
+    consulta = re.search(r"async def rodada_identica.*?return None", FONTE, re.S)
+    assert consulta, "não achei `rodada_identica`"
+    assert "Status.ERRO" not in consulta.group(0)
+    assert "Status.SUCESSO.value" in consulta.group(0)
+
+
+def test_a_funcao_nao_se_chama_mais_em_voo():
+    """O nome antigo (`rodada_em_voo`) passou a mentir quando ela alcançou a
+    concluída — e comentário ou nome que mente conta como defeito nesta base."""
+    assert "def rodada_em_voo" not in FONTE
