@@ -46,6 +46,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, ".")
 
 import rodar_simulacao_real as R  # noqa: E402
+from app.dominio.parametros import mes_ano  # noqa: E402
 from azure.servicebus.aio import ServiceBusClient  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 
@@ -372,6 +373,24 @@ def executar(run_id: str, tempo: int) -> None:
         penalidade_cobertura=p.get("PENALIDADE_COBERTURA", "meta+cobertura"),
         anos_extra_conclusao=int(p.get("ANOS_EXTRA_CONCLUSAO", 3)),
         ete_faseada=bool(p.get("ETE_FASEADA", True)),
+        # OS SEIS ABAIXO NAO ERAM REPASSADOS. A tela os oferece, o corpo os envia,
+        # o banco os grava — e este worker os descartava, entao o motor rodava com
+        # o default. `ete_fixo` e `peso_cidade` eram escolha do usuario que nao
+        # mudava nada; e a pior forma disso, porque ele ajusta, o numero muda por
+        # outro motivo, e ele aprende uma relacao que nao existe. E a mesma licao
+        # que `MAX_TIME_S`/`WORKERS` ja tinham dado aqui.
+        horizonte_capex=p.get("HORIZONTE_CAPEX"),
+        orcamento_total=p.get("ORCAMENTO_TOTAL"),
+        ete_fixo=bool(p.get("ETE_FIXO", False)),
+        # `{}` do payload e "nenhuma prioridade", que e o mesmo que ausencia — mas
+        # o motor multiplica por `_pc.get(g, 1.0)`, entao dict vazio ja seria
+        # inofensivo. `or None` mantem o default explicito.
+        peso_cidade=p.get("PESO_CIDADE") or None,
+        data_inicio=mes_ano(p.get("DATA_INICIO")),
+        # `in` e nao `get`: ausente e "cadastro" viram None (o motor carrega as
+        # metas da planilha), mas "ignorar" e `{}` — e `get` nao distingue o `{}`
+        # gravado de uma chave que nao existe.
+        metas_cobertura=p["METAS_COBERTURA"] if "METAS_COBERTURA" in p else None,
     )
     log(run_id, f"cenario: {len(cen.obras)} obras, {len(cen.sistemas)} sistemas")
     andar(run_id, MODELO)

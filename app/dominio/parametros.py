@@ -185,12 +185,65 @@ def montar_params(corpo: dict[str, Any], unidade_id: str, usuario: str) -> dict[
     # `metas_cobertura: null` NAO e ausencia — e a escolha de ignorar as metas
     # nesta rodada. Por isso entra mesmo valendo None, e por isso o `in` acima
     # nao serve para ela sozinha.
+    #
+    # AS DUAS ESCOLHAS NAO PODEM VIRAR O MESMO VALOR, e viravam: `None if valor in
+    # (None, "cadastro")` colapsava "ignorar" e "usar o cadastro" em `None`. E no
+    # motor `metas_cobertura=None` significa CARREGAR as metas da planilha
+    # (`otimizador_capex_v62.py`, "if metas_cobertura is None: ... L('metas-cobertura')"),
+    # que e o oposto de ignorar.
+    #
+    # O efeito era invisivel e serio: quem escolhia ignorar as metas rodava COM
+    # elas, enquanto a tela avisava que o resultado nao serviria para aferir
+    # cumprimento. O aviso dizia o contrario do que acontecia.
+    #
+    # `{}` e como se diz "nenhuma meta" ao motor: ele trata dict como mapa
+    # explicito e um mapa vazio produz `cen.metas_cobertura = {}`.
     if "metas_cobertura" in corpo:
         valor = corpo["metas_cobertura"]
-        params["METAS_COBERTURA"] = None if valor in (None, "cadastro") else valor
+        if valor == "cadastro":
+            params["METAS_COBERTURA"] = None
+        elif valor is None:
+            params["METAS_COBERTURA"] = {}
+        else:
+            params["METAS_COBERTURA"] = valor
 
     _validar(params)
     return params
+
+
+def mes_ano(data_inicio: str | None) -> tuple[int, int] | None:
+    """`"2027-01"` (o que a tela manda) -> `(1, 2027)` (o que o motor entende).
+
+    A CONVERSAO NAO E COSMETICA. O motor faz
+    `_p = str(data_inicio).split("-"); _mi, _ai = int(_p[0]), int(_p[1])` — ou seja,
+    ele le MES-ANO. A tela coleta ANO-MES (o placeholder dela e "2026-06"). Passar
+    a string crua faria `_mi=2027, _ai=1`, e o deslocamento absurdo que sai dali e
+    zerado pelo `max(0, ...)` do proprio motor: a data escolhida sumiria sem erro
+    nenhum. Silencio e pior que nao repassar.
+
+    Devolve TUPLA, e nao string remontada, porque o motor trata
+    `isinstance(data_inicio, (list, tuple))` como caminho proprio — sem depender de
+    ordem em texto, que foi a origem da confusao.
+
+    Mora aqui, e nao no worker, pela razao do docstring do modulo: e a traducao
+    entre a convencao da tela e a do job, e ela nao pode ter duas casas.
+    """
+    if not data_inicio:
+        return None
+    partes = str(data_inicio).replace("/", "-").split("-")
+    if len(partes) != 2:
+        raise ParametrosInvalidos(f"Data de início fora do formato AAAA-MM: {data_inicio!r}")
+    try:
+        ano, mes = int(partes[0]), int(partes[1])
+    except ValueError:
+        raise ParametrosInvalidos(
+            f"Data de início fora do formato AAAA-MM: {data_inicio!r}"
+        ) from None
+    if not 1 <= mes <= 12:
+        # Provavel MM-AAAA invertido chegando de algum lugar. Falhar aqui e melhor
+        # que deslocar a janela para um mes que nao existe.
+        raise ParametrosInvalidos(f"Data de início com mês fora de 1..12: {data_inicio!r}")
+    return (mes, ano)
 
 
 def _validar(params: dict[str, Any]) -> None:
