@@ -28,12 +28,14 @@ services:
       # são os que `controle.usuario_acesso` já concede (migração 003), e os três
       # escopos são diferentes de propósito — é o que faz o recorte APARECER:
       #
-      #   dev@local    admin, escopo total
-      #   ana@aegea    analista da regional rA
-      #   bruno@aegea  analista de uma unidade só (uB2)
+      #   dev@local      admin, escopo total
+      #   ana@aegea      analista da regional rA
+      #   bruno@aegea    analista de uma unidade só (uB2)
+      #   ninguem@aegea  SEM concessão — autentica e não vê nada
       #
-      # Um login sem concessão nenhuma também é caso de teste válido: autentica e
-      # não vê nada, que é a falha fechada de `deps._com_acesso`.
+      # O quarto existe porque a falha fechada de `deps._com_acesso` precisa ser
+      # exercitável: sem um login que o IdP emita e a tabela não conheça, não há
+      # como provar que "autenticado" e "autorizado" são coisas separadas.
       JSON_CONFIG: >-
         {"tokenCallbacks":[{"issuerId":"otimizador","tokenExpiry":3600,
         "requestMappings":[
@@ -41,6 +43,8 @@ services:
          "claims":{"sub":"ana","aud":["otimizador-api"],"preferred_username":"ana@aegea"}},
         {"requestParam":"client_id","match":"bruno",
          "claims":{"sub":"bruno","aud":["otimizador-api"],"preferred_username":"bruno@aegea"}},
+        {"requestParam":"client_id","match":"ninguem",
+         "claims":{"sub":"ninguem","aud":["otimizador-api"],"preferred_username":"ninguem@aegea"}},
         {"requestParam":"client_id","match":"*",
          "claims":{"sub":"dev","aud":["otimizador-api"],"preferred_username":"dev@local"}}]}]}
     # Sem healthcheck: a imagem é distroless (não tem shell nem wget, então nenhum
@@ -64,3 +68,10 @@ services:
     depends_on:
       idp:
         condition: service_started
+
+  web:
+    volumes:
+      - ./dev/nginx-e2e.conf:/etc/nginx/conf.d/default.conf:ro
+      # Troca o `config.js` do e2e pelo que liga a sessão de mentira no front.
+      # O bloco inteiro é opcional no app: sem ele, nada de SSO entra no bundle.
+      - ./dev/config-e2e-sso.js:/usr/share/nginx/html/config.js:ro
