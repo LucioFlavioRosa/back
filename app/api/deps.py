@@ -16,11 +16,14 @@ Duas perguntas diferentes, e vale nao confundi-las:
 Por isso o login sai do TOKEN e nunca do corpo. Aceitar do corpo seria aceitar
 que qualquer um assinasse — e agora tambem LESSE — o trabalho de outro.
 
-Enquanto o Entra ID nao esta configurado (`ENTRA_TENANT_ID` vazio), o servico roda
-sem exigir token e usa um usuario de desenvolvimento. O `/readyz` denuncia esse
-modo para que ele nao chegue a producao sem que alguem veja.
+Enquanto o provedor de identidade nao esta configurado (`config.exige_auth`
+falso), o servico roda sem exigir token e usa um usuario de desenvolvimento. O
+`/readyz` denuncia esse modo para que ele nao chegue a producao sem que alguem
+veja. Com ele configurado, todo request precisa de `Authorization: Bearer` e o
+token e validado em `app.infra.tokens`.
 """
 
+import logging
 from dataclasses import dataclass
 from typing import Annotated
 
@@ -178,24 +181,27 @@ async def usuario_atual(quem: Annotated[Identidade, Depends(identidade_atual)]) 
 
 
 async def _identidade_do_token(token: str) -> str:
-    """Valida o access token do Entra ID e devolve quem e o usuario.
+    """Valida o access token e devolve quem e o usuario.
 
-    PENDENTE — precisa da validacao de assinatura via JWKS do tenant
-    (`https://login.microsoftonline.com/{tenant}/discovery/v2.0/keys`), com cache
-    das chaves e conferencia de `aud`, `iss` e `exp`.
+    A verificacao mora em `app.infra.tokens` (JWKS + RS256 + `aud`/`iss`/`exp`).
+    Aqui fica so a traducao: qualquer recusa vira 401 com a MESMA mensagem, sem
+    dizer o que falhou. O detalhe vai para o log — ele ajuda quem opera, e para
+    quem sonda ele seria um oraculo.
 
-    O PAPEL deve passar a sair do claim `roles` quando isto existir. O ESCOPO
-    (quais unidades) continua em `controle.usuario_acesso`: que unidades alguem
-    acessa e decisao do negocio, nao do diretorio corporativo.
-
-    Levanta em vez de decodificar sem verificar: um `jwt.decode(..., verify=False)`
-    aqui aceitaria qualquer token forjado, e o modo de falha seria silencioso —
-    tudo funcionando, com o usuario que o atacante escolheu.
+    O ESCOPO (quais unidades) NAO sai do token: continua em
+    `controle.usuario_acesso`, porque que unidades alguem acessa e decisao do
+    negocio, nao do diretorio corporativo. O PAPEL pode passar a sair do claim
+    `roles` quando o tenant estiver configurado para emiti-lo.
     """
-    raise HTTPException(
-        status.HTTP_501_NOT_IMPLEMENTED,
-        "Validação de token do Entra ID ainda não implementada neste serviço.",
-    )
+    from app.infra.tokens import TokenInvalido, login_do_token
+
+    try:
+        return await login_do_token(token)
+    except TokenInvalido as e:
+        logging.getLogger(__name__).warning("token recusado: %s", e)
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED, "Sessão inválida ou expirada."
+        ) from e
 
 
 async def guarda_de_rota(

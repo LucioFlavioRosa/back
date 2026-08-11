@@ -43,12 +43,24 @@ class Config(BaseSettings):
     fila_simulacoes: str = "otimizacoes"
 
     # ---------------------------------------------------------------- auth
-    # Enquanto `entra_tenant_id` estiver vazio o servico NAO exige token — e o modo
-    # de desenvolvimento, espelhando o front, que so manda Authorization quando o
-    # SSO esta configurado no /config.js. Em producao isto e obrigatorio, e o
-    # `readyz` avisa quando esta desligado.
+    # Enquanto a auth estiver desligada o servico NAO exige token — e o modo de
+    # desenvolvimento, espelhando o front, que so manda Authorization quando o SSO
+    # esta configurado. Em producao isto e obrigatorio, e o `readyz` avisa quando
+    # esta desligado.
     entra_tenant_id: str = ""
     entra_audience: str = ""
+
+    # OS TRES OVERRIDES ABAIXO EXISTEM PARA APONTAR A VALIDACAO PARA OUTRO IdP.
+    # A verificacao e OIDC padrao (JWKS + RS256 + aud/iss/exp), entao trocar o
+    # Entra por um provedor de mentira em desenvolvimento e trocar ENDERECO, e nao
+    # codigo. Vazios, os dois primeiros sao derivados do tenant.
+    entra_jwks_url: str = ""
+    entra_issuer: str = ""
+    #: De qual claim sai o login. Vazio = tenta a cadeia `_CLAIMS_DE_LOGIN`, que
+    #: cobre as formas que o Entra usa conforme a versao do token e os escopos
+    #: concedidos. Preencher fixa UM claim, e a ausencia dele passa a ser erro —
+    #: que e o que se quer quando ja se sabe qual o tenant emite.
+    entra_claim_login: str = ""
 
 
     # ---------------------------------------------------------------- resto
@@ -72,7 +84,34 @@ class Config(BaseSettings):
 
     @property
     def exige_auth(self) -> bool:
-        return bool(self.entra_tenant_id and self.entra_audience)
+        """Ha para onde validar E o que exigir no `aud`?
+
+        A `audience` e obrigatoria nos dois casos, e nao por formalidade: sem ela
+        o servico aceitaria um token legitimo emitido para OUTRA aplicacao do
+        mesmo tenant — assinatura valida, emissor valido, e credencial que nunca
+        foi para nos.
+        """
+        return bool(self.entra_audience and (self.entra_tenant_id or self.entra_jwks_url))
+
+    @property
+    def jwks_url(self) -> str:
+        """Onde estao as chaves publicas que assinam o token."""
+        if self.entra_jwks_url:
+            return self.entra_jwks_url
+        return f"https://login.microsoftonline.com/{self.entra_tenant_id}/discovery/v2.0/keys"
+
+    @property
+    def issuer(self) -> str:
+        """Quem o token tem de declarar como emissor (claim `iss`).
+
+        O `/v2.0` no fim NAO e enfeite: o endpoint v1 do Entra emite `iss` sem
+        ele, e um token v1 apresentado a um servico que espera v2 falha aqui — que
+        e o comportamento certo, porque as duas versoes tambem diferem no formato
+        do `aud` e no claim que carrega o login.
+        """
+        if self.entra_issuer:
+            return self.entra_issuer
+        return f"https://login.microsoftonline.com/{self.entra_tenant_id}/v2.0"
 
 
 @lru_cache

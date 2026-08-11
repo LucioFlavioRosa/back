@@ -4,7 +4,12 @@ pydantic==2.10.4
 pydantic-settings==2.7.0
 asyncpg==0.30.0
 azure-servicebus==7.14.3
+# `[crypto]` traz o `cryptography`, sem o qual o PyJWT nao verifica RS256 — que e
+# o unico algoritmo que aceitamos. Sem o extra ele importa e falha na verificacao.
+pyjwt[crypto]==2.10.1
+# Runtime, e nao so desenvolvimento: e o cliente que busca o JWKS do provedor de
+# identidade. Assincrono de proposito — um GET bloqueante trancaria o event loop.
+httpx==0.28.1
 
 # desenvolvimento
 pytest==8.3.4
-httpx==0.28.1

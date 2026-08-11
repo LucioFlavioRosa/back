@@ -65,10 +65,49 @@ uvicorn main:app --reload
 
 `GET /api/docs` traz o OpenAPI navegável.
 
-Sem `ENTRA_TENANT_ID` o serviço **não exige token** e assume `dev@local` como
+Sem `ENTRA_AUDIENCE` o serviço **não exige token** e assume `dev@local` como
 usuário — o mesmo arranjo do front, que só manda `Authorization` quando o SSO está
 ligado. O `/readyz` denuncia esse modo (`"autenticacao": "DESLIGADA"`) para que ele
 não chegue a produção sem alguém ver.
+
+## A autenticação
+
+A verificação do token é **OIDC padrão** e vive em `app/infra/tokens.py`: baixa o
+JWKS do emissor, acha a chave pelo `kid`, confere a assinatura RS256 e então
+`aud`, `iss` e `exp`. O Entra é um emissor como outro qualquer nessa conta, e por
+isso os endereços vêm de configuração.
+
+O **login** sai do token; o **escopo** (quais unidades) não. Ele continua em
+`controle.usuario_acesso`, porque que unidades alguém acessa é decisão do negócio,
+não do diretório corporativo. Login sem concessão autentica e não vê nada — falha
+fechada, de propósito.
+
+### Testar SSO local, sem tenant
+
+`docker-compose.sso.yml` sobe um provedor OIDC de mentira
+(`navikt/mock-oauth2-server`) e liga a autenticação:
+
+```
+docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.sso.yml up -d
+python dev/token_de_teste.py ana                      # imprime um Bearer válido
+python dev/token_de_teste.py ana --ver                # mostra os claims
+curl -H "Authorization: Bearer $(python dev/token_de_teste.py ana)" localhost:8000/api/regionais
+```
+
+Três usuários, com escopos diferentes de propósito — é o que faz o recorte
+aparecer: `dev` (admin, tudo), `ana` (regional `rA`), `bruno` (unidade `uB2`).
+
+Isso exercita a verificação e o recorte. **Não** exercita nada específico do
+Entra: token v1 vs v2, `aud` como GUID ou `api://…`, qual claim carrega o login,
+conditional access, consent. Para essas só serve um tenant de verdade — e
+`ENTRA_CLAIM_LOGIN` existe justamente para a última delas não virar mudança de
+código.
+
+### O que muda ao apontar para o Entra
+
+Só endereço. `ENTRA_TENANT_ID` e `ENTRA_AUDIENCE` preenchidos, e
+`ENTRA_JWKS_URL`/`ENTRA_ISSUER` vazios — aí eles são derivados do tenant
+(`.../discovery/v2.0/keys` e `.../v2.0`). Nenhuma linha de `app/` muda.
 
 ## As regras do produto
 
@@ -125,8 +164,9 @@ Declarado em vez de escondido — cada item tem o motivo e o caminho:
   produziu. A tela precisa das faixas para explicar a causalidade do degrau. Ou o
   job passa a publicá-las na rodada, ou este endpoint lê o cadastro — e aí o
   número deixa de ser o daquela rodada, o que é pior.
-- **Validação do token do Entra ID** (`app/api/deps.py`): falta o JWKS do tenant.
-  Está levantando erro em vez de decodificar sem verificar, de propósito.
+- **SSO no FRONT**: o backend valida o token (ver abaixo), mas nenhuma tela faz
+  login ainda. O encaixe existe (`src/comum/auth/sessao.ts`) e espera uma chamada
+  de `configurarSessao({ token })` com o MSAL. Depende da app registration.
 - **Cancelar rodada**: bloqueado por migração (ver abaixo).
 - **`reprocessa_de`**: falta a coluna para ligar a rodada reexecutada à origem
   (ver "Migrações", abaixo).
