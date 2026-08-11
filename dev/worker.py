@@ -406,7 +406,32 @@ def executar(run_id: str, tempo: int) -> None:
         segundos = min(int(p.get("MAX_TIME_S") or tempo), tempo)
         nucleos = int(p.get("WORKERS") or 8)
         log(run_id, f"solver: max_time_s={segundos} workers={nucleos}")
-        res = CP.resolver_por_sistema(cen, max_time_s=segundos, workers=nucleos)
+        try:
+            res = CP.resolver_por_sistema(cen, max_time_s=segundos, workers=nucleos)
+        except KeyError as e:
+            # `KeyError: 'Araruama Leste1'` — o nome de uma cidade, cru, e nada
+            # mais. Chegava assim ate a tela do usuario, que nao tem como saber
+            # que o defeito e do motor e nem que a rodada e reexecutavel.
+            #
+            # O erro e do PACOTE, em `otimizador_capex_cpsat63.resolver_por_sistema`:
+            # o reparo do teto anual percorre TODAS as cidades (`for g in grupos`)
+            # indexando `sel[g]`, mas `sel` so tem as cidades que o master
+            # selecionou. Quando o `Solve()` volta sem solucao completa — e so
+            # `INFEASIBLE` e filtrado, `UNKNOWN` passa —, a selecao fica parcial e
+            # a primeira cidade ausente estoura. O nome que aparece e so a ordem
+            # de iteracao; nao ha nada de errado com a cidade.
+            #
+            # Nao da para consertar daqui: o estouro acontece dentro do motor,
+            # antes de ele devolver qualquer coisa. O que da e nao repassar um
+            # `KeyError` nu. A correcao pertence ao pacote — ver
+            # `dev/patches/motor_status_do_solver.md`.
+            raise RuntimeError(
+                f"O solver falhou ao reparar o teto anual: a cidade {e} ficou sem "
+                "coluna selecionada. É um defeito conhecido do motor "
+                "(otimizador_capex_cpsat63), provável quando o tempo de solver não "
+                "basta para a janela pedida. Tente de novo com MAX_TIME_S maior ou "
+                "janela de CAPEX menor. A rodada pode ser reexecutada."
+            ) from e
     finally:
         parar.set()
         batedor.join(timeout=2)
