@@ -56,7 +56,30 @@ async def historico(
     unidade: str | None = None, usuario: str | None = None
 ) -> list[dict[str, Any]]:
     linhas = await db.buscar(
-        f"""SELECT h.run_id, h.rotulo, h.usuario, h.data_hora, h.milp_status,
+        f"""SELECT h.run_id, h.usuario, h.milp_status,
+                   -- O NOME QUE A PESSOA DIGITOU. `otim_meta.rotulo` é o que o
+                   -- executor gravou, e um executor com o bug do fallback
+                   -- (`dev/worker.py`, corrigido em bbc8173) publica
+                   -- "uA2 — pela tela" por cima do nome escolhido. `run_request`
+                   -- guarda o pedido, e o pedido é a fonte de quem nomeou.
+                   COALESCE(rq.rotulo, h.rotulo) AS rotulo,
+                   -- QUANDO A RODADA FOI PEDIDA, e não quando o executor a
+                   -- publicou. Duas razões, e as duas doem em produção:
+                   --
+                   -- 1. `otim_meta.data_hora` vem do pacote do otimizador, que
+                   --    grava o relógio LOCAL numa coluna `timestamptz` — o valor
+                   --    fica deslocado do fuso da máquina que executou (medido:
+                   --    3h em BRT). `solicitado_em` é gravado por este serviço,
+                   --    com `now()` do Postgres, e está certo.
+                   -- 2. `em_voo` já usa `solicitado_em`. Com campos diferentes, a
+                   --    MESMA rodada mudava de horário ao publicar e pulava de
+                   --    posição na lista ordenada — quem estava olhando via a
+                   --    rodada "sumir".
+                   --
+                   -- COALESCE porque rodada publicada por fora da fila não tem
+                   -- `run_request`: para ela, `data_hora` é o único tempo que
+                   -- existe, e um horário torto é melhor que nenhum.
+                   COALESCE(rq.solicitado_em, h.data_hora) AS data_hora,
                    h.anos_capex, h.orcamento_total, h.vpl, h.capex_total,
                    h.obras_construidas, h.obras_total, h.cobertura_final_pct,
                    h.metas_total, h.metas_nao_atingidas, h.tempo_s,
@@ -85,7 +108,9 @@ async def historico(
              -- operacao provavelmente manda o nome, que e o que esta na coluna.
              WHERE ($1::text IS NULL OR m.unidade_id = $1 OR m.regional = $1)
                AND ($2::text IS NULL OR h.usuario  = $2)
-             ORDER BY h.data_hora DESC""",
+             -- Mesmo campo que a coluna acima, e o mesmo que `em_voo` usa: é o
+             -- que faz a rodada NÃO saltar de posição quando termina.
+             ORDER BY COALESCE(rq.solicitado_em, h.data_hora) DESC""",
         unidade,
         usuario,
     )

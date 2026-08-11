@@ -311,7 +311,8 @@ rodada que nunca executa não é.
 | 3 | atualizar `progresso` (0–100) | `controle.run_status.progresso` | a barra salta de 0 a 100 e o modal promete um acompanhamento que não existe |
 | 4 | publicar o resultado | `public.otim_*`, **transacionalmente** | rodada meio publicada; a tela lê tabela incompleta |
 | 5 | `otim_meta.rotulo` e `.usuario` | **das colunas de `run_request`** | ver o aviso abaixo |
-| 6 | marcar `SUCESSO` — ou `ERRO` com a causa | `controle.run_status` | fica `RODANDO` para sempre |
+| 6 | `otim_meta.data_hora` **com fuso** | `timestamptz`, em UTC | horário deslocado na tela — ver abaixo |
+| 7 | marcar `SUCESSO` — ou `ERRO` com a causa | `controle.run_status` | fica `RODANDO` para sempre |
 
 > **`rotulo` e `usuario` vêm das COLUNAS de `run_request`, nunca de `params`.**
 >
@@ -325,6 +326,20 @@ rodada que nunca executa não é.
 > Três das seis rodadas nomeadas tiveram o nome substituído por um texto plausível
 > que ninguém escreveu — no histórico, que existe justamente para distinguir uma
 > rodada da outra. Consertado; fica aqui como o erro a não repetir.
+
+> **`data_hora` precisa carregar o fuso.** A coluna é `timestamptz`. Gravar nela
+> um `datetime` ingênuo com o relógio local faz o Postgres assumir UTC, e o
+> instante fica deslocado pelo fuso da máquina que executou.
+>
+> Medido no banco local: uma rodada pedida às `15:34:12+00` foi publicada com
+> `data_hora = 12:36:48+00` — o relógio de parede de São Paulo (BRT, −03)
+> gravado como se fosse UTC. Três horas de erro, e em produção o desvio muda com
+> a região do cluster.
+>
+> **O backend não depende mais disso**: o histórico usa `run_request.solicitado_em`
+> quando existe (`resultado.historico`), justamente porque `data_hora` não é
+> confiável. Mas rodada publicada por fora da fila não tem pedido, e para ela
+> `data_hora` é o único instante que existe — então o executor precisa acertar.
 
 ### O vocabulário de `status`
 
