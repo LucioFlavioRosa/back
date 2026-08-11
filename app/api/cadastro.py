@@ -160,12 +160,10 @@ async def alteracoes(
 # cliente seria aceitar que alguem assinasse a correcao de outro — numa trilha de
 # auditoria isso e o defeito que a anula inteira.
 #
-# O CORPO NAO CARREGA MAIS A TRILHA. Ele ja trouxe um `overrides` pronto, montado
-# pelo front, e o backend o gravava — auditoria que pergunta ao auditado o que ele
-# mudou tem o defeito no desenho. Hoje o servidor COMPARA o que esta gravado com o
-# que chegou (`cadastro_escrita.diferencas`), e cobre a ficha inteira: antes so o
-# bloco do Databricks gerava linha, e `params`, obras, cidade e ETE nao deixavam
-# rastro nenhum.
+# O CORPO NAO CARREGA A TRILHA. Quem a calcula e o SERVIDOR, comparando o que
+# esta gravado com o que chegou (`cadastro_escrita.diferencas`) — auditoria que
+# pergunta ao auditado o que ele mudou tem o defeito no desenho. A trilha cobre a
+# ficha inteira: `params`, `db`, obras, cidade, metas, faixas e ETE.
 #
 # A resposta traz `alteracoesGravadas` de proposito: e o unico jeito de quem
 # chamou conferir que a trilha foi junto, sem consultar o banco.

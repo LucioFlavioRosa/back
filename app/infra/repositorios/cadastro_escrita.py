@@ -630,9 +630,10 @@ async def exigir_dona(tipo: str, ficha_id: str, unidade_id: str) -> None:
 def _exigir_ficha_inteira(corpo: dict[str, Any]) -> None:
     """`params` e `db` precisam vir COMPLETOS — e o que faz o PUT ser substituicao.
 
-    Bloco AUSENTE passa: `{"overrides": [...]}` sozinho e uma correcao de trilha
-    sem tocar na ficha, e exigir os dois blocos ali seria exigir que o cliente
-    reenvie dado que nao esta mudando. Bloco PRESENTE, porem, tem de estar inteiro.
+    Bloco AUSENTE passa: um `PUT` que so mande `{"obrasOverride": {...}}` esta
+    corrigindo obra sem tocar em `params` nem `db`, e exigir os dois blocos ali
+    seria exigir que o cliente reenvie dado que nao esta mudando. Bloco PRESENTE,
+    porem, tem de estar inteiro.
     """
     faltando: list[str] = []
     for bloco, esperados in (("params", CAMPOS_PARAMS), ("db", CAMPOS_DB)):
