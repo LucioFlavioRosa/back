@@ -216,7 +216,17 @@ async def contar(unidade_id: str) -> dict[str, Any]:
                                                   ELSE 0 END), 0) FROM et)  AS t4,
           (SELECT COALESCE(SUM({len(_PARAMS)} + CASE WHEN por_pop THEN {len(_PARAMS_POP)}
                                                      ELSE 0 END + 4 * {len(_OBRA)}), 0)
-             FROM ct)                                                       AS t5
+             FROM ct)                                                       AS t5,
+          -- O TAMANHO da unidade. Nao entra na conta de pendencia; vem junto
+          -- porque as CTEs acima ja o recortam, e uma consulta a parte pagaria de
+          -- novo o mesmo percurso de topologia.
+          (SELECT count(*) FROM cidades)                                    AS n_cidades,
+          (SELECT count(DISTINCT cs.sistema_id)
+             FROM {_i()}.cidade_sistema cs JOIN cidades c USING (cidade_id)) AS n_sistemas,
+          (SELECT count(*) FROM {_i()}.componentes_subbacias_capex o
+             JOIN comps c ON c.id = o.sub_bacia)
+            + (SELECT count(*) FROM {_i()}.componentes_cts_capex o
+                 JOIN ct ON ct.id = o.cts)                                  AS n_obras
         """,
         unidade_id,
     ) or {}
@@ -235,6 +245,15 @@ async def contar(unidade_id: str) -> dict[str, Any]:
             "subBacias": grupos["g3"],
             "etes": grupos["g4"],
             "cts": grupos["g5"],
+        },
+        # O tamanho do problema que a simulação vai resolver. `obras` são os
+        # componentes de CAPEX de sub-bacia e CTS — as candidatas que o motor
+        # escolhe construir ou não. É o número que diz se a rodada é de minutos ou
+        # de meia hora, e ele não estava em lugar nenhum antes de a rodada existir.
+        "tamanho": {
+            "cidades": int(linha.get("n_cidades") or 0),
+            "sistemas": int(linha.get("n_sistemas") or 0),
+            "obras": int(linha.get("n_obras") or 0),
         },
         "faltando": await componentes_faltando(unidade_id),
     }

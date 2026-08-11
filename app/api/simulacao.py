@@ -54,6 +54,11 @@ async def prontidao(unidade_id: str) -> dict[str, Any]:
         # "faltam 12 campos" e o usuario tem de procurar em cinco grupos. O front
         # ignora campo que nao conhece, entao acrescentar nao quebra nada.
         "porGrupo": conta["porGrupo"],
+        # `tamanho` responde "que unidade e essa?" antes de rodar: quantas cidades,
+        # sistemas e obras candidatas. Sai daqui, e nao de um endpoint proprio,
+        # porque a tela ja busca este — e porque a consulta de pendencia ja
+        # percorre exatamente essas linhas.
+        "tamanho": conta["tamanho"],
         # `faltando` traz o que a tela NAO tem como descobrir: o componente de
         # obra que a ficha nao tem. Campo em branco ela conta sozinha, a cada
         # tecla; componente ausente nao aparece no payload da ficha — a ficha
