@@ -522,6 +522,27 @@ async def processar(msg, tempo: int) -> None:
         log(run_id, f"reentregue, mas ja esta {ja} — ignorada")
         return
 
+    # A RODADA AINDA EXISTE? Isto precisa vir antes de QUALQUER escrita de status.
+    #
+    # `run_status` tem FK para `run_request`, entao um `run_id` excluido faz
+    # estourar tudo que escreve status — inclusive o `marcar(ERRO)` do `except`
+    # abaixo, que seria a saida natural. A excecao escapa de `processar`, o laco
+    # nao chega ao `complete_message`, o lock expira, e a mensagem volta a cada
+    # minuto ate o `MaxDeliveryCount` manda-la para dead-letter: tres tracebacks e
+    # uma vaga do executor ocupada em cada tentativa. Visto ao vivo com uma
+    # mensagem orfa que sobrou de uma rodada apagada.
+    #
+    # `executar()` ja faz esta checagem, mas ela e inalcancavel — `marcar(RODANDO)`
+    # morre antes de chegar la. Ela fica onde esta: protege quem chamar `executar`
+    # por outro caminho.
+    #
+    # `return`, e nao `raise`: sair normalmente e o que faz o laco COMPLETAR a
+    # mensagem, como no `ignorada` acima. Reentregar nunca vai ajudar — a
+    # `run_request` nao volta a existir.
+    if pedido(run_id) is None:
+        log(run_id, "nao esta em controle.run_request (rodada excluida?) — descartada")
+        return
+
     log(run_id, f"RECEBIDA (unidade {corpo.get('unidade_id')})")
     marcar(run_id, "RODANDO", progresso=1)
     reivindicar(run_id)
