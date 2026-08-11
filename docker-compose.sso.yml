@@ -1,0 +1,66 @@
+# A pilha com AUTENTICAÇÃO LIGADA, contra um provedor de identidade de mentira.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.sso.yml up -d
+#   python dev/token_de_teste.py ana            # imprime um Bearer válido
+#   curl -H "Authorization: Bearer $(python dev/token_de_teste.py ana)" localhost:8000/api/unidades
+#
+# O QUE ISTO TESTA, E O QUE NÃO TESTA
+#
+# Testa a VERIFICAÇÃO: assinatura RS256 pelo JWKS do emissor, `aud`, `iss`, `exp`,
+# rotação de chave, e o caminho 401 → sessão inválida. Isso é OIDC padrão, e é o
+# mesmo código que roda contra o Entra — o que muda são os três endereços abaixo.
+#
+# NÃO testa nada específico do Entra: token v1 vs v2, `aud` como GUID ou como
+# `api://…`, qual claim carrega o login, conditional access, consent. Essas só
+# aparecem contra um tenant de verdade, e é para elas que existe
+# `ENTRA_CLAIM_LOGIN` — o resto é configuração no portal do Azure.
+#
+# O front NÃO entra aqui de propósito. MSAL só fala com o Entra; construir login
+# de tela contra este mock seria trabalho para jogar fora. Aqui se exercita o
+# backend, com token na mão.
+services:
+  idp:
+    image: ghcr.io/navikt/mock-oauth2-server:2.1.10
+    ports:
+      - "8099:8080"
+    environment:
+      # Três usuários, escolhidos pelo `client_id` no pedido do token. Os logins
+      # são os que `controle.usuario_acesso` já concede (migração 003), e os três
+      # escopos são diferentes de propósito — é o que faz o recorte APARECER:
+      #
+      #   dev@local    admin, escopo total
+      #   ana@aegea    analista da regional rA
+      #   bruno@aegea  analista de uma unidade só (uB2)
+      #
+      # Um login sem concessão nenhuma também é caso de teste válido: autentica e
+      # não vê nada, que é a falha fechada de `deps._com_acesso`.
+      JSON_CONFIG: >-
+        {"tokenCallbacks":[{"issuerId":"otimizador","tokenExpiry":3600,
+        "requestMappings":[
+        {"requestParam":"client_id","match":"ana",
+         "claims":{"sub":"ana","aud":["otimizador-api"],"preferred_username":"ana@aegea"}},
+        {"requestParam":"client_id","match":"bruno",
+         "claims":{"sub":"bruno","aud":["otimizador-api"],"preferred_username":"bruno@aegea"}},
+        {"requestParam":"client_id","match":"*",
+         "claims":{"sub":"dev","aud":["otimizador-api"],"preferred_username":"dev@local"}}]}]}
+    # Sem healthcheck: a imagem é distroless (não tem shell nem wget, então nenhum
+    # `test` roda dentro dela). E não faz falta — a API busca o JWKS na PRIMEIRA
+    # validação de token, não no startup, então ela pode subir antes do IdP.
+
+  api:
+    environment:
+      # `tenant` só nomeia o ambiente aqui: com `ENTRA_JWKS_URL` e `ENTRA_ISSUER`
+      # preenchidos, ele deixa de ser usado para montar endereço nenhum.
+      ENTRA_TENANT_ID: "mock"
+      ENTRA_AUDIENCE: "otimizador-api"
+      # As chaves vêm pela REDE INTERNA (`idp:8080`), que é onde a API alcança o
+      # container.
+      ENTRA_JWKS_URL: "http://idp:8080/otimizador/jwks"
+      # O emissor, porém, é o endereço PELO QUAL O TOKEN FOI PEDIDO: este mock
+      # deriva o `iss` do cabeçalho Host, e quem pede o token é você, do host, em
+      # localhost:8099. Se um dia pedir de dentro da rede, o `iss` muda junto — é
+      # a mesma armadilha que existe com o Entra entre os endpoints v1 e v2.
+      ENTRA_ISSUER: "http://localhost:8099/otimizador"
+    depends_on:
+      idp:
+        condition: service_started
