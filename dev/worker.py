@@ -280,9 +280,59 @@ def executar(run_id: str, tempo: int) -> None:
     log(run_id, f"publicado: {len(tabs)} tabelas")
 
 
+#: Renova o lock a cada 20s. O lock dura 1 minuto (`dev/servicebus.json`), entao
+#: tres tentativas cabem antes de ele expirar — margem para uma falhar sem que a
+#: mensagem volte para a fila com a rodada ainda em execucao.
+INTERVALO_RENOVACAO = 20
+
+
+async def _renovar(rx, msg) -> None:
+    """Segura o lock da mensagem enquanto a rodada processa.
+
+    Sem isto, completar no fim seria impossivel: o lock expiraria no meio da
+    materializacao e a mesma simulacao rodaria duas vezes.
+
+    Falha de renovacao nao interrompe a rodada — ela segue, e o pior caso vira o
+    caso antigo (mensagem reentregue). Derrubar o trabalho por causa do lock seria
+    trocar um problema raro por um certo.
+    """
+    while True:
+        await asyncio.sleep(INTERVALO_RENOVACAO)
+        try:
+            await rx.renew_message_lock(msg)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            log("", f"nao consegui renovar o lock da mensagem: {type(e).__name__}: {e}")
+            return
+
+
+#: Estados em que a rodada JA tem desfecho — reprocessa-la seria refazer trabalho
+#: e, pior, sobrescrever um resultado publicado.
+TERMINAIS = ("SUCESSO", "ERRO", "FALHOU_QUALIDADE", "CANCELADA")
+
+
+def _desfecho(run_id: str) -> str | None:
+    with R.eng.begin() as con:
+        linha = con.execute(
+            text("SELECT status FROM controle.run_status WHERE run_id = :r"),
+            {"r": run_id},
+        ).first()
+    return linha[0] if linha else None
+
+
 async def processar(msg, tempo: int) -> None:
     corpo = json.loads(str(msg))
     run_id = corpo["run_id"]
+
+    # REENTREGA: a mensagem so volta para a fila quando o worker anterior morreu
+    # sem completar. Se aquela execucao chegou ao fim mesmo assim, refazer o
+    # trabalho sobrescreveria um resultado ja publicado.
+    ja = _desfecho(run_id)
+    if ja in TERMINAIS:
+        log(run_id, f"reentregue, mas ja esta {ja} — ignorada")
+        return
+
     log(run_id, f"RECEBIDA (unidade {corpo.get('unidade_id')})")
     marcar(run_id, "RODANDO", progresso=1)
     try:
@@ -356,16 +406,45 @@ async def main() -> None:
                         for msg in await rx.receive_messages(
                             max_message_count=10, max_wait_time=5
                         ):
-                            # Completa ANTES de processar: o emulador tem lock
-                            # curto, e uma rodada de 45s estouraria o lock e a
-                            # mensagem voltaria para a fila — a mesma simulacao
-                            # rodando duas vezes. O estado real da rodada vive em
-                            # `controle.run_status`, nao na mensagem.
-                            await rx.complete_message(msg)
-
+                            # COMPLETA NO FIM, e nao no comeco. Enquanto processa,
+                            # um renovador segura o lock.
+                            #
+                            # Completar antes era o que perdia a rodada: no
+                            # instante em que o worker pegava a mensagem, ela
+                            # deixava de existir na fila. Worker que morresse
+                            # depois disso — segmentation fault, conexao morta,
+                            # Ctrl+C — deixava a rodada orfa em RODANDO ou
+                            # PENDENTE, sem ninguem para retoma-la, e so um UPDATE
+                            # a mao a tirava de la. Aconteceu tres vezes.
+                            #
+                            # A razao original era boa e continua valendo: o lock
+                            # e curto (`dev/servicebus.json`: PT1M) e uma rodada
+                            # leva minutos, entao sem renovacao a mensagem
+                            # voltaria para a fila COM a rodada ainda em execucao,
+                            # e a mesma simulacao rodaria duas vezes. Por isso a
+                            # troca nao e mover a linha: e renovar o lock, e so
+                            # entao completar.
                             async def tarefa(m=msg):
                                 async with limite:
-                                    await processar(m, a.tempo)
+                                    renovador = asyncio.create_task(_renovar(rx, m))
+                                    try:
+                                        await processar(m, a.tempo)
+                                    finally:
+                                        renovador.cancel()
+                                    # `processar` NUNCA levanta: ele grava SUCESSO
+                                    # ou ERRO no banco. Chegar aqui significa que a
+                                    # rodada tem desfecho, e completar e correto.
+                                    # Morrer antes daqui deixa o lock expirar, e o
+                                    # Service Bus reentrega (`MaxDeliveryCount: 3`,
+                                    # depois dead-letter).
+                                    try:
+                                        await rx.complete_message(m)
+                                    except Exception as e:  # noqa: BLE001
+                                        # O receptor pode ter sido reciclado por
+                                        # uma queda de conexao. A rodada ja tem
+                                        # desfecho gravado; o guarda em `processar`
+                                        # cuida de uma eventual reentrega.
+                                        log("", f"nao consegui completar a mensagem: {e}")
 
                             tk = asyncio.create_task(tarefa())
                             vivos.add(tk)

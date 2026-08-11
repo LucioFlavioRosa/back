@@ -75,7 +75,30 @@ ORDEM = [
     "orcamento",
 ]
 
-eng = create_engine(PG)
+# `pool_pre_ping` NAO e zelo excessivo: sem ele, o pool entrega uma conexao que
+# morreu enquanto estava ociosa — e a primeira escrita nela BLOQUEIA, sem timeout,
+# para sempre. Medido: reiniciar o container do Postgres sob um worker vivo fez a
+# rodada seguinte parar logo depois de "RECEBIDA", com 0% de CPU e 116 MB de RAM,
+# antes de carregar dado nenhum. O `pre_ping` custa um `SELECT 1` por checkout e
+# devolve uma conexao nova quando a velha morreu.
+#
+# `pool_recycle` fecha conexao velha por idade, que e a defesa contra o mesmo
+# problema quando quem derruba e um firewall ou o proprio Postgres.
+#
+# `connect_timeout` e `statement_timeout` sao o ultimo anteparo: sem eles, um
+# socket pendurado nao vira erro — vira espera eterna, que e o pior modo de falha
+# porque nao aparece em lugar nenhum.
+eng = create_engine(
+    PG,
+    pool_pre_ping=True,
+    pool_recycle=1800,
+    connect_args={
+        "connect_timeout": 10,
+        # 10 min: a materializacao da maior unidade leva ~9,5 min de relogio, e um
+        # teto menor mataria trabalho legitimo.
+        "options": "-c statement_timeout=600000",
+    },
+)
 
 
 def colunas(tabela: str) -> list[str]:
