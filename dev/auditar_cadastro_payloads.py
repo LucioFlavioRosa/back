@@ -300,24 +300,21 @@ def main() -> None:
 
     print("\nESCRITA:")
     first_sub_id, first_sub = next(iter(payloads["sub"]["subs"].items()))
-    body_sub = {"params": first_sub["params"], "db": first_sub["db"], "obrasOverride": first_sub["obrasOverride"], "overrides": []}
+    body_sub = {"params": first_sub["params"], "db": first_sub["db"], "obrasOverride": first_sub["obrasOverride"]}
     print("PUT sub:", first_sub_id, request("PUT", f"/unidades/{UID}/sub-bacias/{first_sub_id}", body_sub)[0])
 
     first_cts_id, first_cts = next(iter(payloads["cts"]["ctss"].items()))
-    body_cts = {"params": first_cts["params"], "db": first_cts["db"], "obrasOverride": first_cts["obrasOverride"], "overrides": []}
-    # Nao repetimos automaticamente: no backend atual, PUT de CTS usa a base de
-    # obras de sub-bacia e regrava componentes errados apesar do HTTP 200.
-    # print("PUT cts:", first_cts_id, request("PUT", f"/unidades/{UID}/cts/{first_cts_id}", body_cts)[0])
+    body_cts = {"params": first_cts["params"], "db": first_cts["db"], "obrasOverride": first_cts["obrasOverride"]}
+    print("PUT cts:", first_cts_id, request("PUT", f"/unidades/{UID}/cts/{first_cts_id}", body_cts)[0])
 
     first_ete = payloads["etes"]["etes"][0]
-    print("PUT ete:", first_ete["id"], request("PUT", f"/unidades/{UID}/etes/{first_ete['id']}", {"ete": first_ete, "overrides": []})[0])
+    print("PUT ete:", first_ete["id"], request("PUT", f"/unidades/{UID}/etes/{first_ete['id']}", {"ete": first_ete})[0])
 
     first_cid = payloads["contrato"]["cidades"][0]
     body_cid = {
         "cidade": first_cid,
         "metas": [m for m in payloads["contrato"]["metas"] if m["cid"] == first_cid["id"]],
         "fator": [f for f in payloads["contrato"]["fator"] if f["cid"] == first_cid["id"]],
-        "overrides": [],
     }
     print("PUT cidade:", first_cid["id"], request("PUT", f"/unidades/{UID}/contrato/{first_cid['id']}", body_cid)[0])
 

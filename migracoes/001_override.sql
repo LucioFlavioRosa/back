@@ -1,31 +1,22 @@
--- Trilha de auditoria do cadastro.
+-- Trilha de auditoria do cadastro: cria a tabela `input.override`.
+--
+-- >> ESTE ARQUIVO CRIA A TABELA. QUEM DEFINE O ALCANCE DELA É A 007. <<
+-- Leia os dois: a 007 acrescenta `origem`, deixa `valor_novo` aceitar NULL e
+-- reescreve os COMMENT desta tabela. Onde os dois divergirem, vale a 007.
 --
 -- POR QUE ELA EXISTE
--- Parte do cadastro vem do Databricks e é travada na tela. Quando a Regional
--- discorda de um número, ela sobrescreve — e o contrato do front (`DEPLOY.md` §3)
--- manda a correção junto com a ficha, com valor antigo, valor novo, autor e
--- instante, "na mesma transação do dado", para nunca existir dado corrigido sem
--- trilha.
---
--- Até esta migração não havia onde gravar isso. O backend tinha duas saídas: criar
--- a tabela, ou aceitar a ficha e descartar a trilha em silêncio — e prometer
--- auditoria que não existe é pior que não ter auditoria, porque alguém vai confiar
--- nela numa discussão sobre um número.
+-- Cadastro corrigido sem registro de quem corrigiu é número sem dono, e alguém
+-- vai discutir esse número meses depois. A trilha responde "quem mudou este
+-- campo, quando, de quanto para quanto" — e é gravada na MESMA transação do dado,
+-- para nunca existir correção sem rastro.
 --
 -- O QUE ELA NÃO É
--- Não é histórico de edição: só entra o que sobrescreve valor VINDO DO DATABRICKS.
--- Campo que a Regional preenche (o bloco `params` da ficha) não gera linha — não
--- há valor anterior de outra fonte para contrastar.
+-- Não é versionamento da ficha: a ficha é substituída inteira a cada PUT
+-- (idempotente), e aqui ficam os campos que mudaram, um por linha.
 --
--- Também não é versionamento da ficha: a ficha é substituída inteira a cada PUT
--- (idempotente). A trilha responde "quem mudou este campo, quando, de quanto para
--- quanto", que é a pergunta que aparece meses depois, na reunião.
---
--- É APPEND-ONLY. A escrita nunca apaga linha daqui: só acrescenta quando o valor
--- muda em relação à última linha daquele campo. A primeira versão do backend
--- apagava a trilha da ficha e regravava o conjunto atual, e uma revisão mostrou o
--- estrago — correção feita em julho reaparecia com data de agosto. Auditoria que
--- reescreve a data do fato não é auditoria.
+-- É APPEND-ONLY. A escrita nunca apaga linha daqui, só acrescenta. Uma trilha que
+-- se reescreve não é trilha: correção feita em julho não pode reaparecer com data
+-- de agosto.
 
 CREATE TABLE IF NOT EXISTS input.override (
     override_id   bigserial PRIMARY KEY,
@@ -45,8 +36,10 @@ CREATE TABLE IF NOT EXISTS input.override (
         REFERENCES input.unidade_regional(unidade_id) ON DELETE RESTRICT,
 
     campo         text NOT NULL,
-    valor_antigo  text,             -- como veio do Databricks; null = campo vazio lá
-    valor_novo    text NOT NULL,    -- o que a Regional gravou
+    valor_antigo  text,             -- null = o campo/registro não existia antes
+    -- O NOT NULL aqui é o estado desta migração, e SAI na 007: a mudança pode ser
+    -- a linha deixar de existir, e null passa a significar "foi removido".
+    valor_novo    text NOT NULL,
 
     autor         text NOT NULL,
     gravado_em    timestamptz NOT NULL DEFAULT now()
@@ -59,6 +52,8 @@ CREATE INDEX IF NOT EXISTS ix_override_ficha
 CREATE INDEX IF NOT EXISTS ix_override_unidade
     ON input.override (unidade_id, gravado_em DESC);
 
+-- A 007 reescreve este COMMENT. Ele fica aqui para a tabela nunca existir sem
+-- descricao, mesmo num banco que so tenha chegado ate esta migracao.
 COMMENT ON TABLE input.override IS
-    'Trilha de auditoria: cada dado do Databricks sobrescrito pela Regional. '
-    'Gravada na MESMA transacao da ficha (ver DEPLOY.md secao 3 do front).';
+    'Trilha de auditoria do cadastro: cada campo alterado, com valor anterior, '
+    'valor novo, autor e instante. Append-only, gravada na MESMA transacao do dado.';
