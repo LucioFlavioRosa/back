@@ -20,6 +20,7 @@ Se a ordem fosse 4-3, o job poderia acordar antes do commit e nao encontrar a
 `run_request` — o erro "run_request nao encontrada" do runbook de producao.
 """
 
+from datetime import datetime, timezone
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, HTTPException, Response, status
@@ -169,12 +170,67 @@ async def status_da_rodada(run_id: str) -> dict[str, Any]:
     linha = await controle.status(run_id)
     if not linha:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Rodada não encontrada.")
-    return {
+    resposta = {
         "runId": run_id,
         "status": linha["status"],
         "progresso": linha.get("progresso") or 0,
         "erro": linha.get("erro"),
+        # Desde quando ela existe. A tela precisa disto para mostrar tempo
+        # decorrido: sem ele, "esperando" com dois segundos e "esperando" com
+        # quarenta minutos sao a mesma frase.
+        "pedidaEm": (
+            linha["solicitado_em"].isoformat() if linha.get("solicitado_em") else None
+        ),
     }
+    if linha["status"] not in ("PENDENTE", "RODANDO"):
+        return resposta
+
+    # O BLOCO `fila`: POR QUE esta rodada esta onde esta.
+    #
+    # "Na fila, esperando um executor" cobria dois mundos opostos — todos os
+    # executores ocupados (espere) e nenhum executor de pe (isto nunca vai rodar)
+    # — e quem olhava a tela nao tinha como saber em qual estava. Em producao,
+    # com o job do Databricks, o segundo caso e silencioso e caro.
+    exec_ = await controle.executores()
+    fila = {**exec_, "posicao": 0, "motivo": "", "atencao": False}
+
+    if linha["status"] == "RODANDO":
+        fila["motivo"] = "Em execução."
+        # Lease vencido: o executor parou de responder. Dizer isto na hora e melhor
+        # que esperar o watchdog — a tela ja pode oferecer reexecutar.
+        if linha.get("lease_ate") and linha["lease_ate"] < datetime.now(timezone.utc):
+            fila["motivo"] = (
+                "O executor que pegou esta rodada parou de responder. "
+                "Ela será liberada para reexecução."
+            )
+            fila["atencao"] = True
+    elif exec_["vivos"] == 0:
+        # O caso que o dono do produto marcou como inaceitavel em producao.
+        fila["motivo"] = (
+            "NENHUM executor está ativo. A rodada não vai começar enquanto um não "
+            "subir — isto não é fila cheia, é ausência de executor."
+        )
+        fila["atencao"] = True
+    else:
+        fila["posicao"] = await controle.posicao_na_fila(run_id)
+        livres = max(exec_["capacidade"] - exec_["ocupadas"], 0)
+        if livres > 0:
+            fila["motivo"] = (
+                f"Há {livres} vaga(s) livre(s) — deve começar em instantes."
+            )
+        elif fila["posicao"] == 0:
+            fila["motivo"] = (
+                f"Todas as {exec_['capacidade']} vagas estão ocupadas. "
+                "Esta é a próxima a entrar."
+            )
+        else:
+            fila["motivo"] = (
+                f"Todas as {exec_['capacidade']} vagas estão ocupadas. "
+                f"Há {fila['posicao']} simulação(ões) na frente desta."
+            )
+
+    resposta["fila"] = fila
+    return resposta
 
 
 @router.post("/runs/{run_id}/reexecutar", status_code=status.HTTP_202_ACCEPTED)

@@ -105,6 +105,11 @@ _EXIGIDO = [
     ("controle", "run_status", "progresso", "002_progresso.sql"),
     ("controle", "usuario_acesso", None, "003_usuario_acesso.sql"),
     ("controle", "run_request", "rotulo", "004_run_request_rotulo.sql"),
+    # `lease_ate` e nao `worker_id`: as duas entram no mesmo ALTER, e e a coluna
+    # de PRAZO que o watchdog consulta. Sem ela ele nao tem como distinguir
+    # executor trabalhando de executor morto, e a rodada fica RODANDO para sempre.
+    ("controle", "run_status", "lease_ate", "008_lease_e_executores.sql"),
+    ("controle", "executor", None, "008_lease_e_executores.sql"),
     # As quatro fichas de cadastro, uma linha cada: a migracao acrescenta as duas
     # colunas nas quatro tabelas, e aplicar em tres e o engano provavel. Basta
     # conferir `atualizado_por` — as duas entram no mesmo ALTER, entao uma sem a

@@ -10,6 +10,7 @@ o dominio do backend embutido no bundle.
 
 import logging
 from collections.abc import AsyncIterator
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
@@ -33,11 +34,50 @@ async def ciclo(_: FastAPI) -> AsyncIterator[None]:
     """
     await db.abrir_pool()
     await fila.abrir()
+    vigia = asyncio.create_task(_vigiar())
     try:
         yield
     finally:
+        vigia.cancel()
         await fila.fechar()
         await db.fechar_pool()
+
+
+#: De quanto em quanto tempo o vigia procura lease vencido. Metade do lease (30s)
+#: para que uma rodada abandonada não fique invisível por mais de um ciclo.
+_INTERVALO_VIGIA = 15
+
+
+async def _vigiar() -> None:
+    """Recolhe rodadas cujo executor parou de renovar o lease.
+
+    O contrato diz que as transições da rodada são do EXECUTOR, e isto é a
+    exceção — declarada de propósito. O critério é estreito: `RODANDO` com
+    `lease_ate` VENCIDO, nunca "sem progresso há N minutos". A materialização da
+    maior unidade passa ~9,5 minutos sem escrever nada; matá-la por silêncio
+    destruiria trabalho vivo.
+
+    O que se recolhe é promessa vencida — alguém disse "estou nisso, me cobre em
+    30 segundos" e parou de dizer. Sem isto, executor que TRAVA VIVO segura a
+    rodada para sempre: a fila não reentrega (o lock está com ele) e nada percebe.
+    Aconteceu, e a saída foi um UPDATE na mão.
+    """
+    from app.infra.repositorios import controle
+
+    while True:
+        try:
+            await asyncio.sleep(_INTERVALO_VIGIA)
+            recolhidas = await controle.recolher_abandonadas()
+            for run in recolhidas:
+                logging.getLogger(__name__).warning(
+                    "rodada %s recolhida: lease vencido, executor nao responde", run
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            # Vigia que morre em silencio e pior que vigia nenhum: quem opera
+            # passa a contar com uma protecao que nao existe mais.
+            logging.getLogger(__name__).exception("o vigia de rodadas falhou")
 
 
 app = FastAPI(

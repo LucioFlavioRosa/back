@@ -32,11 +32,14 @@ terminado seria pior.
 
 import argparse
 import asyncio
+import concurrent.futures
 import json
 import os
+import socket
 import sys
 import threading
 import traceback
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -52,6 +55,39 @@ CONN = os.environ.get(
     "SharedAccessKey=SAS_KEY_VALUE;UseDevelopmentEmulator=true;",
 )
 FILA = os.environ.get("FILA_SIMULACOES", "otimizacoes")
+
+#: Identidade DESTE processo. Entra em `run_status.worker_id` e em
+#: `controle.executor`, e é o que permite dizer "esta rodada é de alguém que
+#: ainda está vivo" em vez de deduzir vida por silêncio.
+WORKER_ID = f"{socket.gethostname()}/{os.getpid()}/{uuid.uuid4().hex[:6]}"
+
+#: A batida. A cada `BATIDA` segundos o executor renova o lease das rodadas dele e
+#: se anuncia em `controle.executor`.
+BATIDA = 10
+
+#: Quanto o lease dura além da batida. Três batidas de folga: uma pode falhar por
+#: soluço de rede sem que o watchdog declare morto quem está vivo — e declarar
+#: morto quem trabalha é pior que demorar meio minuto a mais para notar.
+LEASE_SEGUNDOS = BATIDA * 3
+
+#: Que código este processo carrega. Um executor iniciado antes de uma correção
+#: segue com o código velho em memória: foi assim que uma rodada nomeada "teste"
+#: apareceu no histórico como "uA2 — pela tela", e levou meia hora para se
+#: descobrir que havia DOIS workers, de versões diferentes, disputando a fila.
+def _versao() -> str:
+    import subprocess
+
+    try:
+        sha = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, cwd=str(Path(__file__).parent.parent),
+        ).stdout.strip()
+        return sha or "desconhecida"
+    except Exception:  # noqa: BLE001
+        return "desconhecida"
+
+
+VERSAO = _versao()
 
 
 def agora() -> str:
@@ -93,6 +129,117 @@ def marcar(run_id: str, status: str, erro: str | None = None, progresso: int | N
             ),
             {"r": run_id, "s": status, "e": erro, "p": progresso},
         )
+
+
+#: Preenchido em `main`: um processo por rodada em voo. Global porque o
+#: `run_in_executor` precisa alcançá-lo de dentro de `processar`.
+POOL: concurrent.futures.ProcessPoolExecutor | None = None
+
+
+def _carimbar_data_hora(run_id: str) -> None:
+    """Corrige `otim_meta.data_hora` para o instante REAL, em UTC.
+
+    O pacote do otimizador grava nessa coluna o relógio LOCAL. A coluna é
+    `timestamptz`, então o Postgres assume UTC e o instante fica deslocado pelo
+    fuso da máquina — medido em BRT: três horas.
+
+    Quem lê a tela não vê mais isso (o histórico usa `run_request.solicitado_em`),
+    mas quem consulta `otim_meta` direto — BI, SQL, outro consumidor — via. E
+    rodada publicada por fora da fila não tem pedido para compensar.
+
+    A correção pertence ao pacote do otimizador. Enquanto ela não vem, este
+    executor conserta o que publicou: é o dado dele, e deixá-lo errado de
+    propósito seria escolher a inconsistência.
+    """
+    try:
+        with R.eng.begin() as con:
+            con.execute(
+                text(
+                    "UPDATE public.otim_meta SET data_hora = now() WHERE run_id = :r"
+                ),
+                {"r": run_id},
+            )
+    except Exception as e:  # noqa: BLE001
+        log(run_id, f"nao consegui corrigir data_hora: {type(e).__name__}: {e}")
+
+
+def reivindicar(run_id: str) -> None:
+    """Marca a rodada como MINHA, com prazo.
+
+    O prazo é o que distingue "trabalhando" de "morto no meio" — as duas coisas
+    se pareciam no banco, e por isso rodada de executor morto ficava `RODANDO`
+    para sempre sem ninguém notar.
+    """
+    with R.eng.begin() as con:
+        con.execute(
+            text(
+                """UPDATE controle.run_status
+                      SET worker_id = :w,
+                          lease_ate = now() + make_interval(secs => :s)
+                    WHERE run_id = :r"""
+            ),
+            {"r": run_id, "w": WORKER_ID, "s": LEASE_SEGUNDOS},
+        )
+
+
+def soltar(run_id: str) -> None:
+    """Devolve a rodada: ela terminou, e o lease não tem mais o que proteger."""
+    with R.eng.begin() as con:
+        con.execute(
+            text(
+                "UPDATE controle.run_status SET worker_id = NULL, lease_ate = NULL"
+                " WHERE run_id = :r AND worker_id = :w"
+            ),
+            {"r": run_id, "w": WORKER_ID},
+        )
+
+
+def bater(capacidade: int, em_execucao: int, memoria_mb: int | None) -> None:
+    """Anuncia que este executor está vivo, e renova o lease do que ele segura.
+
+    As duas coisas na mesma batida de propósito: um executor que consegue se
+    anunciar mas não renovar (ou o contrário) descreveria um estado que não
+    existe. Ou está vivo para tudo, ou para nada.
+    """
+    with R.eng.begin() as con:
+        con.execute(
+            text(
+                """INSERT INTO controle.executor
+                       (worker_id, visto_em, capacidade, em_execucao, memoria_mb, versao)
+                   VALUES (:w, now(), :c, :e, :m, :v)
+                   ON CONFLICT (worker_id) DO UPDATE
+                     SET visto_em = now(), capacidade = EXCLUDED.capacidade,
+                         em_execucao = EXCLUDED.em_execucao,
+                         memoria_mb = EXCLUDED.memoria_mb, versao = EXCLUDED.versao"""
+            ),
+            {"w": WORKER_ID, "c": capacidade, "e": em_execucao,
+             "m": memoria_mb, "v": VERSAO},
+        )
+        con.execute(
+            text(
+                """UPDATE controle.run_status
+                      SET lease_ate = now() + make_interval(secs => :s)
+                    WHERE worker_id = :w AND status = 'RODANDO'"""
+            ),
+            {"w": WORKER_ID, "s": LEASE_SEGUNDOS},
+        )
+
+
+def despedir() -> None:
+    """Sai da lista de executores ao encerrar por Ctrl+C.
+
+    Encerramento LIMPO tira o executor da conta na hora, em vez de deixar a tela
+    contando por meio minuto uma capacidade que já não existe. Morte súbita não
+    passa por aqui — para essa, quem responde é o `visto_em` parando de andar.
+    """
+    try:
+        with R.eng.begin() as con:
+            con.execute(
+                text("DELETE FROM controle.executor WHERE worker_id = :w"),
+                {"w": WORKER_ID},
+            )
+    except Exception:  # noqa: BLE001, S110 — encerrando; erro aqui não ajuda ninguém
+        pass
 
 
 def andar(run_id: str, progresso: int) -> None:
@@ -335,16 +482,42 @@ async def processar(msg, tempo: int) -> None:
 
     log(run_id, f"RECEBIDA (unidade {corpo.get('unidade_id')})")
     marcar(run_id, "RODANDO", progresso=1)
+    reivindicar(run_id)
     try:
-        # `to_thread` porque o solver segura a CPU: no laco async ele travaria o
-        # recebimento das outras mensagens e o paralelismo seria de mentira.
-        await asyncio.to_thread(executar, run_id, tempo)
+        # CADA RODADA NUM PROCESSO PRÓPRIO, e não numa thread.
+        #
+        # Era `asyncio.to_thread`, e com `--paralelo 2` o processo morria com
+        # SEGMENTATION FAULT. A causa não era memória — medi: a maior unidade
+        # (11.525 obras) roda sozinha com pico de 372 MB, numa máquina de 31,7 GB.
+        # Era o solver nativo e a materialização rodando em DUAS THREADS do mesmo
+        # interpretador, sobre estado nativo que não é compartilhável.
+        #
+        # Processo separado dá as três coisas que faltavam:
+        #
+        #   isolamento    um segfault mata AQUELA rodada; o executor continua de
+        #                 pé e as outras seguem
+        #   paralelismo   sem GIL, quatro rodadas usam quatro núcleos de verdade
+        #   contabilidade a memória de cada rodada é do processo dela
+        #
+        # O preço é o custo de subir o processo (no Windows, `spawn`: reimporta o
+        # módulo), que some diante de uma rodada de minutos.
+        laco = asyncio.get_running_loop()
+        await laco.run_in_executor(POOL, executar, run_id, tempo)
         marcar(run_id, "SUCESSO", progresso=PRONTO)
+        _carimbar_data_hora(run_id)
         log(run_id, "SUCESSO")
+    except concurrent.futures.process.BrokenProcessPool as e:
+        # O processo da rodada morreu de morte nativa (segfault, OOM do SO). Sem
+        # isolamento isto teria derrubado o executor inteiro e as rodadas irmãs.
+        marcar(run_id, "ERRO", "O processo desta rodada morreu (falha nativa no "
+                               "solver ou na materialização).")
+        log(run_id, f"ERRO: processo da rodada morreu ({type(e).__name__})")
     except Exception as e:  # noqa: BLE001 — a causa vai para o banco e para a tela
         marcar(run_id, "ERRO", f"{type(e).__name__}: {e}"[:500])
         log(run_id, f"ERRO: {type(e).__name__}: {e}")
         traceback.print_exc()
+    finally:
+        soltar(run_id)
 
 
 def soltar_presas(limite_min: int = 30) -> int:
@@ -387,15 +560,37 @@ async def main() -> None:
     ap.add_argument("--tempo", type=int, default=45, help="segundos de solver por rodada")
     a = ap.parse_args()
 
-    print(f"worker: fila `{FILA}`, {a.paralelo} em paralelo, {a.tempo}s de solver")
+    global POOL
+    print(f"worker {WORKER_ID}")
+    print(f"  fila `{FILA}`, {a.paralelo} em paralelo (1 processo cada), "
+          f"{a.tempo}s de solver, codigo {VERSAO}")
     presas = soltar_presas()
     if presas:
         print(f"  {presas} rodada(s) presas em RODANDO de um worker anterior -> ERRO")
     print("Ctrl+C encerra.\n")
 
+    POOL = concurrent.futures.ProcessPoolExecutor(max_workers=a.paralelo)
     limite = asyncio.Semaphore(a.paralelo)
     vivos: set[asyncio.Task] = set()
     espera = 1
+
+    async def batida() -> None:
+        """Anuncia o executor e renova os leases, para sempre.
+
+        Fora do laço da fila de propósito: uma queda de conexão com o Service Bus
+        não pode fazer o executor parecer morto. São duas dependências
+        diferentes, e confundi-las faria a tela mentir sobre a capacidade
+        disponível justo quando ela mais importa.
+        """
+        while True:
+            try:
+                bater(a.paralelo, len(vivos), None)
+            except Exception as e:  # noqa: BLE001
+                log("", f"batida falhou: {type(e).__name__}: {e}")
+            await asyncio.sleep(BATIDA)
+
+    coracao = asyncio.create_task(batida())
+    bater(a.paralelo, 0, None)  # aparece na tela antes da primeira batida
 
     while True:
         try:
@@ -470,3 +665,8 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\nencerrado.")
+    finally:
+        # Sai da lista de executores. Sem isto, a tela contaria por meio minuto
+        # uma capacidade que ja nao existe — e "ha 2 executores livres" quando nao
+        # ha nenhum e pior que nao dizer nada.
+        despedir()
