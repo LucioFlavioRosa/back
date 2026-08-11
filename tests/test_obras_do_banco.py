@@ -1,28 +1,19 @@
-"""A obra vem do BANCO, e obra que falta é recusa — nunca preenchimento.
+"""A obra vem do BANCO, e componente que falta é recusa — nunca preenchimento.
 
-## O que este arquivo substituiu
+Este arquivo protege quatro invariantes do desenho de obras:
 
-Aqui havia `test_base_obras.py`, que comparava duas listas literais de obras — uma
-em Python, outra em TypeScript — e falhava quando divergiam. Era um bom teste para
-um desenho errado: as duas bases existiam, e a existência delas é que violava R1 e
-R2.
+  1. a materialização tem uma fonte só — a linha gravada em `componentes_*_capex`;
+  2. componente ausente RECUSA a gravação, com a mesma régua do `/prontidao`;
+  3. não há lista literal de obras em nenhum dos dois repositórios;
+  4. o banco tem a cardinalidade que a régua afirma (5 por sub-bacia, 4 por CTS).
 
-O modo de falha que elas produziam, medido antes de sair: um `PUT` numa ficha sem
-o componente gravado escrevia `Linha de recalque (LR) | qtd 0 | preco 900 | dur 15
-| wacc 0,067`. Nenhum daqueles números veio do banco nem de alguém digitando. Iam
-para a simulação com cara de cadastro.
+Os três primeiros são Python puro. O quarto abre conexão e é PULADO sem banco: CI
+sem Postgres não pode ficar vermelho por ausência de infraestrutura, e os smokes
+(`dev/`) são o lugar onde o banco é obrigatório.
 
-As duas bases saíram (`_BASE_SUBBACIA`/`_BASE_CTS` aqui, `BASE_OBRAS`/
-`BASE_OBRAS_CTS` no front). O que este arquivo prova agora é o desenho que ficou:
-
-  1. a materialização tem uma fonte só — a linha gravada;
-  2. componente ausente **recusa** a gravação, com a mesma régua do `/prontidao`;
-  3. o literal não voltou, dos dois lados;
-  4. o banco de verdade tem a cardinalidade que a régua afirma.
-
-Os três primeiros são Python puro. O quarto abre conexão e é PULADO quando não há
-banco — CI sem Postgres não pode ficar vermelho por ausência de infraestrutura,
-e os smokes (`dev/`) são o lugar onde o banco é obrigatório.
+Preencher um componente ausente com valores plausíveis é o modo de falha que a
+recusa evita — um número que ninguém digitou entra na simulação com cara de
+cadastro, e a plausibilidade impede a desconfiança.
 """
 
 import asyncio

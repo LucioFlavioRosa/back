@@ -47,7 +47,7 @@ migracoes/           001_override.sql — a trilha de auditoria do cadastro
                      005_capex_derivado.sql — o banco recusa CAPEX que não seja
                      quantidade × preco_unitario
                      006_auditoria_cadastro.sql — última alteração e autor por
-                     ficha; substituiu o 409 de escrita
+                     ficha
 tests/               a superfície da API não pode derivar do contrato do front
 ```
 
@@ -70,6 +70,40 @@ usuário — o mesmo arranjo do front, que só manda `Authorization` quando o SS
 ligado. O `/readyz` denuncia esse modo (`"autenticacao": "DESLIGADA"`) para que ele
 não chegue a produção sem alguém ver.
 
+## As regras do produto
+
+Seis regras do dono do produto. Tudo neste serviço existe para servi-las, e uma
+mudança que não serve a nenhuma provavelmente não deveria entrar.
+
+| | regra |
+|---|---|
+| **R1** | O banco SQL é a **verdade absoluta**. Nenhum valor nasce de constante no código. |
+| **R2** | **Não inventar nem inserir nada.** Nenhuma gravação de valor que o usuário não digitou e que não veio do banco. |
+| **R3** | Dado faltando: **avisar e travar a simulação da unidade inteira**. Exceção única: `wacc` ausente usa o WACC da unidade. |
+| **R4** | Só **cadastro** é editável. Simulação, uma vez escrita, só pode ser **excluída**. |
+| **R5** | Dedupe de simulação por pedido + **usuário**. Mesmo usuário, pedido idêntico → aponta para a simulação existente. Vale para rodada em voo e concluída; `ERRO` libera nova execução. |
+| **R6** | Mostrar **última atualização e autor** no cadastro. |
+
+## Como comentar e documentar
+
+Comentário descreve **o que o código faz hoje**, o contrato do dado, ou o motivo
+de uma decisão não óbvia. Não narra o passado.
+
+- Motivo que previne regressão vira **regra no presente**: "o autor vem do token,
+  nunca do corpo — autoria que o cliente escolhe não é auditoria".
+- "Antes era", "saiu", "virou", "na revisão", "eu tinha errado", "medido no dia":
+  **corte**. Isso é processo, e ele já está na mensagem de commit e no `git blame`.
+- Docstring diz o que a função **garante**. Relato de incidente fica fora do código.
+- Teste documenta o **comportamento protegido**, não como o defeito foi descoberto.
+
+Duas regras que valem o dobro por já terem custado caro:
+
+- **Comentário que mente conta como defeito.** Esta base explica muito em
+  comentário e as pessoas confiam nele. `pendencias.py` já disse *"wacc NUNCA
+  conta"* enquanto a lista abaixo cobrava.
+- **Fixture que não espelha o payload real testa um produto que não existe.** Ao
+  mudar a forma de uma resposta, mude a fixture no mesmo commit.
+
 ## As fontes de verdade
 
 Este serviço não inventa contrato. Onde a dúvida se resolve:
@@ -91,39 +125,25 @@ Declarado em vez de escondido — cada item tem o motivo e o caminho:
   produziu. A tela precisa das faixas para explicar a causalidade do degrau. Ou o
   job passa a publicá-las na rodada, ou este endpoint lê o cadastro — e aí o
   número deixa de ser o daquela rodada, o que é pior.
-- ~~**`_BASE_SUBBACIA`** em `cadastro_escrita.py` é cópia de `BASE_OBRAS` do
-  front~~ — **resolvido**, e não do jeito que este item propunha. A saída era
-  "o backend servir a base para a tela"; a certa era **não haver base**. As duas
-  listas saíram: a obra é materializada da linha gravada em
-  `componentes_*_capex`, o `GET` manda `nome` e `un`, e ficha sem o componente
-  vira **recusa** (422) em vez de preenchimento com valores de template.
-  `GET /prontidao` → `faltando[]` diz qual componente falta, que é o que a tela
-  não teria como saber. Ver `tests/test_obras_do_banco.py`.
 - **Validação do token do Entra ID** (`app/api/deps.py`): falta o JWKS do tenant.
   Está levantando erro em vez de decodificar sem verificar, de propósito.
 - **Cancelar rodada**: bloqueado por migração (ver abaixo).
-- ~~**Nome da rodada**~~ — a coluna `controle.run_request.rotulo` existe desde
-  `migracoes/004`, e o nome agora sobrevive desde o `POST`. O que faltava de
-  verdade era o EXECUTOR lê-la: o `dev/worker.py` procurava `params["ROTULO"]`,
-  que nunca existe, e publicava um fallback genérico por cima do nome digitado.
-  Consertado — e é o primeiro item do contrato do executor, abaixo. Continua
-  faltando `reprocessa_de`, para ligar a rodada reexecutada à origem.
-- **`progresso` do status**: a coluna foi criada (`migracoes/002_progresso.sql`) e o
-  endpoint a serve. **Aplique a migração antes de subir** — sem ela a consulta de
-  status falha. Falta o JOB escrevê-la; `dev/worker.py` já escreve, nas mesmas
-  faixas que o front usa para nomear a etapa.
-> Este parágrafo dizia **"nada disto foi executado contra um Postgres real"**.
-> Era verdade quando foi escrito e deixou de ser: hoje o `docker-compose` sobe um
+- **`reprocessa_de`**: falta a coluna para ligar a rodada reexecutada à origem
+  (ver "Migrações", abaixo).
+- **`progresso` do status**: a coluna existe (`migracoes/002_progresso.sql`) e o
+  endpoint a serve, mas quem tem de escrevê-la é o JOB. `dev/worker.py` escreve,
+  nas mesmas faixas que o front usa para nomear a etapa.
+> **Tudo aqui roda contra um Postgres de verdade.** O `docker-compose` sobe um
 > Postgres 16, `dev/recarregar_tudo.py` carrega as 5 unidades da planilha e roda as
-> 5 simulações, e os smokes de `dev/` batem nos endpoints contra esse banco. Três
-> dos erros mais caros do repositório só apareceram assim — nome de coluna errado,
-> `jsonb` chegando como texto, e um handler de erro que estourava em vez de
-> responder. Fica registrado porque a frase enganou por semanas.
+> 5 simulações, e os smokes de `dev/` batem nos endpoints contra esse banco. Vale
+> o esforço: três classes de erro só aparecem assim — nome de coluna errado,
+> `jsonb` chegando como texto, e handler de erro que estoura em vez de responder.
+> Nenhuma delas é alcançável por teste com banco de mentira.
 
 ## Uma decisão de modelagem: a CTS não se cria pela tela
 
-`POST /cts` e `DELETE /cts` **foram removidos**, e o `DEPLOY.md` §3 do front ainda
-os promete — está pendente lá.
+**Não existe `POST /cts` nem `DELETE /cts`**, e o `DEPLOY.md` §3 do front diz o
+mesmo.
 
 A CTS é um **nó do sistema**, como a sub-bacia: a posição dela já está em
 `input.sistema_topologia`, com jusante próprio — no banco carregado da planilha,
@@ -147,9 +167,6 @@ Sobra o que faz sentido: `GET /cts` e `PUT /cts/{id}` — ler e editar a ficha d
 CTS que o cadastro já tem. Criar ou remover CTS é mudança de topologia, e topologia
 vem do cadastro estrutural.
 
-A tela e o `DEPLOY.md` §3 já acompanharam: os dois botões saíram, junto dos hooks e
-dos cinco testes que exercitavam a funcionalidade retirada.
-
 ### A CTS que existe pela metade
 
 A CTS precisa de **três** coisas: nó em `sistema_topologia` (a posição na rede,
@@ -165,7 +182,7 @@ ele *entra* na simulação, com demanda zero, ocupando posição na rede.
 Por isso `GET /cts` devolve `inconsistencias: [{ tipo, id, subId, detalhe }]`, com
 `tipo` em `ficha-sem-no` / `no-sem-ficha` / `sem-par`, e a tela as lista. Elas
 **cruzam** com `ctss` em vez de substituí-lo: uma CTS com ficha mas sem nó aparece
-nos dois — continua editável, e agora se sabe que a simulação não a vê — enquanto
+nos dois — continua editável, e se sabe que a simulação não a vê — enquanto
 um nó sem ficha só existe na denúncia, porque não há ficha para editar.
 
 No banco há 2 casos (`cts_b2b80_1_3` em uA2, `cts_c2b12_3_1` em uA3), ambos
@@ -183,39 +200,27 @@ para não falhar no dia em que o cadastro for corrigido.
 
 Quem mudou o quê, quando — e **quem calcula é este serviço**, não o cliente.
 
-A `input.override` nasceu com um escopo estreito ("que número do Databricks a
-Regional sobrescreveu?") e dois defeitos de desenho que são o mesmo erro visto de
-dois ângulos: ela era **montada pelo front** e mandada pronta no corpo do `PUT`.
+`input.override` é a tabela, append-only, e cobre a ficha INTEIRA: bloco `db`,
+bloco `params`, obras, cidade, metas, faixas de paridade e ETE. A coluna `origem`
+(`migracoes/007`) diz de onde o campo vem — `databricks` ou `regional`.
 
-O que isso produzia, medido antes de sair:
+**Quem calcula a diferença é `cadastro_escrita.diferencas`**, comparando o que
+está gravado com o que chegou, campo a campo, **antes** de cada gravação. O
+"antes" é obrigatório: obras e metas gravam por `DELETE`+`INSERT` em bloco, e
+depois não sobraria com o que comparar. O corpo do `PUT` não carrega trilha
+nenhuma — cliente não é fonte confiável sobre o que ele mesmo mudou. O `autor` vem
+do token.
 
-| parte da ficha | tinha trilha? |
-| --- | --- |
-| bloco `db` (Databricks) | sim |
-| bloco `params` | **não** |
-| obras | **não** |
-| cidade, metas, faixas | **não** |
-| ETE | **não** |
+Três propriedades que valem saber:
 
-E, mesmo onde havia, o `valorAntigo` era o valor lido no seed da tela: duas
-edições na mesma sessão gravavam `A → B` e depois `A → C`, quando o segundo salto
-foi `B → C`.
-
-Hoje `cadastro_escrita.diferencas` compara o que está gravado com o que chegou,
-campo a campo, **antes** de cada gravação — inclusive antes dos `DELETE`+`INSERT`
-em bloco das obras e das metas, onde depois não sobraria com o que comparar. O
-`autor` vem do token, como sempre veio.
-
-Três consequências que valem saber:
-
-- **Não há dedupe.** Ela existia porque o cliente reenviava a trilha inteira a
-  cada `PUT`; comparando com o dado gravado, salvar sem mudar nada não produz
-  diferença nenhuma. A consulta saiu.
-- **`GET /unidades/{id}/alteracoes` existe.** A trilha era gravada desde a 001 e
-  **nunca foi lida por ninguém** — o único `SELECT` nela servia para deduplicar.
-  Auditoria que só o DBA alcança não é auditoria do produto.
-- **O volume é do uso, não da carga.** A trilha só registra o que passa pelo
-  `PUT`; recarregar a planilha não gera uma linha sequer.
+- **Salvar sem mudar nada não grava linha.** A comparação é contra o dado, e não
+  contra o último registro da trilha, então não há dedupe a fazer.
+  `alteracoesGravadas: 0` é resposta legítima.
+- **`GET /unidades/{id}/alteracoes`** serve a trilha à tela (teto de 200 linhas,
+  com `cortado: true` quando bate no teto). Auditoria que só o DBA alcança não é
+  auditoria do produto.
+- **O volume é do uso, não da carga.** Só o que passa pelo `PUT` vira linha;
+  recarregar a planilha não gera uma sequer.
 
 ## O contrato do EXECUTOR
 
@@ -226,10 +231,9 @@ banco, publica na fila, e para por aí.
 Trocar um pelo outro é **configuração**: `SERVICE_BUS_CONN` e `FILA_SIMULACOES`
 (`app/config.py`). Nenhuma linha de `app/` muda.
 
-O que não é configuração é o **contrato de banco** abaixo. Ele existia só implícito
-no `dev/worker.py` — e um contrato que mora numa imitação é um contrato que ninguém
-consegue implementar sem ler o código da imitação. Está aqui para o job poder ser
-escrito sem adivinhar.
+O que não é configuração é o **contrato de banco** abaixo. Ele está escrito aqui,
+e não só implícito no `dev/worker.py`, para que o job de produção possa ser
+implementado sem ler o código da imitação.
 
 ### O que o backend faz, e nesta ordem
 
@@ -334,48 +338,34 @@ Nada aqui bloqueia, mas cada item é um remendo que some quando o job entregar:
    tabela cobertura→fator que a produziu, e a tela precisa dela para explicar o
    degrau.
 
-## Migrações que este serviço precisa
+## Migrações
 
-Duas, no banco do pacote de produção:
+`migracoes/` tem sete arquivos numerados. `app/infra/db.py` exige as que o serviço
+não roda sem (`_EXIGIDO`/`_EXIGIDO_RESTRICAO`), e a falta de qualquer uma reprova o
+`/readyz` — de propósito: pod que sobe sem elas serve dado errado em silêncio. O
+índice do que cada uma cria está no `CHANGELOG.md`.
 
-1. **`CANCELADA` no CHECK de `controle.run_status`.** Hoje o CHECK aceita apenas
+**Duas condições valem para toda migração do esquema `input`** (001, 005, 006,
+007): aplicar nos bancos existentes, e dobrar no `ddl_input.sql` do repositório do
+otimizador, que é o dono do esquema.
+
+Nenhuma delas quebra a carga da planilha — o carregador só manda as colunas que
+existem nos dois lados. A ponta a vigiar é a **005**: `carregar_postgres.py` manda
+a coluna `capex` da planilha, e o CHECK a aceita porque o arredondamento da origem
+cabe no centavo de tolerância. Se um dia a planilha trouxer um `capex` que não seja
+`quantidade × preco_unitario`, é a CARGA que passa a falhar — e falhar é o certo,
+porque o motor ignora esse número de qualquer forma
+(`otimizador_capex_v62.py:1165`).
+
+### As que faltam, e o que cada uma destrava
+
+1. **`CANCELADA` no CHECK de `controle.run_status`.** O CHECK aceita apenas
    `PENDENTE, RODANDO, SUCESSO, FALHOU_QUALIDADE, ERRO`, mas o `CONTRATO.md` §4.3 e
-   a tela de simulação usam `CANCELADA`. Sem isso `POST /runs/{id}/cancelar` não
+   a tela de simulação usam `CANCELADA`. Sem ela, `POST /runs/{id}/cancelar` não
    pode existir sem mentir para o usuário.
-2. **`rotulo` em `controle.run_request`.** O nome que o usuário dá à rodada não
-   tem onde morar até a publicação. Ele viajava dentro do `params`, e a revisão
-   mostrou o estrago: o job valida `params` contra `MAPA_PARAMS` + `CHAVES_DO_JOB`
-   e `ROTULO` não está em nenhum dos dois — **toda rodada com nome morreria em
-   `ERRO`**. Hoje o nome se perde no caminho; a alternativa era perder a rodada.
-3. ~~**`input.override`**~~ — **feita** (`migracoes/001_override.sql`). Precisa ser
-   aplicada nos bancos existentes e dobrada no `ddl_input.sql` do repositório do
-   otimizador, que é quem é dono do esquema.
-4. **`reprocessa_de` em `controle.run_request`.** Decidido junto da regra de
-   imutabilidade do `run_id` (`CONTRATO.md` §2.1): a reexecução depois de um
-   `SUCESSO` gera id novo, e sem esse campo o histórico vira uma lista de rodadas
-   soltas, sem como ligar a rodada à sua origem.
-5. ~~**`capex` derivado**~~ — **feita** (`migracoes/005_capex_derivado.sql`).
-   Mesma condição do item 3: aplicar nos bancos existentes e dobrar no
-   `ddl_input.sql` do repositório do otimizador. **E há uma segunda ponta lá:** o
-   `carregar_postgres.py` manda a coluna `capex` da planilha, e a constraint a
-   aceita só porque o arredondamento da origem cabe no centavo de tolerância. Se
-   um dia a planilha trouxer um `capex` que não seja `quantidade × preco_unitario`,
-   é a CARGA que passa a falhar — e falhar é o comportamento certo, porque o motor
-   ignoraria esse número de qualquer forma
-   (`otimizador_capex_v62.py:1165`).
-6. ~~**Auditoria de cadastro**~~ — **feita** (`migracoes/006_auditoria_cadastro.sql`).
-   `atualizado_em`/`atualizado_por` nas quatro tabelas de ficha. Mesma condição
-   dos itens 3 e 5: aplicar nos bancos existentes e dobrar no `ddl_input.sql`.
-   **Não quebra a carga**: a planilha não tem essas colunas, e o carregador só
-   manda as que existem nos dois lados. O que ela quebra, se faltar, é o
-   `/readyz` — de propósito. Ela substituiu o 409 de ficha, então um pod que sobe
-   sem ela deixa a escrita sem proteção **e** sem aviso.
-7. ~~**Trilha do cadastro completa**~~ — **feita**
-   (`migracoes/007_trilha_do_cadastro.sql`). Acrescenta `origem` a
-   `input.override` e deixa `valor_novo` aceitar NULL. Mesma condição das
-   anteriores: aplicar nos bancos existentes e dobrar no `ddl_input.sql`.
-   **Não quebra nada existente**: a coluna nova tem default, e o `NOT NULL` que
-   saiu era mais restritivo, não menos.
+2. **`reprocessa_de` em `controle.run_request`.** A reexecução depois de um
+   `SUCESSO` gera `run_id` novo (`CONTRATO.md` §2.1). Sem esse campo o histórico é
+   uma lista de rodadas soltas, sem como ligar a reexecução à sua origem.
 
 ## Uma divergência achada na leitura das fontes
 

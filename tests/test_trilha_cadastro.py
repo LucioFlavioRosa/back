@@ -1,30 +1,12 @@
 """Quem calcula o que mudou é o SERVIDOR, e a trilha cobre a ficha inteira.
 
-## O que mudou, e por quê
+`diferencas` compara o que está gravado com o que chegou no `PUT`, campo a campo,
+e é o que a trilha registra. O corpo da requisição não informa o que mudou nem
+quem assina — auditoria montada pelo cliente quebra em silêncio quando o cliente
+tem bug, e cobriria só os campos que ele resolvesse montar.
 
-A trilha (`input.override`) existia desde a primeira migração com dois defeitos
-de desenho, e os dois são o mesmo erro visto de ângulos diferentes: **ela era
-montada pelo cliente**.
-
-  1. **Auditoria que pergunta ao auditado.** O front montava `overrides` e o
-     backend gravava o que chegasse. Um bug no front, e o rastro sumia sem sinal
-     nenhum — e o `autor` chegava do corpo, o que uma revisão explorou gravando
-     `forjado@corp`.
-  2. **Cobria um quarto da ficha.** Só o bloco do Databricks virava override,
-     porque só ele tinha "valor de outra fonte para contrastar". `params`, obras,
-     cidade e ETE não deixavam rastro. Medido: das quatro partes editáveis de uma
-     ficha, três eram invisíveis.
-
-Havia ainda um erro sutil de conteúdo: o `valorAntigo` era o valor lido no SEED,
-não o último gravado. Duas edições na mesma sessão registravam `A -> B` e depois
-`A -> C`, quando o segundo salto foi `B -> C`.
-
-Comparar no servidor resolve os três de uma vez, porque ele tem as duas pontas: o
-que está gravado e o que chegou.
-
-Estes testes são de Python puro — exercitam `diferencas`, que é onde a decisão
-mora. O caminho até o banco é coberto pelos smokes (`dev/`), que rodam contra
-Postgres de verdade.
+Estes testes são Python puro: exercitam a comparação, que é onde a decisão mora.
+O caminho até o banco é coberto pelos smokes (`dev/`), contra Postgres de verdade.
 """
 
 import tokenize

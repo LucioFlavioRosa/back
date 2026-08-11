@@ -1,35 +1,26 @@
 -- Última alteração e autor, em cada ficha de cadastro
 --
--- Isto existe para SUBSTITUIR o 409 de ficha, que sai na mesma leva. Não é um
--- acréscimo: é a troca de uma proteção por outra, e vale explicar por quê.
+-- As quatro tabelas de ficha passam a registrar QUEM gravou e QUANDO. A tela
+-- mostra isso no cabeçalho da ficha (R6), e é o único sinal que o produto dá
+-- sobre gravação concorrente: a escrita não tem controle otimista, então duas
+-- pessoas na mesma ficha podem se sobrescrever. O sinal é posterior e legível,
+-- em vez de imediato e cego.
 --
--- O 409 comparava a versão lida com a versão atual e recusava a gravação quando
--- alguém tinha salvado no meio. Protegia — e cobrava caro: quem abriu a ficha de
--- manhã e salvou à tarde perdia o trabalho para um colega que mexeu em OUTRO
--- campo da mesma ficha, porque a versão é o hash da ficha inteira. O dono do
--- produto decidiu (R6): em vez de barrar, MOSTRAR. Quem vê "última alteração:
--- ana@aegea, 10/08 14:32" sabe com quem falar; quem levava 409 só sabia que
--- tinha perdido o que digitou.
---
--- O que se perde, dito sem enfeite: duas pessoas na mesma ficha continuam
--- podendo sobrescrever uma à outra, e agora sem aviso NO MOMENTO da gravação. A
--- revisão do plano mapeou os caminhos (`PLANO-REVISAO.md`, D) — sub-bacia e CTS
--- regravam obras com DELETE+INSERT, cidade apaga e reinsere metas e fator, ETE
--- faz upsert campo a campo. O sinal passa a ser posterior e visível, em vez de
--- imediato e cego.
+-- Os caminhos de sobrescrita são conhecidos: sub-bacia e CTS regravam obras com
+-- `DELETE`+`INSERT`, cidade apaga e reinsere metas e fator, ETE faz upsert campo
+-- a campo.
 --
 -- `timestamptz` e não `timestamp`: o serviço roda em UTC e a tela mostra no fuso
 -- de quem lê. Sem fuso, "14:32" é uma pergunta sem resposta.
 --
--- `text` para o autor, e não uma FK para `controle.usuario_acesso`: o autor é o
+-- `text` para o autor, e não FK para `controle.usuario_acesso`: o autor é o
 -- registro de QUEM GRAVOU, não um vínculo vivo. Se a pessoa sair da empresa e a
--- linha de acesso for removida, a trilha não pode sumir junto — é o mesmo motivo
--- pelo qual `input.override.autor` é texto (`001_override.sql`).
+-- linha de acesso for removida, a trilha não pode sumir junto — mesmo motivo de
+-- `input.override.autor` ser texto.
 --
 -- Sem `DEFAULT now()`: ficha que nunca foi salva pela tela tem de dizer isso, com
--- nulo. Um default carimbaria a data da MIGRAÇÃO em 4.850 sub-bacias que ninguém
--- tocou, e a tela mostraria "última alteração: 10/08" para todas elas — uma
--- informação falsa, criada por conveniência de DDL.
+-- nulo. Um default carimbaria a data da migração em 4.850 sub-bacias que ninguém
+-- tocou, e a tela mostraria uma alteração que não houve.
 
 ALTER TABLE input.subbacia_operacional
   ADD COLUMN IF NOT EXISTS atualizado_em  timestamptz,

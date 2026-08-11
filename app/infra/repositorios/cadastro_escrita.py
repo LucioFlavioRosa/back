@@ -198,14 +198,9 @@ def _texto_trilha(v: Any, campo: str = "") -> str | None:
     """O valor como a tela o mostra. `None` continua `None` — ver `Alteracao`.
 
     **ANO e CÓDIGO não levam separador de milhar**, e a régua é a mesma da
-    leitura (`cadastro.SEM_SEPARADOR`): `fim`, `ano`, `anoObrig`, `proibAte`.
-
-    Sem isto a trilha registrava o ano 2044 como `2.044` — e pior, o ano vira
-    CHAVE da meta (`meta:2044:pct`), então a chave saía formatada como
-    `meta:2.044:pct`. Um ano com ponto é erro de leitura na tela, e uma chave com
-    ponto é um identificador que não existe em lugar nenhum. Pego navegando a
-    ficha de Contrato & Metas depois de pronto, e não pelos testes: eles
-    exercitavam preço e quantidade, onde o separador está certo.
+    leitura (`cadastro.SEM_SEPARADOR`): `fim`, `ano`, `anoObrig`, `proibAte`. O
+    ano também é CHAVE de meta (`meta:2044:pct`), e uma chave formatada não
+    corresponde a registro nenhum.
     """
     if v is None:
         return None
@@ -264,29 +259,17 @@ async def _registrar(
 ) -> int:
     """Acrescenta a trilha — APPEND-ONLY. Nada aqui apaga nada.
 
-    A primeira versao apagava a trilha da ficha e regravava o conjunto que veio no
-    corpo. Era mais simples e estava errada: uma correcao feita ha um mes voltava
-    com `gravado_em` de hoje e `override_id` novo. Auditoria que reescreve a data
-    do fato nao e auditoria — e um retrato do presente com cara de historico. Uma
-    revisao provou: override datado de 01/07 virou 07/08 depois de um PUT que nem
-    o mencionava.
+    Cada gravação acrescenta só as diferenças que o servidor observou na
+    transação atual; as linhas antigas conservam o autor, a data e o id que
+    tiveram. Auditoria que reescreve a data do fato não é auditoria.
 
-    ## Quem calcula a diferença mudou, e isso conserta duas coisas
+    **Quem compara é o servidor**, que tem as duas pontas: o que está gravado e o
+    que chegou no corpo. O cliente não informa o que mudou — auditoria que
+    pergunta ao auditado tem o defeito no desenho, e um cliente com bug apagaria
+    o rastro sem sinal.
 
-    Antes a trilha chegava PRONTA no corpo do `PUT`: o front dizia o que tinha
-    mudado, e o backend gravava. Auditoria que pergunta ao auditado o que ele
-    mudou tem o defeito no desenho — um bug no cliente, e o rastro some sem sinal.
-    Era o caso de metade da ficha: `params`, obras, cidade e ETE nunca geraram
-    linha, porque o front só montava override para o bloco do Databricks.
-
-    Agora quem compara é o servidor, que tem as duas pontas: o que está gravado e
-    o que chegou. Some junto um erro sutil — o front usava como `valorAntigo` o
-    valor lido no SEED, então duas edições na mesma sessão gravavam `A -> B` e
-    depois `A -> C`, quando o segundo salto foi `B -> C`.
-
-    E a deduplicação some por construção: comparando com o dado gravado, salvar a
-    mesma ficha dez vezes não produz diferença nenhuma, e não há o que deduplicar.
-    A consulta que existia para isso saiu.
+    Não há deduplicação, e nem é preciso: comparando com o dado gravado, salvar a
+    mesma ficha dez vezes não produz diferença nenhuma.
     """
     if not mudancas:
         return 0
@@ -303,11 +286,9 @@ async def _registrar(
                 m.campo,
                 m.antes,
                 m.depois,
-                # O autor vem SEMPRE do token. Aceita-lo do corpo — como esta
-                # funcao ja fez, com `o.get("autor") or autor` — deixava qualquer
-                # um assinar a correcao de outro, e uma revisao gravou
-                # "forjado@corp" para provar. Numa trilha de auditoria isso e o
-                # defeito que a anula inteira.
+                # O autor vem SEMPRE do token, nunca do corpo: quem pudesse
+                # escolher o nome que assina poderia assinar a correcao de outro,
+                # e uma trilha assim nao vale nada.
                 autor,
                 m.origem,
             )
@@ -672,12 +653,6 @@ async def _marcar_autoria(
 ) -> dict[str, str]:
     """Quem gravou esta ficha, e quando. Em TODA gravação.
 
-    Aqui estavam `_versao_atual` e `_exigir_versao`, que faziam o 409 de ficha.
-    O dono do produto trocou uma pela outra (R6), e o motivo está na migração
-    `006_auditoria_cadastro.sql`: o 409 comparava o hash da ficha INTEIRA, então
-    quem mexeu no campo A perdia a gravação porque um colega tinha mexido no
-    campo B. Barrava em nome de um conflito que quase nunca era um.
-
     **O autor vem do TOKEN, e o parâmetro `autor` é o mesmo que a trilha usa
     (`_registrar`).** Nunca do corpo: um cliente que pudesse escolher o nome que
     assina transformaria a auditoria em decoração.
@@ -692,10 +667,9 @@ async def _marcar_autoria(
     `subbacia_operacional` a cria. Com `UPDATE`, a primeira gravação de uma ficha
     nova seria justamente a que não deixaria rastro.
 
-    **Devolve o carimbo** porque a resposta do `PUT` o leva de volta para a tela.
-    Era o que a `versao` fazia, e o motivo é o mesmo: sem isso a ficha continuaria
-    exibindo "última alteração: fulano, ontem" logo depois de você salvar, até
-    alguém recarregar. O campo que substitui o 409 não pode nascer desatualizado.
+    **Devolve o carimbo** porque a resposta do `PUT` o leva de volta para a tela:
+    sem isso a ficha exibiria a alteração anterior logo depois de você salvar, até
+    alguém recarregar.
     """
     linha = await con.fetchrow(
         f"""INSERT INTO {_i()}.{tabela} ({chave}, atualizado_em, atualizado_por)

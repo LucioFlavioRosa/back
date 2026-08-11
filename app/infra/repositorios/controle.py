@@ -192,13 +192,6 @@ async def rodada_identica(
     parâmetros diferentes é o uso normal do produto — a tela de histórico existe
     para comparar cenários. O que não pode é o mesmo pedido virar duas execuções.
 
-    ## O que mudou, e por quê
-
-    Esta função se chamava `rodada_em_voo` e olhava só `PENDENTE`/`RODANDO`. A R5
-    pede que a dedupe alcance também a **concluída**: quem pediu ontem a mesma
-    simulação não precisa de uma segunda execução do cluster hoje — precisa do
-    link para a que já existe.
-
     ## As três condições da concluída, e nenhuma é enfeite
 
     **`SUCESSO`, e não qualquer término.** `ERRO` continua liberando execução
@@ -207,15 +200,13 @@ async def rodada_identica(
 
     **Publicada em `public.otim_meta`.** `SUCESSO` sem publicação é um estado que
     mente — diz que deu certo e não há resultado para abrir. Mandar alguém para
-    ele seria prometer uma tela vazia. (O banco tinha dois desses, ambos do seed
-    sintético; saíram no item 6 do plano.)
+    ele seria prometer uma tela vazia.
 
     **Posterior à última alteração do cadastro.** Esta é a que não é óbvia, e sem
     ela a dedupe violaria a R1. Os mesmos parâmetros de TELA não são a mesma
     simulação se o CADASTRO mudou no meio: a rodada de ontem leu preços, vazões e
-    obras que não são os de hoje, e devolvê-la seria afirmar que o resultado
-    continua valendo. Só dá para fazer essa conta desde a auditoria por ficha
-    (`atualizado_em`, item 1 do plano) — antes dela, não havia como saber.
+    obras que não são os de hoje, e devolvê-la afirmaria que o resultado continua
+    valendo. A conta usa `atualizado_em` das fichas da unidade.
 
     Comparo com `solicitado_em`, e não com a hora da publicação: é o instante em
     que a rodada começou a ler o cadastro. Uma alteração feita DURANTE a execução

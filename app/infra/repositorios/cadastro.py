@@ -81,26 +81,18 @@ def pt_br_ano(v: Any) -> str:
 def _auditoria(linha: dict[str, Any]) -> dict[str, Any]:
     """`atualizadoEm` e `atualizadoPor` — a última gravação desta ficha.
 
-    Aqui morava `versao()`, o hash que alimentava o 409 de ficha. O dono do
-    produto trocou uma coisa pela outra (R6): em vez de RECUSAR a gravação de quem
-    leu a ficha antes de um colega salvar, MOSTRAR quem mexeu e quando. O 409
-    barrava com base no hash da ficha INTEIRA, então mudar o preço fazia a edição
-    de outra pessoa em outro campo virar conflito — e ela perdia o que digitou
-    sem nunca ter disputado o mesmo dado.
-
-    O que se perde está dito na migração (`006_auditoria_cadastro.sql`), e não é
-    pouco: duas pessoas na mesma ficha ainda se sobrescrevem, e agora sem aviso no
-    momento da gravação. O sinal passou a ser posterior e legível.
+    A escrita de cadastro não tem controle otimista: a tela usa este carimbo para
+    mostrar quem gravou por último e quando (R6). Duas pessoas na mesma ficha
+    podem se sobrescrever, e é aqui que isso fica visível — depois, não no momento
+    da gravação.
 
     **ISO-8601 com fuso, e não data formatada.** Quem lê pode estar em outro fuso,
-    e "10/08 14:32" escrito pelo servidor congela o formato do dia em que foi
-    escrito. O front tem `Intl`; a formatação é dele.
+    e uma data formatada no servidor congela o formato. A formatação é do front.
 
-    Vazio e não nulo, como todo campo de ficha: a tela trata tudo como string
-    editável e chama `.trim()` — um `null` chegando ali derruba a tela inteira,
-    e não só o campo. Ficha nunca gravada pela tela devolve os dois vazios, que é
-    a verdade: a migração não pôs `DEFAULT now()` justamente para não inventar
-    uma data de alteração para 4.850 sub-bacias que ninguém tocou.
+    **Vazio, e não nulo.** A tela trata todo campo de ficha como string editável e
+    chama `.trim()`; um `null` ali derruba a tela inteira, não só o campo. Ficha
+    nunca gravada pela tela devolve os dois vazios — a coluna não tem
+    `DEFAULT now()`, para não afirmar uma alteração que não houve.
     """
     quando = linha.get("atualizado_em")
     return {
