@@ -129,6 +129,47 @@ async def unidades(regional_id: str) -> list[dict[str, Any]]:
     return [await unidade(l["unidade_id"]) for l in linhas]  # type: ignore[misc]
 
 
+#: Quantas obras cada ficha ancora. Sao do dominio do cadastro, nao desta consulta:
+#: a sub-bacia pendura 5 componentes na "Ligacao de esgoto", a CTS pendura 4 no
+#: "Coletor de tempo seco".
+OBRAS_POR_SUBBACIA = 5
+OBRAS_POR_CTS = 4
+
+
+def _resumo(c: dict[str, Any]) -> dict[str, int]:
+    """O PORTE DA UNIDADE, a partir dos contadores da consulta da capa.
+
+    Quem le isto esta decidindo se roda esta unidade ou outra: 67 cidades e 11.525
+    obras nao e a mesma decisao que 8 cidades e 710. A tela de nova simulacao usa
+    exatamente estes numeros para dizer se a rodada e de minutos ou de meia hora.
+
+    `etes` e `cts` sairam da consulta e eram DESCARTADOS aqui — contados no banco,
+    montados no dicionario, e jogados fora no `return`. Passam a ser entregues:
+    quem paga a consulta ja pagou por eles.
+
+    `obras` inclui as duas metades. O comentario antigo ja dizia "5 obras por
+    sub-bacia, 4 por CTS", mas o codigo so fazia a primeira — e o numero saia
+    subestimado em `cts * 4` justamente na conta que serve para julgar o tamanho
+    do problema. As constantes sao as mesmas do dominio do cadastro: a sub-bacia
+    ancora 5 obras na "Ligacao de esgoto", a CTS ancora 4 no "Coletor de tempo
+    seco".
+    """
+    def conta(chave: str) -> int:
+        # `or 0` e nao so o default do `get`: a consulta devolve NULL quando nao ha
+        # linha, e `int(None)` estoura.
+        return int(c.get(chave) or 0)
+
+    subs, cts = conta("sub_bacias"), conta("cts")
+    return {
+        "cidades": conta("cidades"),
+        "sistemas": conta("sistemas"),
+        "subBacias": subs,
+        "cts": cts,
+        "etes": conta("etes"),
+        "obras": subs * OBRAS_POR_SUBBACIA + cts * OBRAS_POR_CTS,
+    }
+
+
 async def unidade(unidade_id: str) -> dict[str, Any] | None:
     base = await db.buscar_um(
         f"""SELECT unidade_id, unidade_name, regional_id, regional_name, wacc_medio
@@ -162,13 +203,7 @@ async def unidade(unidade_id: str) -> dict[str, Any] | None:
         "regionalId": base["regional_id"],
         "nome": base["unidade_name"],
         "waccMedio": base["wacc_medio"],
-        "resumo": {
-            "cidades": c.get("cidades", 0),
-            "sistemas": c.get("sistemas", 0),
-            "subBacias": c.get("sub_bacias", 0),
-            # 5 obras por sub-bacia, 4 por CTS — a mesma conta que a tela faz.
-            "obras": (c.get("sub_bacias", 0) or 0) * 5,
-        },
+        "resumo": _resumo(c),
         "completude": (await pendencias.contar(unidade_id))["completude"],
         "databricksConectado": True,
     }
