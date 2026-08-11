@@ -1,0 +1,56 @@
+# Portão automático do serviço. Nada aqui depende de segredo nem de
+# infraestrutura da Aegea: o job sobe do zero em qualquer runner público.
+#
+# O QUE ESTE PORTÃO NÃO COBRE, e por quê
+#
+# Os smokes de `dev/` (`smoke.py`, `smoke_incons.py`, `conferir_planilha.py`) e os
+# dois testes marcados `skipif` em `tests/test_obras_do_banco.py` exigem um
+# Postgres COM A PLANILHA CARREGADA — eles conferem cardinalidade e nomes de
+# componente contra as 5 unidades reais. Um `services: postgres` vazio os faria
+# falhar por banco sem dado, que não é o defeito que eles procuram. E o esquema
+# base (`ddl_input.sql`) mora no repositório do otimizador, não aqui, então nem a
+# carga daria para reproduzir a partir deste repositório sozinho.
+#
+# Continuam sendo verificação local, contra o `docker-compose`. O que roda aqui é
+# o que não precisa de banco: superfície da API, regras de domínio e a imagem.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  testes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          # A mesma do `Dockerfile`. Passar aqui numa versão que a imagem não usa
+          # é um verde que não quer dizer nada.
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      # Cada passo isolado: quem lê o log vê qual portão caiu, sem abrir o job.
+      - name: Testes
+        run: python -m pytest
+
+      # `dev/` não é importado por teste nenhum, então um erro de sintaxe ali só
+      # apareceria na hora em que alguém fosse recarregar o banco ou rodar um
+      # smoke. `compileall` custa segundos e fecha esse buraco.
+      - name: Sintaxe dos utilitários de dev/
+        run: python -m compileall -q dev
+
+  imagem:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # O deploy é a imagem, não o `git clone`. Um `Dockerfile` que parou de
+      # construir só apareceria no dia de subir.
+      - name: Construir a imagem
+        run: docker build -t otimizador-backend:ci .
