@@ -53,7 +53,9 @@ _ID_DA_UNIDADE = """
 
 
 async def historico(
-    unidade: str | None = None, usuario: str | None = None
+    unidade: str | None = None,
+    usuario: str | None = None,
+    favoritas: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     linhas = await db.buscar(
         f"""SELECT h.run_id, h.rotulo, h.usuario, h.data_hora, h.milp_status,
@@ -89,10 +91,12 @@ async def historico(
         unidade,
         usuario,
     )
-    return [_resumo(l) for l in linhas]
+    return [_resumo(l, favoritas or set()) for l in linhas]
 
 
-async def em_voo(unidade: str | None, usuario: str | None) -> list[dict[str, Any]]:
+async def em_voo(
+    unidade: str | None, usuario: str | None, favoritas: set[str] | None = None
+) -> list[dict[str, Any]]:
     """As rodadas PEDIDAS que ainda nao publicaram resultado.
 
     O historico saia so de `otim_vw_historico`, que le `public.otim_*` — ou seja,
@@ -137,7 +141,7 @@ async def em_voo(unidade: str | None, usuario: str | None) -> list[dict[str, Any
             "status": l["status"],
             "progresso": l.get("progresso") or 0,
             "erro": l.get("erro"),
-            "favorita": False,
+            "favorita": l["run_id"] in (favoritas or set()),
             "publicada": False,
             # A rodada em voo tem pedido desde o `POST` — e e a UNICA coisa que
             # da para mostrar dela: metricas e parametros so existem depois da
@@ -184,12 +188,16 @@ def _pedido(bruto: Any) -> dict[str, Any] | None:
     return {k: v for k, v in bruto.items() if k not in _PEDIDO_REDUNDANTE} or None
 
 
-def _resumo(l: dict[str, Any]) -> dict[str, Any]:
+def _resumo(l: dict[str, Any], favoritas: set[str]) -> dict[str, Any]:
     """Molda uma linha para o `RunResumo` do front.
 
     `metricas` fica AUSENTE quando a rodada e INFEASIBLE — nao vazia, nem zerada.
     A tela usa a ausencia para dizer "não houve plano", e um bloco de zeros ali
     seria lido como um plano que nao construiu nada, que e outra coisa.
+
+    `favoritas` sao as de QUEM PEDIU a lista, e nao as do dono da rodada. A
+    diferenca so aparece no `admin`, que ve as rodadas dos outros: a estrela na
+    tela dele e a dele.
     """
     situacao = _status_do_solver(l.get("milp_status"))
     inviavel = situacao == "INFEASIBLE"
@@ -204,7 +212,7 @@ def _resumo(l: dict[str, Any]) -> dict[str, Any]:
         "autor": l.get("usuario"),
         "duracaoS": l.get("tempo_s"),
         "status": situacao,
-        "favorita": False,
+        "favorita": l["run_id"] in favoritas,
         # A tela precisa distinguir "terminou" de "ainda esta acontecendo" sem
         # deduzir pelo status: `em_voo` devolve `publicada: False`, e so a rodada
         # publicada tem drill-down para oferecer.
@@ -324,4 +332,44 @@ async def excluir(run_id: str) -> bool:
         await con.execute(f"DELETE FROM {ctrl}.run_diagnostico WHERE run_id = $1", run_id)
         await con.execute(f"DELETE FROM {ctrl}.run_status WHERE run_id = $1", run_id)
         await con.execute(f"DELETE FROM {ctrl}.run_request WHERE run_id = $1", run_id)
+        # As marcas de favorita de TODOS os usuarios. Elas nao tem FK — nao ha uma
+        # tabela unica com todas as rodadas para apontar (ver `009_favoritas.sql`)
+        # —, entao a limpeza e aqui ou nao acontece.
+        await con.execute(f"DELETE FROM {ctrl}.run_favorita WHERE run_id = $1", run_id)
     return r != "DELETE 0"
+
+
+async def favoritas_de(usuario: str) -> set[str]:
+    """Os `run_id` que ESTA pessoa marcou.
+
+    Um `SELECT` por listagem, e nao um join na consulta do historico: sao duas
+    consultas diferentes (`historico` e `em_voo`) alimentando a mesma lista, e o
+    conjunto serve as duas. Ele tambem e pequeno por natureza — favorita e curadoria
+    manual, nao acumulo.
+    """
+    linhas = await db.buscar(
+        f"SELECT run_id FROM {_c()}.run_favorita WHERE usuario = $1", usuario
+    )
+    return {l["run_id"] for l in linhas}
+
+
+async def favoritar(run_id: str, usuario: str) -> None:
+    """Marca. Idempotente pela chave composta: duplo clique nao vira erro."""
+    async with db.pool().acquire() as con:
+        await con.execute(
+            f"""INSERT INTO {_c()}.run_favorita (run_id, usuario) VALUES ($1, $2)
+                ON CONFLICT (run_id, usuario) DO NOTHING""",
+            run_id,
+            usuario,
+        )
+
+
+async def desfavoritar(run_id: str, usuario: str) -> None:
+    """Desmarca. Tambem idempotente: desmarcar o que nao esta marcado e sucesso,
+    porque o estado que o usuario pediu e o estado em que ele fica."""
+    async with db.pool().acquire() as con:
+        await con.execute(
+            f"DELETE FROM {_c()}.run_favorita WHERE run_id = $1 AND usuario = $2",
+            run_id,
+            usuario,
+        )
