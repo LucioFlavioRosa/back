@@ -387,10 +387,15 @@ def executar(run_id: str, tempo: int) -> None:
         # inofensivo. `or None` mantem o default explicito.
         peso_cidade=p.get("PESO_CIDADE") or None,
         data_inicio=mes_ano(p.get("DATA_INICIO")),
-        # `in` e nao `get`: ausente e "cadastro" viram None (o motor carrega as
-        # metas da planilha), mas "ignorar" e `{}` — e `get` nao distingue o `{}`
-        # gravado de uma chave que nao existe.
-        metas_cobertura=p["METAS_COBERTURA"] if "METAS_COBERTURA" in p else None,
+        # `metas_cobertura` NAO e repassado, de proposito: as metas vem sempre da
+        # base, e o default do motor (None) e exatamente isso. O unico descarte
+        # legitimo e por ANO — meta fora da janela de CAPEX nao e cobrada —, e ele
+        # ja acontece na avaliacao (`idx >= anos_capex -> continue`).
+        #
+        # Repassar o que estivesse gravado seria pior que ignorar: rodada criada na
+        # janela em que a tela ainda oferecia "ignorar as metas" tem `{}` no
+        # `params`, e reexecuta-la produziria um plano sem meta nenhuma. Ver
+        # `app/dominio/parametros.py`.
     )
     log(run_id, f"cenario: {len(cen.obras)} obras, {len(cen.sistemas)} sistemas")
     andar(run_id, MODELO)

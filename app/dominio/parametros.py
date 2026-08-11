@@ -182,30 +182,22 @@ def montar_params(corpo: dict[str, Any], unidade_id: str, usuario: str) -> dict[
         if origem in corpo:
             params[destino] = corpo[origem]
 
-    # `metas_cobertura: null` NAO e ausencia — e a escolha de ignorar as metas
-    # nesta rodada. Por isso entra mesmo valendo None, e por isso o `in` acima
-    # nao serve para ela sozinha.
+    # `METAS_COBERTURA` NAO E PRODUZIDO AQUI, e a ausencia e a regra de negocio:
+    # as metas vem SEMPRE da base. O unico descarte legitimo e por ANO — meta fora
+    # da janela de CAPEX nao e cobrada —, e quem o aplica e o motor, na avaliacao
+    # (`otimizador_capex_v62.py`: `idx >= anos_capex -> continue`). Nao e escolha
+    # de quem dispara a rodada, entao nao vira parametro.
     #
-    # AS DUAS ESCOLHAS NAO PODEM VIRAR O MESMO VALOR, e viravam: `None if valor in
-    # (None, "cadastro")` colapsava "ignorar" e "usar o cadastro" em `None`. E no
-    # motor `metas_cobertura=None` significa CARREGAR as metas da planilha
-    # (`otimizador_capex_v62.py`, "if metas_cobertura is None: ... L('metas-cobertura')"),
-    # que e o oposto de ignorar.
+    # Chave ausente e exatamente como se pede o comportamento certo: sem ela o
+    # motor usa o proprio default, que e carregar as metas da planilha.
     #
-    # O efeito era invisivel e serio: quem escolhia ignorar as metas rodava COM
-    # elas, enquanto a tela avisava que o resultado nao serviria para aferir
-    # cumprimento. O aviso dizia o contrario do que acontecia.
-    #
-    # `{}` e como se diz "nenhuma meta" ao motor: ele trata dict como mapa
-    # explicito e um mapa vazio produz `cen.metas_cobertura = {}`.
-    if "metas_cobertura" in corpo:
-        valor = corpo["metas_cobertura"]
-        if valor == "cadastro":
-            params["METAS_COBERTURA"] = None
-        elif valor is None:
-            params["METAS_COBERTURA"] = {}
-        else:
-            params["METAS_COBERTURA"] = valor
+    # HOUVE uma escolha aqui, e ela quebrou duas vezes. Primeiro `None if valor in
+    # (None, "cadastro")` colapsava "ignorar" e "usar o cadastro" no mesmo valor —
+    # e como `metas_cobertura=None` manda o motor CARREGAR, quem pedia para ignorar
+    # rodava com as metas enquanto a tela avisava o contrario. Corrigido o colapso,
+    # a opcao passou a funcionar: produzia rodada sem meta nenhuma, que a regra nao
+    # admite. Saiu inteira. Corpo antigo que ainda mande `metas_cobertura` e
+    # ignorado em silencio — o resultado e o mesmo que a regra pede.
 
     _validar(params)
     return params

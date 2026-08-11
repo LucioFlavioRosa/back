@@ -19,30 +19,23 @@ def montar(**extra):
 
 
 class TestMetasDeCobertura:
-    """A escolha da tela tem DUAS opcoes, e elas nao podem virar o mesmo valor."""
+    """A fonte das metas NAO e parametro da rodada: e sempre a base.
 
-    def test_cadastro_vira_none_para_o_motor_carregar_da_planilha(self):
-        # `None` no motor significa "carregue as metas da planilha" — e e isso que
-        # "usar as metas do cadastro" quer dizer.
-        assert montar(metas_cobertura="cadastro")["METAS_COBERTURA"] is None
+    O unico descarte legitimo e por ANO — meta fora da janela de CAPEX nao e
+    cobrada —, e quem aplica isso e o motor, na avaliacao. Nao ha o que escolher
+    aqui, entao a chave nao e produzida: sem ela o motor usa o default, que e
+    carregar da planilha.
+    """
 
-    def test_ignorar_vira_dict_vazio_e_nao_none(self):
-        # Este e o bug que os testes existem para nao deixar voltar: `null` da tela
-        # significa IGNORAR, e virava `None` — que no motor manda carregar. Quem
-        # pedia para ignorar rodava COM as metas, e a tela avisava o contrario.
-        assert montar(metas_cobertura=None)["METAS_COBERTURA"] == {}
-
-    def test_as_duas_escolhas_produzem_valores_DIFERENTES(self):
-        # A asserção que pega o colapso independentemente de qual valor cada uma
-        # recebe: se um dia as duas voltarem a coincidir, isto quebra.
-        assert montar(metas_cobertura="cadastro")["METAS_COBERTURA"] != (
-            montar(metas_cobertura=None)["METAS_COBERTURA"]
-        )
-
-    def test_ausencia_nao_inventa_a_chave(self):
-        # Chave ausente deixa o motor usar o proprio default. Inventar um aqui faria
-        # o mesmo pedido dar planos diferentes na tela e no notebook.
+    def test_nunca_produz_a_chave(self):
         assert "METAS_COBERTURA" not in montar()
+
+    @pytest.mark.parametrize("valor", ["cadastro", None, {"Cabo Frio": {2030: 0.9}}])
+    def test_corpo_que_ainda_mande_metas_e_ignorado(self, valor):
+        # Cliente antigo — ou alguem chamando a API na mao — pode mandar o campo.
+        # Ignorar em silencio da o resultado que a regra pede; recusar quebraria a
+        # tela velha sem beneficio, ja que o comportamento final e o mesmo.
+        assert "METAS_COBERTURA" not in montar(metas_cobertura=valor)
 
 
 class TestRepasseDireto:
