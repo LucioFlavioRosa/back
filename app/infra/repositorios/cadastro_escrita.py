@@ -112,10 +112,36 @@ _NAO_NEGATIVOS = {
 }
 
 
+#: Campos cuja coluna e INTEIRA. Decimal aqui nao e precisao a mais: e um valor
+#: que o Postgres arredondaria na gravacao, devolvendo depois um numero que
+#: ninguem digitou. Ligacao e economia se contam; tempo de ramp-up e de
+#: arrecadacao sao meses inteiros; ano de obra e ano.
+#:
+#: A lista espelha o schema, e `tests/test_campos_inteiros.py` a confere contra o
+#: `information_schema` — coluna que mudar de tipo sem passar por aqui reprova.
+_INTEIROS = {
+    # coleta (subbacia_operacional / cts_operacional)
+    "tarr", "ramp",
+    "ligU", "ligA", "ligN", "ligUInd", "ligAInd",
+    "ecoU", "ecoA", "ecoN",
+    # obras (componentes_*_capex)
+    "obra.tPred", "obra.dur", "obra.anoObrig", "obra.proibAte",
+    # ETE
+    "ete.tExec", "ete.modulos",
+    # contrato
+    "cidade.fim", "meta.ano",
+}
+
+
 def _numerico(v: Any, campo: str) -> Any:
     """Como `_numero`, mas para coluna que SO aceita numero: texto vira 422.
 
     Booleano tambem: `_numero` o devolve como texto justamente para cair aqui.
+
+    E decimal em coluna inteira vira 422 tambem. Aceitar `3,7` num campo de meses
+    parecia tolerancia e era perda silenciosa: o banco guardava `3`, a tela
+    reabria mostrando `3`, e quem digitou nunca soube. Recusar devolve a decisao a
+    quem sabe se era 3, 4, ou o campo errado.
     """
     n = _numero(v)
     if isinstance(n, str):
@@ -124,6 +150,10 @@ def _numerico(v: Any, campo: str) -> Any:
         )
     if n is not None and n < 0 and campo in _NAO_NEGATIVOS:
         raise ValorInvalido(f"O campo {campo!r} não pode ser negativo — recebi {v!r}.")
+    if n is not None and campo in _INTEIROS and float(n) != int(n):
+        raise ValorInvalido(
+            f"O campo {campo!r} é um número inteiro — recebi {v!r}."
+        )
     return n
 
 
@@ -441,6 +471,19 @@ def _capex(o: dict[str, Any]) -> float | None:
     return qtd * preco
 
 
+def _valor_de_obra(o: dict[str, Any], campo: str) -> Any:
+    """Um campo da obra, validado como os demais campos numéricos da ficha.
+
+    `un` é a unidade de medida (`m`, `un`, `ligacao`) e segue como texto. O resto
+    passa por `_numerico`, e não por `_numero`: só `qtd` e `preco` eram validados
+    — pelo caminho de `_capex` —, então `dur: "abc"` chegava ao driver e virava
+    500, e `dur: "3,7"` era arredondado em silêncio numa coluna inteira.
+    """
+    if campo == "un":
+        return o.get(campo)
+    return _numerico(o.get(campo), f"obra.{campo}")
+
+
 async def _gravar_obras(
     con: Any,
     *,
@@ -475,7 +518,7 @@ async def _gravar_obras(
     não diria nada a quem consulta a auditoria seis meses depois.
     """
     novas = {
-        str(i): {"nome": o.get("nome"), **{k: _numero(o.get(k)) for k in _OBRA}}
+        str(i): {"nome": o.get("nome"), **{k: _valor_de_obra(o, k) for k in _OBRA}}
         for i, o in enumerate(obras)
     }
     mudancas: list[Alteracao] = []
@@ -499,7 +542,7 @@ async def _gravar_obras(
     colunas = [chave, "componente", *_OBRA.values(), "capex"]
     marc = ", ".join(f"${i + 1}" for i in range(len(colunas)))
     linhas = [
-        (ficha_id, o.get("nome"), *[_numero(o.get(k)) for k in _OBRA], _capex(o))
+        (ficha_id, o.get("nome"), *[_valor_de_obra(o, k) for k in _OBRA], _capex(o))
         for o in obras
     ]
     await con.executemany(
@@ -547,17 +590,29 @@ async def _gravar_coleta(
         ficha_id,
     )
     antes = {_COLETA[c]: (linha[c] if linha else None) for c in colunas}
-    depois = {_COLETA[c]: v for c, v in zip(colunas, valores, strict=True)}
 
     marc = ", ".join(f"${i + 2}" for i in range(len(colunas)))
     sets = ", ".join(f"{c} = ${i + 2}" for i, c in enumerate(colunas))
-    await con.execute(
+    # `RETURNING`, e o `depois` sai DAQUI — não do corpo que chegou. A diferença
+    # aparece sempre que o banco coage o valor: um decimal numa coluna inteira
+    # fazia a trilha registrar `3,7` enquanto a coluna guardava `3`, ou seja,
+    # auditoria afirmando um número que nunca existiu. E, como o gravado nunca
+    # alcançava o enviado, TODA gravação parecia mudança e a trilha crescia a cada
+    # salvamento.
+    #
+    # Com os dois lados vindo do banco, `_igual` compara iguais com iguais. Vale
+    # para qualquer coerção, inclusive as que ninguém mapeou — normalizar em
+    # Python exigiria duplicar as regras do Postgres aqui, e esquecer uma faria a
+    # trilha voltar a mentir.
+    gravada = await con.fetchrow(
         f"""INSERT INTO {_i()}.{tabela} ({chave}, {", ".join(colunas)})
             VALUES ($1, {marc})
-            ON CONFLICT ({chave}) DO UPDATE SET {sets}""",
+            ON CONFLICT ({chave}) DO UPDATE SET {sets}
+            RETURNING {", ".join(colunas)}""",
         ficha_id,
         *valores,
     )
+    depois = {_COLETA[c]: gravada[c] for c in colunas}
     return diferencas(antes, depois, origem=_origem_do_campo)
 
 
