@@ -410,25 +410,36 @@ def executar(run_id: str, tempo: int) -> None:
             res = CP.resolver_por_sistema(cen, max_time_s=segundos, workers=nucleos)
         except KeyError as e:
             # `KeyError: 'Araruama Leste1'` — o nome de uma cidade, cru, e nada
-            # mais. Chegava assim ate a tela do usuario, que nao tem como saber
-            # que o defeito e do motor e nem que a rodada e reexecutavel.
+            # mais. Chegava assim ate a tela, que nao tem como saber que o defeito
+            # e do motor nem que a rodada e reexecutavel.
             #
-            # O erro e do PACOTE, em `otimizador_capex_cpsat63.resolver_por_sistema`:
-            # o reparo do teto anual percorre TODAS as cidades (`for g in grupos`)
-            # indexando `sel[g]`, mas `sel` so tem as cidades que o master
-            # selecionou. Quando o `Solve()` volta sem solucao completa — e so
-            # `INFEASIBLE` e filtrado, `UNKNOWN` passa —, a selecao fica parcial e
-            # a primeira cidade ausente estoura. O nome que aparece e so a ordem
-            # de iteracao; nao ha nada de errado com a cidade.
+            # SO TRADUZ quando a chave E UMA CIDADE do cenario. Sem esse teste,
+            # qualquer `KeyError` interno do motor — outra causa, outro lugar —
+            # viraria "cidade sem coluna", e o proximo defeito chegaria disfarcado
+            # do anterior. Fora dessa forma, o erro segue cru: melhor um traceback
+            # honesto que uma explicacao errada.
+            chave = e.args[0] if len(e.args) == 1 else None
+            if chave not in {n.cidade for n in cen.nos.values()}:
+                raise
+            # O que se sabe do defeito, e ele e do PACOTE, em
+            # `otimizador_capex_cpsat63.resolver_por_sistema`: o reparo do teto
+            # anual percorre TODAS as cidades (`for g in grupos`) indexando
+            # `sel[g]`, enquanto o laco logo acima percorre `sel.items()`. Com a
+            # selecao incompleta, a primeira cidade ausente estoura — o nome e so
+            # a ordem de iteracao, nao ha nada de errado com a cidade.
+            #
+            # POR QUE a selecao fica incompleta e HIPOTESE, nao fato: `_extrai` e
+            # chamado a partir de solves que so filtram `INFEASIBLE`, e o modelo
+            # usa `AddExactlyOne`, entao uma solucao valida nao produziria selecao
+            # parcial. Ver a ressalva em `dev/patches/motor_status_do_solver.md`.
             #
             # Nao da para consertar daqui: o estouro acontece dentro do motor,
             # antes de ele devolver qualquer coisa. O que da e nao repassar um
-            # `KeyError` nu. A correcao pertence ao pacote — ver
-            # `dev/patches/motor_status_do_solver.md`.
+            # `KeyError` nu.
             raise RuntimeError(
-                f"O solver falhou ao reparar o teto anual: a cidade {e} ficou sem "
-                "coluna selecionada. É um defeito conhecido do motor "
-                "(otimizador_capex_cpsat63), provável quando o tempo de solver não "
+                f"O solver falhou ao reparar o teto anual: a cidade '{chave}' ficou "
+                "sem coluna selecionada. É um defeito conhecido do motor "
+                "(otimizador_capex_cpsat63), observado quando o tempo de solver não "
                 "basta para a janela pedida. Tente de novo com MAX_TIME_S maior ou "
                 "janela de CAPEX menor. A rodada pode ser reexecutada."
             ) from e

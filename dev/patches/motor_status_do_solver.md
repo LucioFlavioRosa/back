@@ -17,8 +17,16 @@ KeyError: 'Araruama Leste1'
 ```
 
 Observado duas vezes numa unidade de 67 cidades / 474 sistemas / 8079 obras, com
-janela de CAPEX de 8 anos e `max_time_s=45`. Uma terceira rodada, igual em tudo
-menos a janela (6 anos), concluiu normalmente.
+janela de CAPEX de 8 anos. Uma terceira rodada, igual em tudo menos a janela
+(6 anos), concluiu normalmente.
+
+**Sobre o tempo de solver:** as rodadas pediram `MAX_TIME_S: 400`, mas o solver
+recebeu **45s**. O worker de desenvolvimento limita pelo `--tempo` da linha de
+comando — `segundos = min(int(p.get("MAX_TIME_S") or tempo), tempo)`,
+`dev/worker.py:406` —, e o log confirma: `solver: max_time_s=45`. Desses 45s, o
+caminho lexicográfico dá 40% à primeira fase e 60% à segunda. Em produção, com o
+tempo pedido de verdade, a probabilidade de estourar sem solução é menor — mas o
+defeito de código continua lá.
 
 **O nome da cidade é irrelevante.** Não é encoding nem formatação: é a primeira
 cidade ausente na ordem de iteração, e por isso muda entre execuções
@@ -62,31 +70,43 @@ toda cidade tem ao menos a coluna "nada". Ou seja: com uma solução válida,
 O que não está garantido é que haja solução válida quando `_extrai` é chamado.
 Nas três chamadas, o status do `Solve()` é tratado de forma incompleta:
 
-| linha | trecho                                                       | tratamento          |
-| ----- | ------------------------------------------------------------ | ------------------- |
-| 523   | `st=sv.Solve(md); return _extrai(sv,y),st,"-",5,O0`          | **nenhum**          |
-| 537   | `if st==cp_model.INFEASIBLE: return None,...` → `_extrai(...)` | só `INFEASIBLE`     |
-| 543   | idem                                                         | só `INFEASIBLE`     |
+| linha   | trecho                                                         | tratamento      |
+| ------- | -------------------------------------------------------------- | --------------- |
+| 523     | `st=sv.Solve(md); return _extrai(sv,y),st,"-",5,O0`            | **nenhum**      |
+| 527-529 | `st1=s1.Solve(md1)`; `if st1==INFEASIBLE: return`              | só `INFEASIBLE` |
+| 535-537 | `st=sv.Solve(md2)`; `if st==INFEASIBLE: return` → `_extrai(...)` | só `INFEASIBLE` |
+| 541-543 | idem, caminho ponderado                                        | só `INFEASIBLE` |
 
-`UNKNOWN` — que é o que o CP-SAT devolve ao estourar o tempo sem achar solução
-viável — passa por esses filtros e chega em `_extrai`.
+`UNKNOWN` — que o CP-SAT **pode** devolver ao atingir um limite de busca antes de
+determinar `FEASIBLE`/`OPTIMAL`/`INFEASIBLE` — passa por esses filtros. A linha
+527 importa mesmo sem chamar `_extrai`: dela sai o `Mstar` que restringe a segunda
+fase, e um `ObjectiveValue()` lido fora de status válido contamina o modelo
+seguinte.
 
-Isso também explica a correlação com a janela: 8 anos gera mais colunas e mais
-restrições anuais que 6, com o mesmo orçamento de tempo (`max_time_s=45`, sendo
-40% para a primeira fase do lexicográfico e 60% para a segunda). O problema maior
-é o que não fecha no tempo.
+Isso é consistente com a correlação observada com a janela: 8 anos gera mais
+colunas e mais restrições anuais que 6, com o mesmo orçamento de tempo.
 
-> **Ressalva honesta.** Os defeitos acima são certos, por leitura do código. O
-> caminho exato entre "o `Solve()` voltou sem solução" e "`sel_final` ficou
-> PARCIAL em vez de vazio" **não foi reproduzido** — com `sel_final` vazio, o
-> `if not ok and sel_final:` da linha 558 nem entraria no reparo. Pode haver um
-> terceiro fator. A correção sugerida é defensiva nas duas camadas justamente por
-> isso: uma delas fecha o buraco mesmo que o mecanismo seja outro.
+> **Ressalva.** Separando o que se sabe do que se supõe:
+>
+> - **Confirmado por leitura:** `_extrai` é chamado sem garantir status válido; o
+>   laço do reparo quebra com `sel_final` parcial; `AddExactlyOne` torna a seleção
+>   parcial impossível a partir de uma solução consistente.
+> - **Refutado:** mistura entre solves. `sel_final.clear()` (linha 476) zera a
+>   cada extração, `_fase0_obrig` não chama `_extrai`, e cada caminho de `_run()`
+>   o chama no máximo uma vez. Não há resíduo.
+> - **NÃO confirmado:** que `UNKNOWN` produza especificamente uma seleção
+>   **parcial** em vez de vazia ou de exceção. Não foi reproduzido, e a
+>   documentação do OR-Tools não garante comportamento de `Value()` fora de
+>   `OPTIMAL`/`FEASIBLE` — só diz que não se deve lê-lo. Com `sel_final` vazio, o
+>   `if not ok and sel_final:` da linha 558 nem entraria no reparo.
+>
+> A correção é defensiva em duas camadas por causa do terceiro item: uma delas
+> fecha o buraco mesmo que o mecanismo seja outro.
 
 ## Correção sugerida
 
-**1. Não extrair de um solve sem solução.** Nas três chamadas, trocar o filtro de
-`INFEASIBLE` por uma verificação positiva:
+**1. Não extrair de um solve sem solução.** Nas **quatro** chamadas, trocar o
+filtro de `INFEASIBLE` por uma verificação positiva:
 
 ```python
 # linha 523
@@ -94,6 +114,13 @@ st = sv.Solve(md)
 if st not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
     return None, st, "-", 5, O0
 return _extrai(sv, y), st, "-", 5, O0
+
+# linhas 527-529 — a PRIMEIRA fase do lexicografico. Não chama `_extrai`, mas dela
+# sai o `Mstar` que restringe a segunda fase: um `ObjectiveValue()` lido fora de
+# status válido contamina o modelo seguinte em silêncio.
+st1 = s1.Solve(md1)
+if st1 not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+    return None, st1, None, None, O0
 
 # linhas 535-537
 st = sv.Solve(md2)
@@ -141,6 +168,12 @@ troca que este pacote evita em vários outros pontos.
 
 ## Do nosso lado
 
-`dev/worker.py` captura o `KeyError` e o traduz numa mensagem que diz o que
-houve e que a rodada é reexecutável. É paliativo: o estouro acontece dentro do
-motor, antes de ele devolver qualquer coisa, então não há o que consertar daqui.
+`dev/worker.py` captura o `KeyError` e o traduz numa mensagem que diz o que houve
+e que a rodada é reexecutável. A tradução só vale quando a chave é **uma cidade do
+cenário** — fora disso o erro segue cru, para o próximo defeito não chegar
+disfarçado deste. É paliativo: o estouro acontece dentro do motor, antes de ele
+devolver qualquer coisa, então não há o que consertar daqui.
+
+A mensagem diz "observado quando o tempo de solver não basta", e não "causado
+por": o mecanismo completo não foi reproduzido, e cravar a causa num texto que o
+usuário lê seria afirmar mais do que se sabe.
