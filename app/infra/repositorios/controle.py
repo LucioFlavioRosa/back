@@ -326,12 +326,87 @@ async def status(run_id: str) -> dict[str, Any] | None:
         # O front ja tinha barra e nome de etapa por faixa; sem a coluna o
         # endpoint devolvia 0 sempre e a barra saltava de 0 a 100, prometendo um
         # acompanhamento que nao existia.
-        f"""SELECT s.run_id, s.status, s.erro, s.progresso, s.atualizado_em, r.unidade
+        f"""SELECT s.run_id, s.status, s.erro, s.progresso, s.atualizado_em,
+                   s.worker_id, s.lease_ate, r.unidade, r.solicitado_em
               FROM {_c()}.run_status s
               JOIN {_c()}.run_request r USING (run_id)
              WHERE s.run_id = $1""",
         run_id,
     )
+
+
+#: Quanto tempo sem bater até um executor deixar de contar como vivo. Duas
+#: batidas e meia (a batida é de 10s): tolera uma perdida sem apagar da tela quem
+#: está trabalhando.
+_LIMITE_VISTO = 25
+
+
+async def executores() -> dict[str, Any]:
+    """Quem está vivo para executar, e com quanta folga.
+
+    Existe para a tela poder dizer POR QUE uma rodada espera. "Na fila" cobria
+    dois mundos — "todos ocupados, você é o terceiro" e "não há executor nenhum,
+    isto nunca vai rodar" — e o usuário não tinha como saber em qual estava.
+
+    Em produção isso é pior, não melhor: um job do Databricks que não suba deixa a
+    fila crescendo em silêncio, e ninguém descobre até alguém reclamar.
+    """
+    linha = await db.buscar_um(
+        f"""SELECT count(*)                          AS vivos,
+                   COALESCE(sum(capacidade), 0)      AS capacidade,
+                   COALESCE(sum(em_execucao), 0)     AS ocupadas
+              FROM {_c()}.executor
+             WHERE visto_em > now() - make_interval(secs => $1)""",
+        _LIMITE_VISTO,
+    )
+    return {
+        "vivos": int((linha or {}).get("vivos") or 0),
+        "capacidade": int((linha or {}).get("capacidade") or 0),
+        "ocupadas": int((linha or {}).get("ocupadas") or 0),
+    }
+
+
+async def posicao_na_fila(run_id: str) -> int:
+    """Quantas rodadas PENDENTES estão à frente desta.
+
+    Por ordem de pedido, que é a ordem em que a fila entrega. Zero significa
+    "é a próxima" — e não "não está na fila".
+    """
+    linha = await db.buscar_um(
+        f"""SELECT count(*) AS antes
+              FROM {_c()}.run_status s
+              JOIN {_c()}.run_request r USING (run_id)
+             WHERE s.status = 'PENDENTE'
+               AND r.solicitado_em < (SELECT solicitado_em FROM {_c()}.run_request
+                                       WHERE run_id = $1)""",
+        run_id,
+    )
+    return int((linha or {}).get("antes") or 0)
+
+
+async def recolher_abandonadas() -> list[str]:
+    """Marca ERRO nas rodadas cujo executor parou de renovar o lease.
+
+    O BACKEND declarando ERRO é exceção ao contrato (o executor é quem transiciona
+    a rodada), e por isso o critério é estreito: só `RODANDO` com `lease_ate`
+    VENCIDO. Não é "sem progresso há N minutos" — a materialização da maior
+    unidade passa ~9,5 min sem escrever nada, e matá-la por silêncio seria
+    destruir trabalho vivo.
+
+    O que se recolhe aqui é lease abandonado: alguém disse "estou nisso, me cobre
+    em 30 segundos" e parou de dizer. Não é dedução, é a promessa vencendo.
+    """
+    linhas = await db.buscar(
+        f"""UPDATE {_c()}.run_status
+               SET status = 'ERRO',
+                   erro = 'O executor que reivindicou esta rodada parou de responder '
+                          '(lease vencido). A rodada nao chegou ao fim e pode ser '
+                          'reexecutada.',
+                   worker_id = NULL, lease_ate = NULL, atualizado_em = now()
+             WHERE status = 'RODANDO' AND lease_ate IS NOT NULL AND lease_ate < now()
+         RETURNING run_id"""
+    )
+    return [l["run_id"] for l in linhas]
 
 
 async def marcar(run_id: str, novo: Status, erro: str | None = None) -> None:
