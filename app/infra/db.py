@@ -110,6 +110,10 @@ _EXIGIDO = [
     # executor trabalhando de executor morto, e a rodada fica RODANDO para sempre.
     ("controle", "run_status", "lease_ate", "008_lease_e_executores.sql"),
     ("controle", "executor", None, "008_lease_e_executores.sql"),
+    # `GET /runs` consulta esta tabela em TODA listagem, para marcar a estrela de
+    # quem pediu. Sem ela o historico inteiro responde 500 — nao e degradacao, e a
+    # tela principal fora do ar. Por isso o /readyz precisa recusar o pod.
+    ("controle", "run_favorita", None, "009_favoritas.sql"),
     # As quatro fichas de cadastro, uma linha cada: a migracao acrescenta as duas
     # colunas nas quatro tabelas, e aplicar em tres e o engano provavel. Basta
     # conferir `atualizado_por` — as duas entram no mesmo ALTER, entao uma sem a
