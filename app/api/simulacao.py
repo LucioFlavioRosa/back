@@ -263,23 +263,43 @@ async def reexecutar(run_id: str, usuario: Usuario) -> dict[str, str]:
 
 @router.post("/runs/{run_id}/cancelar", status_code=status.HTTP_204_NO_CONTENT)
 async def cancelar(run_id: str) -> None:
-    """PENDENTE — o banco ainda nao aceita este estado.
+    """O usuario desiste de uma rodada que ainda nao terminou. `CONTRATO.md` §4.4.
 
-    `controle.run_status` tem `CHECK (status IN ('PENDENTE','RODANDO','SUCESSO',
-    'FALHOU_QUALIDADE','ERRO'))`. `CANCELADA`, que o `CONTRATO.md` §4.3 lista e a
-    tela usa, viola o CHECK: o UPDATE falharia.
+    Respondeu 501 enquanto `controle.run_status` tinha um CHECK sem `CANCELADA` —
+    o UPDATE falharia, e responder 204 sem cancelar seria pior que responder erro:
+    a tela fecharia dizendo "cancelado" e o cluster seguiria processando e
+    cobrando. `migracoes/008_lease_e_executores.sql` pos o valor no CHECK.
 
-    Responder 204 sem cancelar seria pior que responder erro — a tela fecharia o
-    modal dizendo "cancelado" e o cluster continuaria processando, cobrando, e a
-    rodada apareceria concluida minutos depois. Enquanto a migracao nao roda, este
-    endpoint diz a verdade.
+    O QUE ESTE 204 GARANTE, e o que nao:
 
-    Para ligar: (1) migracao acrescentando 'CANCELADA' ao CHECK; (2) decidir se
-    cancelar tambem mata o job no Databricks (marcar o status so faz o front parar
-    de perguntar — o cluster continua) — provavelmente `jobs/runs/cancel` via API.
+      PENDENTE  a rodada nao vai executar. A mensagem continua na fila, mas
+                `processar` no executor ja recusa quem chega com desfecho gravado
+                — e `CANCELADA` e um desfecho. Cancelamento completo.
+      RODANDO   a rodada nao vai PUBLICAR. O executor confere o status nos pontos
+                em que a rodada respira (entre solver e materializacao, e a cada
+                passo da barra) e larga o trabalho. O solver em voo nao e
+                interrompivel no meio — e chamada nativa —, entao a espera e
+                limitada pelo `MAX_TIME_S` da propria rodada.
+
+    Prometer mais que isso exigiria matar o processo do executor, e a diferenca
+    que importa para quem clicou — nada e publicado, a vaga e devolvida — ja esta
+    garantida aqui.
     """
-    raise HTTPException(
-        status.HTTP_501_NOT_IMPLEMENTED,
-        "Cancelamento ainda não disponível: aguarda migração do banco e o "
-        "cancelamento do job no Databricks.",
-    )
+    rid.exigir_valido(run_id)
+    linha = await controle.status(run_id)
+    if not linha:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Rodada não encontrada.")
+
+    motivo = st.motivo_para_recusar_cancelamento(linha["status"])
+    if motivo:
+        raise HTTPException(status.HTTP_409_CONFLICT, motivo)
+
+    # O `if` acima e para a MENSAGEM; a garantia e o UPDATE condicional. Entre ler
+    # o status e escrever, o executor pode ter publicado — e sobrescrever SUCESSO
+    # por CANCELADA deixaria o resultado gravado e invisivel.
+    if not await controle.cancelar(run_id):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "A rodada mudou de estado enquanto o cancelamento era processado — "
+            "ela terminou por conta própria. Confira o status.",
+        )

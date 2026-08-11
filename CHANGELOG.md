@@ -8,6 +8,25 @@ considerou e descartou — está na mensagem do commit. Este arquivo é o índic
 
 ---
 
+## Dá para desistir de uma rodada
+
+`POST /runs/{id}/cancelar` respondia `501`: `CANCELADA` violava o CHECK de
+`controle.run_status`, e responder `204` sem cancelar seria pior que responder
+erro — a tela fecharia dizendo "cancelado" e o cluster seguiria processando.
+Enquanto isso durou, o front não oferecia o botão.
+
+`migracoes/008_lease_e_executores.sql` pôs o valor no CHECK, e endpoint e botão
+voltaram juntos.
+
+- `204` em `PENDENTE`/`RODANDO`, `409` em qualquer estado final. A condição está
+  no `WHERE` do UPDATE, e não só no `if` que o precede: entre ler o status e
+  escrever, o executor pode ter publicado.
+- O executor confere o status nos pontos em que a rodada respira — antes do
+  solver, depois dele e imediatamente antes de publicar — e larga o trabalho. Uma
+  rodada `PENDENTE` cancelada nunca chega a executar; uma `RODANDO` nunca publica.
+  O solver em voo é chamada nativa e não se interrompe no meio: a espera é
+  limitada pelo `MAX_TIME_S` da própria rodada.
+
 ## Histórico da simulação mostra os metadados antes do resultado
 
 Clicar numa rodada abre um modal com quem fez, quando, em que unidade e **as

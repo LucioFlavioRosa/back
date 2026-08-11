@@ -267,6 +267,37 @@ def andar(run_id: str, progresso: int) -> None:
         )
 
 
+class Cancelada(Exception):
+    """O status desta rodada deixou de ser `RODANDO` enquanto ela executava.
+
+    Carrega o estado ENCONTRADO, e nao so o `run_id`: quase sempre e `CANCELADA`
+    (alguem clicou), mas o vigia de lease vencido tambem escreve `ERRO` por cima
+    de uma rodada que este executor ainda julga sua. Logar "cancelada a pedido"
+    nos dois casos apagaria a distincao justamente no caso raro que interessa.
+    """
+
+    def __init__(self, run_id: str, encontrado: str | None) -> None:
+        super().__init__(f"{run_id}: status virou {encontrado}")
+        self.encontrado = encontrado
+
+
+def conferir_cancelamento(run_id: str) -> None:
+    """Levanta `Cancelada` se o status ja nao for `RODANDO`.
+
+    E a metade do cancelamento que mora AQUI. `POST /runs/{id}/cancelar` grava
+    `CANCELADA`; sozinho, isso so faria o front parar de perguntar enquanto o
+    processo continuaria consumindo CPU e — o que importa — publicando no fim.
+
+    Chamado nos pontos em que a rodada respira, e o ultimo deles e imediatamente
+    antes de `PUB.publicar`: e o unico passo irreversivel. Cancelar e nao publicar
+    e o que quem clicou pediu; matar o processo no meio de uma chamada nativa nao
+    e possivel, e nao muda esse resultado.
+    """
+    encontrado = _desfecho(run_id)
+    if encontrado != "RODANDO":
+        raise Cancelada(run_id, encontrado)
+
+
 def pedido(run_id: str) -> dict | None:
     with R.eng.begin() as con:
         linha = con.execute(
@@ -344,6 +375,9 @@ def executar(run_id: str, tempo: int) -> None:
     )
     log(run_id, f"cenario: {len(cen.obras)} obras, {len(cen.sistemas)} sistemas")
     andar(run_id, MODELO)
+    # Antes do solver, que e a etapa cara: cancelar durante a leitura do banco tem
+    # de evitar os minutos seguintes, e nao so o passo final.
+    conferir_cancelamento(run_id)
 
     # O solver e a etapa longa. Uma thread empurra a barra dentro da faixa dele
     # enquanto ele trabalha: sem isso a tela fica parada nos 30% pelo tempo todo,
@@ -377,6 +411,10 @@ def executar(run_id: str, tempo: int) -> None:
         parar.set()
         batedor.join(timeout=2)
     log(run_id, f"solver: {res.get('milp_status')}  VPL={res.get('vpl'):,.0f}")
+    # O solver e uma chamada nativa: um cancelamento durante ele so pode ser
+    # atendido quando ele volta. E por isso que a espera maxima do cancelamento e
+    # o `MAX_TIME_S` da rodada, e nao um numero que este worker escolha.
+    conferir_cancelamento(run_id)
 
     # `run_id` E o da fila: publicar com outro id faria a tela perder a rodada
     # que ela esta acompanhando.
@@ -399,6 +437,10 @@ def executar(run_id: str, tempo: int) -> None:
     finally:
         parar_mat.set()
         bat_mat.join(timeout=2)
+    # O ULTIMO ponto de conferencia, e o que justifica os outros: `publicar` e o
+    # unico passo irreversivel desta funcao. Cancelar depois dele nao seria
+    # cancelar — seria publicar e depois dizer que nao publicou.
+    conferir_cancelamento(run_id)
     # O NOME E O AUTOR VEM DE `run_request`, e nao de `params`.
     #
     # Estava `p.get("ROTULO") or f"{unidade} — pela tela"`, e o efeito era pior
@@ -512,6 +554,12 @@ async def processar(msg, tempo: int) -> None:
         marcar(run_id, "ERRO", "O processo desta rodada morreu (falha nativa no "
                                "solver ou na materialização).")
         log(run_id, f"ERRO: processo da rodada morreu ({type(e).__name__})")
+    except Cancelada as c:
+        # NAO marca nada: quem escreveu o status novo — a API no cancelamento, o
+        # vigia no lease vencido — ja disse o que aconteceu, e sobrescrever aqui
+        # apagaria o unico registro disso. O `finally` solta o lease e devolve a
+        # vaga, que e o resto do que se deve a quem clicou.
+        log(run_id, f"parou sem publicar: status virou {c.encontrado}")
     except Exception as e:  # noqa: BLE001 — a causa vai para o banco e para a tela
         marcar(run_id, "ERRO", f"{type(e).__name__}: {e}"[:500])
         log(run_id, f"ERRO: {type(e).__name__}: {e}")
