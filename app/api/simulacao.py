@@ -164,6 +164,31 @@ async def criar(
     return {"runId": run, "status": st.Status.PENDENTE, "jaExistia": False}
 
 
+def _plural(n: int, um: str, muitos: str) -> str:
+    """`"1 vaga livre"` · `"4 vagas livres"`.
+
+    A frase da fila e lida na tela, e "Todas as 1 vagas estao ocupadas" — que era o
+    que saia com um executor so — e o tipo de descuido que faz duvidar do resto dos
+    numeros. O front ja tem esta mesma funcao para o porte da unidade, e pela mesma
+    razao; aqui ela precisa existir de novo porque quem monta a frase e o servidor,
+    que e o unico que ve a fila inteira.
+
+    A forma `vaga(s)` que estava aqui evitava o erro sem resolver a leitura.
+    """
+    return f"{n} {um if n == 1 else muitos}"
+
+
+def _todas_ocupadas(capacidade: int) -> str:
+    """A primeira metade da frase de fila cheia, com a concordancia certa.
+
+    Com uma vaga so, "Todas as 1 vagas estao ocupadas" erra duas vezes — o
+    "todas" e o plural. Com uma vaga nao ha "todas": ha A vaga.
+    """
+    if capacidade == 1:
+        return "A única vaga está ocupada."
+    return f"Todas as {capacidade} vagas estão ocupadas."
+
+
 @router.get("/runs/{run_id}/status")
 async def status_da_rodada(run_id: str) -> dict[str, Any]:
     rid.exigir_valido(run_id)
@@ -214,20 +239,17 @@ async def status_da_rodada(run_id: str) -> dict[str, Any]:
     else:
         fila["posicao"] = await controle.posicao_na_fila(run_id)
         livres = max(exec_["capacidade"] - exec_["ocupadas"], 0)
+        ocupadas = _todas_ocupadas(exec_["capacidade"])
         if livres > 0:
             fila["motivo"] = (
-                f"Há {livres} vaga(s) livre(s) — deve começar em instantes."
+                f"Há {_plural(livres, 'vaga livre', 'vagas livres')} — "
+                "deve começar em instantes."
             )
         elif fila["posicao"] == 0:
-            fila["motivo"] = (
-                f"Todas as {exec_['capacidade']} vagas estão ocupadas. "
-                "Esta é a próxima a entrar."
-            )
+            fila["motivo"] = f"{ocupadas} Esta é a próxima a entrar."
         else:
-            fila["motivo"] = (
-                f"Todas as {exec_['capacidade']} vagas estão ocupadas. "
-                f"Há {fila['posicao']} simulação(ões) na frente desta."
-            )
+            frente = _plural(fila["posicao"], "simulação", "simulações")
+            fila["motivo"] = f"{ocupadas} Há {frente} na frente desta."
 
     resposta["fila"] = fila
     return resposta
