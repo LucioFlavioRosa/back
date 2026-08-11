@@ -28,7 +28,14 @@ services:
     ports:
       - "55432:5432" # 55432 para não brigar com um Postgres local na 5432
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U otim"]
+      # `-d otimizador` NÃO é redundante: sem ele o `pg_isready` usa o nome do
+      # USUÁRIO como nome do banco, tenta abrir "otim", e o Postgres registra
+      # `FATAL: database "otim" does not exist` — a cada 5 segundos, para sempre.
+      #
+      # O healthcheck continuava passando (o servidor RESPONDEU, que é o que ele
+      # mede), então o defeito não era o teste: era o log, que ficava ilegível e
+      # escondia erro de verdade no meio de milhares de FATAL inofensivos.
+      test: ["CMD-SHELL", "pg_isready -U otim -d otimizador"]
       interval: 5s
       retries: 10
 
