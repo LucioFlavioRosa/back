@@ -38,11 +38,30 @@ class TestMetasDeCobertura:
         assert "METAS_COBERTURA" not in montar(metas_cobertura=valor)
 
 
+class TestEte:
+    """O tratamento da ETE sai da FICHA dela, e nao da rodada.
+
+    ETE com terreno e numero de modulos informados e NOVA: entra como pacote unico,
+    sem faseamento. A que ja existe e expandida em modulos conforme a vazao passa da
+    capacidade ociosa. O motor decide isso por ETE.
+
+    CUIDADO: aqui a receita das metas nao se aplica. La, apagar o parametro dava o
+    comportamento certo porque o default do motor ja era ele. Aqui o default de
+    `ete_faseada` e False — a chave sumir do `params` esta certo, mas quem executa
+    tem de AFIRMAR True. Ver `dev/worker.py`.
+    """
+
+    @pytest.mark.parametrize("campo", ["ete_faseada", "ete_fixo"])
+    @pytest.mark.parametrize("valor", [True, False])
+    def test_nao_viram_parametro(self, campo, valor):
+        assert "ETE_FASEADA" not in montar(**{campo: valor})
+        assert "ETE_FIXO" not in montar(**{campo: valor})
+
+
 class TestRepasseDireto:
     @pytest.mark.parametrize(
         "campo,chave,valor",
         [
-            ("ete_fixo", "ETE_FIXO", True),
             ("peso_cidade", "PESO_CIDADE", {"Cabo Frio": 5}),
             ("data_inicio", "DATA_INICIO", "2027-01"),
             ("curva_adocao", "CURVA_ADOCAO", "linear"),

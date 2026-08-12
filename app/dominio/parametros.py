@@ -163,6 +163,15 @@ def montar_params(corpo: dict[str, Any], unidade_id: str, usuario: str) -> dict[
     # entra no params, para o job usar o default do `ler_banco` — se o backend
     # inventasse default proprio, o mesmo pedido daria planos diferentes aqui e no
     # notebook, que foi exatamente o bug mais caro da revisao do pacote.
+    # `ETE_FASEADA`/`ETE_FIXO` NAO estao aqui, e a ausencia e regra de negocio: o
+    # tratamento da ETE sai da FICHA dela, e nao da rodada. ETE com terreno e
+    # numero de modulos informados e NOVA e entra como pacote unico; a que ja
+    # existe e expandida em modulos conforme a vazao passa da capacidade ociosa. O
+    # motor decide isso por ETE (`nova=Sim` ou `capex_terreno > 0`).
+    #
+    # CUIDADO ao mexer: aqui a receita das metas NAO se aplica. O default de
+    # `ete_faseada` no motor e False, entao a chave sumir NAO da o comportamento
+    # certo — quem afirma `True` e o executor, e essa linha nao pode sumir de la.
     DIRETO = {
         "foco_cobertura": "FOCO_COBERTURA",
         "penalidade_cobertura": "PENALIDADE_COBERTURA",
@@ -171,8 +180,6 @@ def montar_params(corpo: dict[str, Any], unidade_id: str, usuario: str) -> dict[
         "curva_adocao": "CURVA_ADOCAO",
         "usar_cts": "USAR_CTS",
         "incluir_industrial": "INCLUIR_INDUSTRIAL",
-        "ete_faseada": "ETE_FASEADA",
-        "ete_fixo": "ETE_FIXO",
         "anos_extra_conclusao": "ANOS_EXTRA_CONCLUSAO",
         "data_inicio": "DATA_INICIO",
         "max_time_s": "MAX_TIME_S",

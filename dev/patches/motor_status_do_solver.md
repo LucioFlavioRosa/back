@@ -177,3 +177,30 @@ devolver qualquer coisa, então não há o que consertar daqui.
 A mensagem diz "observado quando o tempo de solver não basta", e não "causado
 por": o mecanismo completo não foi reproduzido, e cravar a causa num texto que o
 usuário lê seria afirmar mais do que se sabe.
+
+---
+
+# Motor: capacidade zero passa em silêncio (achado ao remover `ETE_FASEADA`)
+
+Segundo item para o mesmo mantenedor, independente do anterior.
+
+Ao fixar `ete_faseada=True` no chamador, a análise mostrou uma lacuna de
+validação que hoje não morde — mas morderia com dado novo.
+
+**ETE nova com `modulos` vazio/0.** Em `otimizador_capex_v62.py:1230`,
+`cap_total = modulos * cap_modulo` vira **0**, e o gating da linha 468 cai no
+fallback "um módulo basta": um pacote construído libera **qualquer** demanda. No
+modo não-faseado a mesma ETE teria `cap_max = modulos * cap_modulo` (linha 169) e
+`viavel` rejeitaria demanda acima da capacidade (680-681). Ou seja, o modo faseado
+é mais permissivo justamente onde o dado está incompleto.
+
+**ETE existente sem `capacidade_por_modulo`.** Linha 1203 converte para 0; 1240 e
+468 caem no mesmo fallback. Esta já existe também no não-faseado (176, 1430).
+
+**Sugestão:** validar na carga, ou levantar em `ler_banco`, que ETE nova tem
+`modulos > 0` e `capacidade_por_modulo > 0`, e que ETE existente tem
+`capacidade_por_modulo > 0`. Falhar alto é melhor que um plano que libera vazão
+sem capacidade — o erro seria invisível no resultado.
+
+**Na base de hoje não há nenhum caso**: 460 ETEs novas e 537 existentes, zero com
+`modulos` ou `capacidade_por_modulo` ausente. A correção é preventiva.

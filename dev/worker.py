@@ -372,7 +372,16 @@ def executar(run_id: str, tempo: int) -> None:
         foco_cobertura=float(p.get("FOCO_COBERTURA", 1.0)),
         penalidade_cobertura=p.get("PENALIDADE_COBERTURA", "meta+cobertura"),
         anos_extra_conclusao=int(p.get("ANOS_EXTRA_CONCLUSAO", 3)),
-        ete_faseada=bool(p.get("ETE_FASEADA", True)),
+        # SEMPRE True, e a linha NAO pode sumir. O default de `ete_faseada` no
+        # motor e False, entao omitir o argumento desligaria o tratamento por
+        # modulos em silencio — o oposto do que a regra pede. Aqui a receita das
+        # metas (apagar o parametro e deixar o default agir) faria o contrario.
+        #
+        # `True` nao impoe faseamento a ETE NOVA: dentro deste modo o motor separa
+        # os dois casos por ETE. Nova (terreno + modulos informados) vira UMA obra
+        # de pacote unico; existente vira K modulos incrementais conforme a vazao
+        # passa da folga.
+        ete_faseada=True,
         # OS SEIS ABAIXO NAO ERAM REPASSADOS. A tela os oferece, o corpo os envia,
         # o banco os grava — e este worker os descartava, entao o motor rodava com
         # o default. `ete_fixo` e `peso_cidade` eram escolha do usuario que nao
@@ -381,7 +390,6 @@ def executar(run_id: str, tempo: int) -> None:
         # que `MAX_TIME_S`/`WORKERS` ja tinham dado aqui.
         horizonte_capex=p.get("HORIZONTE_CAPEX"),
         orcamento_total=p.get("ORCAMENTO_TOTAL"),
-        ete_fixo=bool(p.get("ETE_FIXO", False)),
         # `{}` do payload e "nenhuma prioridade", que e o mesmo que ausencia — mas
         # o motor multiplica por `_pc.get(g, 1.0)`, entao dict vazio ja seria
         # inofensivo. `or None` mantem o default explicito.
