@@ -135,6 +135,12 @@ def montar_params(corpo: dict[str, Any], unidade_id: str, usuario: str) -> dict[
 
     if por_ano and corpo.get("redistribuir_orcamento"):
         # Pre-processamento da celula 3 do notebook — ver o docstring do modulo.
+        #
+        # A TELA NAO OFERECE MAIS a redistribuicao (decisao de produto, reversivel),
+        # entao este ramo nao e alcancado pelo produto hoje. Ele FICA, e nao vira
+        # codigo morto por isso: e a capacidade que o backend tem de oferecer se o
+        # controle voltar, esta coberta por teste, e some do produto sem sumir da
+        # documentacao. Corpo que ainda mande os dois campos e tratado como sempre.
         total = sum(por_ano.values())
         teto = corpo.get("teto_execucao_anual") or max(por_ano.values())
         if teto <= 0:
