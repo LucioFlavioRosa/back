@@ -25,6 +25,10 @@ FORMAS_DO_CONTRATO = {
     # §3 — leitura de uma rodada
     "GET /runs",
     "DELETE /runs/{}",
+    # Favoritar e POR USUARIO (`migracoes/009_favoritas.sql`). PUT/DELETE, e nao
+    # POST/POST, porque os dois sao idempotentes: o estado pedido e o estado final.
+    "PUT /runs/{}/favorita",
+    "DELETE /runs/{}/favorita",
     "GET /runs/{}/meta",
     "GET /runs/{}/painel",
     "GET /runs/{}/ebitda",
@@ -101,7 +105,7 @@ def test_nenhum_endpoint_a_mais():
 def test_a_lista_nao_esta_vazia():
     # Guarda contra o teste passar por não encontrar rota nenhuma — se `_expostas`
     # quebrar com uma mudança do FastAPI, os dois testes acima passariam vazios.
-    assert len(_expostas()) == len(FORMAS_DO_CONTRATO) == 28
+    assert len(_expostas()) == len(FORMAS_DO_CONTRATO) == 30
 
 
 @pytest.mark.parametrize("run_id", ["r1' OR 1=1", "../etc", "com espaco", ""])

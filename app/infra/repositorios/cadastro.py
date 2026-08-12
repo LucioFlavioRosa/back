@@ -129,6 +129,60 @@ async def unidades(regional_id: str) -> list[dict[str, Any]]:
     return [await unidade(l["unidade_id"]) for l in linhas]  # type: ignore[misc]
 
 
+def _resumo(c: dict[str, Any]) -> dict[str, int]:
+    """O PORTE DA UNIDADE, a partir dos contadores da consulta da capa.
+
+    Quem le isto esta decidindo se roda esta unidade ou outra, e a tela de nova
+    simulacao usa estes numeros para dizer se a rodada e de minutos ou de meia
+    hora.
+
+    `etes` e `cts` sairam da consulta e eram DESCARTADOS aqui — contados no banco,
+    montados no dicionario, e jogados fora no `return`. Passam a ser entregues:
+    quem paga a consulta ja pagou por eles.
+
+    AS TRES CATEGORIAS DE COMPONENTE, e por que elas existem em vez de um numero:
+
+      obrasAegea      `capex > 0` — investimento da Aegea
+      obrasTerceiros  `capex = 0` e `tempo_execucao > 0` — a obra ACONTECE e ocupa
+                      prazo na sequencia, mas quem paga e outro
+      semObra         `capex = 0` e `tempo_execucao = 0` — o elemento existe na
+                      ficha e nao gera obra nenhuma
+
+    Sao exaustivas e sem sobreposicao: somadas, dao o total de linhas das duas
+    tabelas de componente. E o corte importa porque um numero so escondia os dois
+    extremos — "11.525 obras" contava 4.830 linhas que nao sao obra.
+
+    `obras` = Aegea + terceiros, que e EXATAMENTE o filtro do motor
+    (`otimizador_capex_v62.ler_banco`: `necess = cap > 0 or pe > 0`). Antes vinha
+    de `sub_bacias * 5 + cts * 4`: as constantes batem com a base (5,00 linhas por
+    sub-bacia, 4,00 por CTS), mas contavam FICHAS, nao candidatas — e inflavam o
+    numero em ~43% na maior unidade. Agora sao contadas, e nao presumidas.
+
+    Ainda NAO e o total que o motor usa: faltam uma obra por ETE de sistema e, com
+    `ETE_FASEADA`, os modulos de expansao. Esses dependem de parametro da RODADA,
+    entao nenhum numero por unidade os alcanca — e prometer que alcanca seria o
+    erro que este corte veio consertar.
+    """
+
+    def conta(chave: str) -> int:
+        # `or 0` e nao so o default do `get`: a consulta devolve NULL quando nao ha
+        # linha, e `int(None)` estoura.
+        return int(c.get(chave) or 0)
+
+    aegea, terceiros = conta("obras_aegea"), conta("obras_terceiros")
+    return {
+        "cidades": conta("cidades"),
+        "sistemas": conta("sistemas"),
+        "subBacias": conta("sub_bacias"),
+        "cts": conta("cts"),
+        "etes": conta("etes"),
+        "obras": aegea + terceiros,
+        "obrasAegea": aegea,
+        "obrasTerceiros": terceiros,
+        "semObra": conta("sem_obra"),
+    }
+
+
 async def unidade(unidade_id: str) -> dict[str, Any] | None:
     base = await db.buscar_um(
         f"""SELECT unidade_id, unidade_name, regional_id, regional_name, wacc_medio
@@ -145,7 +199,19 @@ async def unidade(unidade_id: str) -> dict[str, Any] | None:
                  sis AS (SELECT s.sistema_id FROM {_i()}.cidade_sistema s
                           JOIN cid ON cid.cidade_id = s.cidade_id),
                  sub AS (SELECT t.componente_sistema_id FROM {_i()}.sistema_topologia t
-                          JOIN sis ON sis.sistema_id = t.sistema_id)
+                          JOIN sis ON sis.sistema_id = t.sistema_id),
+                 -- Os componentes de CAPEX das duas fichas, no mesmo formato: o
+                 -- que separa uma obra de um elemento sem obra e a mesma regra
+                 -- nas duas, e ela nao deve ser escrita duas vezes.
+                 obr AS (
+                   SELECT k.capex, k.tempo_execucao
+                     FROM {_i()}.componentes_subbacias_capex k
+                    WHERE k.sub_bacia IN (SELECT componente_sistema_id FROM sub)
+                   UNION ALL
+                   SELECT k.capex, k.tempo_execucao
+                     FROM {_i()}.subbacia_cts p
+                     JOIN {_i()}.componentes_cts_capex k ON k.cts = p.cts
+                    WHERE p.sub_bacia IN (SELECT componente_sistema_id FROM sub))
             SELECT (SELECT count(*) FROM cid) AS cidades,
                    (SELECT count(*) FROM sis) AS sistemas,
                    (SELECT count(*) FROM {_i()}.subbacia_operacional b
@@ -153,7 +219,17 @@ async def unidade(unidade_id: str) -> dict[str, Any] | None:
                    (SELECT count(*) FROM {_i()}.ete_capex e
                      WHERE e.ete_id IN (SELECT componente_sistema_id FROM sub)) AS etes,
                    (SELECT count(*) FROM {_i()}.subbacia_cts p
-                     WHERE p.sub_bacia IN (SELECT componente_sistema_id FROM sub)) AS cts""",
+                     WHERE p.sub_bacia IN (SELECT componente_sistema_id FROM sub)) AS cts,
+                   -- Os tres baldes do componente de CAPEX, exaustivos e sem
+                   -- sobreposicao: a soma e o total de linhas das duas tabelas.
+                   (SELECT count(*) FROM obr
+                     WHERE COALESCE(capex, 0) > 0) AS obras_aegea,
+                   (SELECT count(*) FROM obr
+                     WHERE COALESCE(capex, 0) = 0
+                       AND COALESCE(tempo_execucao, 0) > 0) AS obras_terceiros,
+                   (SELECT count(*) FROM obr
+                     WHERE COALESCE(capex, 0) = 0
+                       AND COALESCE(tempo_execucao, 0) = 0) AS sem_obra""",
         unidade_id,
     ) or {}
 
@@ -162,13 +238,7 @@ async def unidade(unidade_id: str) -> dict[str, Any] | None:
         "regionalId": base["regional_id"],
         "nome": base["unidade_name"],
         "waccMedio": base["wacc_medio"],
-        "resumo": {
-            "cidades": c.get("cidades", 0),
-            "sistemas": c.get("sistemas", 0),
-            "subBacias": c.get("sub_bacias", 0),
-            # 5 obras por sub-bacia, 4 por CTS — a mesma conta que a tela faz.
-            "obras": (c.get("sub_bacias", 0) or 0) * 5,
-        },
+        "resumo": _resumo(c),
         "completude": (await pendencias.contar(unidade_id))["completude"],
         "databricksConectado": True,
     }

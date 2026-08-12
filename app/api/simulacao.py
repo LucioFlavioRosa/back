@@ -164,6 +164,31 @@ async def criar(
     return {"runId": run, "status": st.Status.PENDENTE, "jaExistia": False}
 
 
+def _plural(n: int, um: str, muitos: str) -> str:
+    """`"1 vaga livre"` · `"4 vagas livres"`.
+
+    A frase da fila e lida na tela, e "Todas as 1 vagas estao ocupadas" — que era o
+    que saia com um executor so — e o tipo de descuido que faz duvidar do resto dos
+    numeros. O front ja tem esta mesma funcao para o porte da unidade, e pela mesma
+    razao; aqui ela precisa existir de novo porque quem monta a frase e o servidor,
+    que e o unico que ve a fila inteira.
+
+    A forma `vaga(s)` que estava aqui evitava o erro sem resolver a leitura.
+    """
+    return f"{n} {um if n == 1 else muitos}"
+
+
+def _todas_ocupadas(capacidade: int) -> str:
+    """A primeira metade da frase de fila cheia, com a concordancia certa.
+
+    Com uma vaga so, "Todas as 1 vagas estao ocupadas" erra duas vezes — o
+    "todas" e o plural. Com uma vaga nao ha "todas": ha A vaga.
+    """
+    if capacidade == 1:
+        return "A única vaga está ocupada."
+    return f"Todas as {capacidade} vagas estão ocupadas."
+
+
 @router.get("/runs/{run_id}/status")
 async def status_da_rodada(run_id: str) -> dict[str, Any]:
     rid.exigir_valido(run_id)
@@ -214,20 +239,17 @@ async def status_da_rodada(run_id: str) -> dict[str, Any]:
     else:
         fila["posicao"] = await controle.posicao_na_fila(run_id)
         livres = max(exec_["capacidade"] - exec_["ocupadas"], 0)
+        ocupadas = _todas_ocupadas(exec_["capacidade"])
         if livres > 0:
             fila["motivo"] = (
-                f"Há {livres} vaga(s) livre(s) — deve começar em instantes."
+                f"Há {_plural(livres, 'vaga livre', 'vagas livres')} — "
+                "deve começar em instantes."
             )
         elif fila["posicao"] == 0:
-            fila["motivo"] = (
-                f"Todas as {exec_['capacidade']} vagas estão ocupadas. "
-                "Esta é a próxima a entrar."
-            )
+            fila["motivo"] = f"{ocupadas} Esta é a próxima a entrar."
         else:
-            fila["motivo"] = (
-                f"Todas as {exec_['capacidade']} vagas estão ocupadas. "
-                f"Há {fila['posicao']} simulação(ões) na frente desta."
-            )
+            frente = _plural(fila["posicao"], "simulação", "simulações")
+            fila["motivo"] = f"{ocupadas} Há {frente} na frente desta."
 
     resposta["fila"] = fila
     return resposta
@@ -263,23 +285,43 @@ async def reexecutar(run_id: str, usuario: Usuario) -> dict[str, str]:
 
 @router.post("/runs/{run_id}/cancelar", status_code=status.HTTP_204_NO_CONTENT)
 async def cancelar(run_id: str) -> None:
-    """PENDENTE — o banco ainda nao aceita este estado.
+    """O usuario desiste de uma rodada que ainda nao terminou. `CONTRATO.md` §4.4.
 
-    `controle.run_status` tem `CHECK (status IN ('PENDENTE','RODANDO','SUCESSO',
-    'FALHOU_QUALIDADE','ERRO'))`. `CANCELADA`, que o `CONTRATO.md` §4.3 lista e a
-    tela usa, viola o CHECK: o UPDATE falharia.
+    Respondeu 501 enquanto `controle.run_status` tinha um CHECK sem `CANCELADA` —
+    o UPDATE falharia, e responder 204 sem cancelar seria pior que responder erro:
+    a tela fecharia dizendo "cancelado" e o cluster seguiria processando e
+    cobrando. `migracoes/008_lease_e_executores.sql` pos o valor no CHECK.
 
-    Responder 204 sem cancelar seria pior que responder erro — a tela fecharia o
-    modal dizendo "cancelado" e o cluster continuaria processando, cobrando, e a
-    rodada apareceria concluida minutos depois. Enquanto a migracao nao roda, este
-    endpoint diz a verdade.
+    O QUE ESTE 204 GARANTE, e o que nao:
 
-    Para ligar: (1) migracao acrescentando 'CANCELADA' ao CHECK; (2) decidir se
-    cancelar tambem mata o job no Databricks (marcar o status so faz o front parar
-    de perguntar — o cluster continua) — provavelmente `jobs/runs/cancel` via API.
+      PENDENTE  a rodada nao vai executar. A mensagem continua na fila, mas
+                `processar` no executor ja recusa quem chega com desfecho gravado
+                — e `CANCELADA` e um desfecho. Cancelamento completo.
+      RODANDO   a rodada nao vai PUBLICAR. O executor confere o status nos pontos
+                em que a rodada respira (entre solver e materializacao, e a cada
+                passo da barra) e larga o trabalho. O solver em voo nao e
+                interrompivel no meio — e chamada nativa —, entao a espera e
+                limitada pelo `MAX_TIME_S` da propria rodada.
+
+    Prometer mais que isso exigiria matar o processo do executor, e a diferenca
+    que importa para quem clicou — nada e publicado, a vaga e devolvida — ja esta
+    garantida aqui.
     """
-    raise HTTPException(
-        status.HTTP_501_NOT_IMPLEMENTED,
-        "Cancelamento ainda não disponível: aguarda migração do banco e o "
-        "cancelamento do job no Databricks.",
-    )
+    rid.exigir_valido(run_id)
+    linha = await controle.status(run_id)
+    if not linha:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Rodada não encontrada.")
+
+    motivo = st.motivo_para_recusar_cancelamento(linha["status"])
+    if motivo:
+        raise HTTPException(status.HTTP_409_CONFLICT, motivo)
+
+    # O `if` acima e para a MENSAGEM; a garantia e o UPDATE condicional. Entre ler
+    # o status e escrever, o executor pode ter publicado — e sobrescrever SUCESSO
+    # por CANCELADA deixaria o resultado gravado e invisivel.
+    if not await controle.cancelar(run_id):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "A rodada mudou de estado enquanto o cancelamento era processado — "
+            "ela terminou por conta própria. Confira o status.",
+        )

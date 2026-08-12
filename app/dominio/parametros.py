@@ -163,6 +163,15 @@ def montar_params(corpo: dict[str, Any], unidade_id: str, usuario: str) -> dict[
     # entra no params, para o job usar o default do `ler_banco` — se o backend
     # inventasse default proprio, o mesmo pedido daria planos diferentes aqui e no
     # notebook, que foi exatamente o bug mais caro da revisao do pacote.
+    # `ETE_FASEADA`/`ETE_FIXO` NAO estao aqui, e a ausencia e regra de negocio: o
+    # tratamento da ETE sai da FICHA dela, e nao da rodada. ETE com terreno e
+    # numero de modulos informados e NOVA e entra como pacote unico; a que ja
+    # existe e expandida em modulos conforme a vazao passa da capacidade ociosa. O
+    # motor decide isso por ETE (`nova=Sim` ou `capex_terreno > 0`).
+    #
+    # CUIDADO ao mexer: aqui a receita das metas NAO se aplica. O default de
+    # `ete_faseada` no motor e False, entao a chave sumir NAO da o comportamento
+    # certo — quem afirma `True` e o executor, e essa linha nao pode sumir de la.
     DIRETO = {
         "foco_cobertura": "FOCO_COBERTURA",
         "penalidade_cobertura": "PENALIDADE_COBERTURA",
@@ -171,8 +180,6 @@ def montar_params(corpo: dict[str, Any], unidade_id: str, usuario: str) -> dict[
         "curva_adocao": "CURVA_ADOCAO",
         "usar_cts": "USAR_CTS",
         "incluir_industrial": "INCLUIR_INDUSTRIAL",
-        "ete_faseada": "ETE_FASEADA",
-        "ete_fixo": "ETE_FIXO",
         "anos_extra_conclusao": "ANOS_EXTRA_CONCLUSAO",
         "data_inicio": "DATA_INICIO",
         "max_time_s": "MAX_TIME_S",
@@ -182,15 +189,60 @@ def montar_params(corpo: dict[str, Any], unidade_id: str, usuario: str) -> dict[
         if origem in corpo:
             params[destino] = corpo[origem]
 
-    # `metas_cobertura: null` NAO e ausencia — e a escolha de ignorar as metas
-    # nesta rodada. Por isso entra mesmo valendo None, e por isso o `in` acima
-    # nao serve para ela sozinha.
-    if "metas_cobertura" in corpo:
-        valor = corpo["metas_cobertura"]
-        params["METAS_COBERTURA"] = None if valor in (None, "cadastro") else valor
+    # `METAS_COBERTURA` NAO E PRODUZIDO AQUI, e a ausencia e a regra de negocio:
+    # as metas vem SEMPRE da base. O unico descarte legitimo e por ANO — meta fora
+    # da janela de CAPEX nao e cobrada —, e quem o aplica e o motor, na avaliacao
+    # (`otimizador_capex_v62.py`: `idx >= anos_capex -> continue`). Nao e escolha
+    # de quem dispara a rodada, entao nao vira parametro.
+    #
+    # Chave ausente e exatamente como se pede o comportamento certo: sem ela o
+    # motor usa o proprio default, que e carregar as metas da planilha.
+    #
+    # HOUVE uma escolha aqui, e ela quebrou duas vezes. Primeiro `None if valor in
+    # (None, "cadastro")` colapsava "ignorar" e "usar o cadastro" no mesmo valor —
+    # e como `metas_cobertura=None` manda o motor CARREGAR, quem pedia para ignorar
+    # rodava com as metas enquanto a tela avisava o contrario. Corrigido o colapso,
+    # a opcao passou a funcionar: produzia rodada sem meta nenhuma, que a regra nao
+    # admite. Saiu inteira. Corpo antigo que ainda mande `metas_cobertura` e
+    # ignorado em silencio — o resultado e o mesmo que a regra pede.
 
     _validar(params)
     return params
+
+
+def mes_ano(data_inicio: str | None) -> tuple[int, int] | None:
+    """`"2027-01"` (o que a tela manda) -> `(1, 2027)` (o que o motor entende).
+
+    A CONVERSAO NAO E COSMETICA. O motor faz
+    `_p = str(data_inicio).split("-"); _mi, _ai = int(_p[0]), int(_p[1])` — ou seja,
+    ele le MES-ANO. A tela coleta ANO-MES (o placeholder dela e "2026-06"). Passar
+    a string crua faria `_mi=2027, _ai=1`, e o deslocamento absurdo que sai dali e
+    zerado pelo `max(0, ...)` do proprio motor: a data escolhida sumiria sem erro
+    nenhum. Silencio e pior que nao repassar.
+
+    Devolve TUPLA, e nao string remontada, porque o motor trata
+    `isinstance(data_inicio, (list, tuple))` como caminho proprio — sem depender de
+    ordem em texto, que foi a origem da confusao.
+
+    Mora aqui, e nao no worker, pela razao do docstring do modulo: e a traducao
+    entre a convencao da tela e a do job, e ela nao pode ter duas casas.
+    """
+    if not data_inicio:
+        return None
+    partes = str(data_inicio).replace("/", "-").split("-")
+    if len(partes) != 2:
+        raise ParametrosInvalidos(f"Data de início fora do formato AAAA-MM: {data_inicio!r}")
+    try:
+        ano, mes = int(partes[0]), int(partes[1])
+    except ValueError:
+        raise ParametrosInvalidos(
+            f"Data de início fora do formato AAAA-MM: {data_inicio!r}"
+        ) from None
+    if not 1 <= mes <= 12:
+        # Provavel MM-AAAA invertido chegando de algum lugar. Falhar aqui e melhor
+        # que deslocar a janela para um mes que nao existe.
+        raise ParametrosInvalidos(f"Data de início com mês fora de 1..12: {data_inicio!r}")
+    return (mes, ano)
 
 
 def _validar(params: dict[str, Any]) -> None:

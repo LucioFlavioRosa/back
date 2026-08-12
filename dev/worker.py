@@ -46,6 +46,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, ".")
 
 import rodar_simulacao_real as R  # noqa: E402
+from app.dominio.parametros import mes_ano  # noqa: E402
 from azure.servicebus.aio import ServiceBusClient  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 
@@ -267,6 +268,37 @@ def andar(run_id: str, progresso: int) -> None:
         )
 
 
+class Cancelada(Exception):
+    """O status desta rodada deixou de ser `RODANDO` enquanto ela executava.
+
+    Carrega o estado ENCONTRADO, e nao so o `run_id`: quase sempre e `CANCELADA`
+    (alguem clicou), mas o vigia de lease vencido tambem escreve `ERRO` por cima
+    de uma rodada que este executor ainda julga sua. Logar "cancelada a pedido"
+    nos dois casos apagaria a distincao justamente no caso raro que interessa.
+    """
+
+    def __init__(self, run_id: str, encontrado: str | None) -> None:
+        super().__init__(f"{run_id}: status virou {encontrado}")
+        self.encontrado = encontrado
+
+
+def conferir_cancelamento(run_id: str) -> None:
+    """Levanta `Cancelada` se o status ja nao for `RODANDO`.
+
+    E a metade do cancelamento que mora AQUI. `POST /runs/{id}/cancelar` grava
+    `CANCELADA`; sozinho, isso so faria o front parar de perguntar enquanto o
+    processo continuaria consumindo CPU e — o que importa — publicando no fim.
+
+    Chamado nos pontos em que a rodada respira, e o ultimo deles e imediatamente
+    antes de `PUB.publicar`: e o unico passo irreversivel. Cancelar e nao publicar
+    e o que quem clicou pediu; matar o processo no meio de uma chamada nativa nao
+    e possivel, e nao muda esse resultado.
+    """
+    encontrado = _desfecho(run_id)
+    if encontrado != "RODANDO":
+        raise Cancelada(run_id, encontrado)
+
+
 def pedido(run_id: str) -> dict | None:
     with R.eng.begin() as con:
         linha = con.execute(
@@ -340,10 +372,44 @@ def executar(run_id: str, tempo: int) -> None:
         foco_cobertura=float(p.get("FOCO_COBERTURA", 1.0)),
         penalidade_cobertura=p.get("PENALIDADE_COBERTURA", "meta+cobertura"),
         anos_extra_conclusao=int(p.get("ANOS_EXTRA_CONCLUSAO", 3)),
-        ete_faseada=bool(p.get("ETE_FASEADA", True)),
+        # SEMPRE True, e a linha NAO pode sumir. O default de `ete_faseada` no
+        # motor e False, entao omitir o argumento desligaria o tratamento por
+        # modulos em silencio — o oposto do que a regra pede. Aqui a receita das
+        # metas (apagar o parametro e deixar o default agir) faria o contrario.
+        #
+        # `True` nao impoe faseamento a ETE NOVA: dentro deste modo o motor separa
+        # os dois casos por ETE. Nova (terreno + modulos informados) vira UMA obra
+        # de pacote unico; existente vira K modulos incrementais conforme a vazao
+        # passa da folga.
+        ete_faseada=True,
+        # OS SEIS ABAIXO NAO ERAM REPASSADOS. A tela os oferece, o corpo os envia,
+        # o banco os grava — e este worker os descartava, entao o motor rodava com
+        # o default. `ete_fixo` e `peso_cidade` eram escolha do usuario que nao
+        # mudava nada; e a pior forma disso, porque ele ajusta, o numero muda por
+        # outro motivo, e ele aprende uma relacao que nao existe. E a mesma licao
+        # que `MAX_TIME_S`/`WORKERS` ja tinham dado aqui.
+        horizonte_capex=p.get("HORIZONTE_CAPEX"),
+        orcamento_total=p.get("ORCAMENTO_TOTAL"),
+        # `{}` do payload e "nenhuma prioridade", que e o mesmo que ausencia — mas
+        # o motor multiplica por `_pc.get(g, 1.0)`, entao dict vazio ja seria
+        # inofensivo. `or None` mantem o default explicito.
+        peso_cidade=p.get("PESO_CIDADE") or None,
+        data_inicio=mes_ano(p.get("DATA_INICIO")),
+        # `metas_cobertura` NAO e repassado, de proposito: as metas vem sempre da
+        # base, e o default do motor (None) e exatamente isso. O unico descarte
+        # legitimo e por ANO — meta fora da janela de CAPEX nao e cobrada —, e ele
+        # ja acontece na avaliacao (`idx >= anos_capex -> continue`).
+        #
+        # Repassar o que estivesse gravado seria pior que ignorar: rodada criada na
+        # janela em que a tela ainda oferecia "ignorar as metas" tem `{}` no
+        # `params`, e reexecuta-la produziria um plano sem meta nenhuma. Ver
+        # `app/dominio/parametros.py`.
     )
     log(run_id, f"cenario: {len(cen.obras)} obras, {len(cen.sistemas)} sistemas")
     andar(run_id, MODELO)
+    # Antes do solver, que e a etapa cara: cancelar durante a leitura do banco tem
+    # de evitar os minutos seguintes, e nao so o passo final.
+    conferir_cancelamento(run_id)
 
     # O solver e a etapa longa. Uma thread empurra a barra dentro da faixa dele
     # enquanto ele trabalha: sem isso a tela fica parada nos 30% pelo tempo todo,
@@ -372,11 +438,51 @@ def executar(run_id: str, tempo: int) -> None:
         segundos = min(int(p.get("MAX_TIME_S") or tempo), tempo)
         nucleos = int(p.get("WORKERS") or 8)
         log(run_id, f"solver: max_time_s={segundos} workers={nucleos}")
-        res = CP.resolver_por_sistema(cen, max_time_s=segundos, workers=nucleos)
+        try:
+            res = CP.resolver_por_sistema(cen, max_time_s=segundos, workers=nucleos)
+        except KeyError as e:
+            # `KeyError: 'Araruama Leste1'` — o nome de uma cidade, cru, e nada
+            # mais. Chegava assim ate a tela, que nao tem como saber que o defeito
+            # e do motor nem que a rodada e reexecutavel.
+            #
+            # SO TRADUZ quando a chave E UMA CIDADE do cenario. Sem esse teste,
+            # qualquer `KeyError` interno do motor — outra causa, outro lugar —
+            # viraria "cidade sem coluna", e o proximo defeito chegaria disfarcado
+            # do anterior. Fora dessa forma, o erro segue cru: melhor um traceback
+            # honesto que uma explicacao errada.
+            chave = e.args[0] if len(e.args) == 1 else None
+            if chave not in {n.cidade for n in cen.nos.values()}:
+                raise
+            # O que se sabe do defeito, e ele e do PACOTE, em
+            # `otimizador_capex_cpsat63.resolver_por_sistema`: o reparo do teto
+            # anual percorre TODAS as cidades (`for g in grupos`) indexando
+            # `sel[g]`, enquanto o laco logo acima percorre `sel.items()`. Com a
+            # selecao incompleta, a primeira cidade ausente estoura — o nome e so
+            # a ordem de iteracao, nao ha nada de errado com a cidade.
+            #
+            # POR QUE a selecao fica incompleta e HIPOTESE, nao fato: `_extrai` e
+            # chamado a partir de solves que so filtram `INFEASIBLE`, e o modelo
+            # usa `AddExactlyOne`, entao uma solucao valida nao produziria selecao
+            # parcial. Ver a ressalva em `dev/patches/motor_status_do_solver.md`.
+            #
+            # Nao da para consertar daqui: o estouro acontece dentro do motor,
+            # antes de ele devolver qualquer coisa. O que da e nao repassar um
+            # `KeyError` nu.
+            raise RuntimeError(
+                f"O solver falhou ao reparar o teto anual: a cidade '{chave}' ficou "
+                "sem coluna selecionada. É um defeito conhecido do motor "
+                "(otimizador_capex_cpsat63), observado quando o tempo de solver não "
+                "basta para a janela pedida. Tente de novo com MAX_TIME_S maior ou "
+                "janela de CAPEX menor. A rodada pode ser reexecutada."
+            ) from e
     finally:
         parar.set()
         batedor.join(timeout=2)
     log(run_id, f"solver: {res.get('milp_status')}  VPL={res.get('vpl'):,.0f}")
+    # O solver e uma chamada nativa: um cancelamento durante ele so pode ser
+    # atendido quando ele volta. E por isso que a espera maxima do cancelamento e
+    # o `MAX_TIME_S` da rodada, e nao um numero que este worker escolha.
+    conferir_cancelamento(run_id)
 
     # `run_id` E o da fila: publicar com outro id faria a tela perder a rodada
     # que ela esta acompanhando.
@@ -399,6 +505,10 @@ def executar(run_id: str, tempo: int) -> None:
     finally:
         parar_mat.set()
         bat_mat.join(timeout=2)
+    # O ULTIMO ponto de conferencia, e o que justifica os outros: `publicar` e o
+    # unico passo irreversivel desta funcao. Cancelar depois dele nao seria
+    # cancelar — seria publicar e depois dizer que nao publicou.
+    conferir_cancelamento(run_id)
     # O NOME E O AUTOR VEM DE `run_request`, e nao de `params`.
     #
     # Estava `p.get("ROTULO") or f"{unidade} — pela tela"`, e o efeito era pior
@@ -480,6 +590,27 @@ async def processar(msg, tempo: int) -> None:
         log(run_id, f"reentregue, mas ja esta {ja} — ignorada")
         return
 
+    # A RODADA AINDA EXISTE? Isto precisa vir antes de QUALQUER escrita de status.
+    #
+    # `run_status` tem FK para `run_request`, entao um `run_id` excluido faz
+    # estourar tudo que escreve status — inclusive o `marcar(ERRO)` do `except`
+    # abaixo, que seria a saida natural. A excecao escapa de `processar`, o laco
+    # nao chega ao `complete_message`, o lock expira, e a mensagem volta a cada
+    # minuto ate o `MaxDeliveryCount` manda-la para dead-letter: tres tracebacks e
+    # uma vaga do executor ocupada em cada tentativa. Visto ao vivo com uma
+    # mensagem orfa que sobrou de uma rodada apagada.
+    #
+    # `executar()` ja faz esta checagem, mas ela e inalcancavel — `marcar(RODANDO)`
+    # morre antes de chegar la. Ela fica onde esta: protege quem chamar `executar`
+    # por outro caminho.
+    #
+    # `return`, e nao `raise`: sair normalmente e o que faz o laco COMPLETAR a
+    # mensagem, como no `ignorada` acima. Reentregar nunca vai ajudar — a
+    # `run_request` nao volta a existir.
+    if pedido(run_id) is None:
+        log(run_id, "nao esta em controle.run_request (rodada excluida?) — descartada")
+        return
+
     log(run_id, f"RECEBIDA (unidade {corpo.get('unidade_id')})")
     marcar(run_id, "RODANDO", progresso=1)
     reivindicar(run_id)
@@ -512,6 +643,12 @@ async def processar(msg, tempo: int) -> None:
         marcar(run_id, "ERRO", "O processo desta rodada morreu (falha nativa no "
                                "solver ou na materialização).")
         log(run_id, f"ERRO: processo da rodada morreu ({type(e).__name__})")
+    except Cancelada as c:
+        # NAO marca nada: quem escreveu o status novo — a API no cancelamento, o
+        # vigia no lease vencido — ja disse o que aconteceu, e sobrescrever aqui
+        # apagaria o unico registro disso. O `finally` solta o lease e devolve a
+        # vaga, que e o resto do que se deve a quem clicou.
+        log(run_id, f"parou sem publicar: status virou {c.encontrado}")
     except Exception as e:  # noqa: BLE001 — a causa vai para o banco e para a tela
         marcar(run_id, "ERRO", f"{type(e).__name__}: {e}"[:500])
         log(run_id, f"ERRO: {type(e).__name__}: {e}")

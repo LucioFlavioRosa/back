@@ -56,8 +56,13 @@ async def historico(
     # primeira e migra para a segunda. Sem juntar as duas, quem fechasse o modal
     # perdia de vista o que estava rodando — a tela mais operacional do produto
     # era cega justamente para o estado operacional.
-    linhas = await resultado.em_voo(unidade=unidade, usuario=usuario)
-    linhas += await resultado.historico(unidade=unidade, usuario=usuario)
+    # As favoritas sao de QUEM PEDIU, e nao do dono da rodada — por isso
+    # `quem.login`, e nao a variavel `usuario`, que aqui e filtro. A diferenca so
+    # aparece no admin, que ve as rodadas dos outros: a estrela na tela dele tem de
+    # ser a dele.
+    favoritas = await resultado.favoritas_de(quem.login)
+    linhas = await resultado.em_voo(unidade=unidade, usuario=usuario, favoritas=favoritas)
+    linhas += await resultado.historico(unidade=unidade, usuario=usuario, favoritas=favoritas)
     # E o ESCOPO vale para todo mundo, inclusive admin. Era
     # `if quem.admin or quem.tudo: return linhas`, e por causa daquele `admin` um
     # administrador de uma regional listava o banco inteiro — papel e escopo
@@ -92,6 +97,32 @@ async def excluir(run_id: str, usuario: Usuario) -> None:
     rid.exigir_valido(run_id)
     if not await resultado.excluir(run_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Rodada não encontrada.")
+
+
+@router.put("/runs/{run_id}/favorita", status_code=status.HTTP_204_NO_CONTENT)
+async def favoritar(run_id: str, quem: Quem) -> None:
+    """Marca a rodada como favorita DE QUEM PEDIU.
+
+    `PUT`, e nao `POST`, porque o verbo descreve o que acontece: o recurso
+    "favorita desta rodada para esta pessoa" passa a existir, e pedir de novo nao
+    muda mais nada. Duplo clique e retry de rede caem no mesmo estado, sem
+    tratamento na API — a chave composta da tabela faz o trabalho.
+
+    NAO ha checagem de posse aqui, e e deliberado: favoritar so afeta a propria
+    lista de quem pede. O que protege o dado dos outros e a leitura — `GET /runs`
+    ja recorta por posse e escopo, entao uma rodada que a pessoa nao pode ver nao
+    aparece para ela nem favoritada. Marcar um `run_id` que ela nao ve nao revela
+    nada sobre ele.
+    """
+    rid.exigir_valido(run_id)
+    await resultado.favoritar(run_id, quem.login)
+
+
+@router.delete("/runs/{run_id}/favorita", status_code=status.HTTP_204_NO_CONTENT)
+async def desfavoritar(run_id: str, quem: Quem) -> None:
+    """Desmarca. Idempotente pela mesma razao: o estado pedido e o estado final."""
+    rid.exigir_valido(run_id)
+    await resultado.desfavoritar(run_id, quem.login)
 
 
 # ---------------------------------------------------------------------------

@@ -328,15 +328,18 @@ rodada que nunca executa não é.
 
 ### O vocabulário de `status`
 
-`PENDENTE` · `RODANDO` · `SUCESSO` · `FALHOU_QUALIDADE` · `ERRO`
+`PENDENTE` · `RODANDO` · `SUCESSO` · `FALHOU_QUALIDADE` · `ERRO` · `CANCELADA`
 (`app/dominio/status.py`).
 
 `FALHOU_QUALIDADE` **não** é falha técnica: a rodada foi calculada e reprovou no
-portão — o texto de `erro` é o que explica a diferença ao usuário. `CANCELADA`
-existe no domínio e **não é aceito pelo CHECK do banco**; ver as migrações.
+portão — o texto de `erro` é o que explica a diferença ao usuário.
 
-Quem escreve o quê: o backend só cria `PENDENTE` (e `ERRO`, quando a fila falha).
-**Todas as demais transições são do executor.**
+Quem escreve o quê: o backend só cria `PENDENTE`. **As demais transições são do
+executor**, com duas exceções declaradas, ambas sobre trabalho que parou de
+acontecer: `ERRO` quando a fila falha ou quando o vigia encontra um lease vencido,
+e `CANCELADA` quando alguém pede pelo `POST /runs/{id}/cancelar`. Nas duas o
+executor obedece ao que encontrar — ele confere o status nos pontos em que a
+rodada respira e larga o trabalho sem publicar.
 
 ### O que o backend NUNCA faz
 
@@ -399,11 +402,7 @@ porque o motor ignora esse número de qualquer forma
 
 ### As que faltam, e o que cada uma destrava
 
-1. **`CANCELADA` no CHECK de `controle.run_status`.** O CHECK aceita apenas
-   `PENDENTE, RODANDO, SUCESSO, FALHOU_QUALIDADE, ERRO`, mas o `CONTRATO.md` §4.3 e
-   a tela de simulação usam `CANCELADA`. Sem ela, `POST /runs/{id}/cancelar` não
-   pode existir sem mentir para o usuário.
-2. **`reprocessa_de` em `controle.run_request`.** A reexecução depois de um
+1. **`reprocessa_de` em `controle.run_request`.** A reexecução depois de um
    `SUCESSO` gera `run_id` novo (`CONTRATO.md` §2.1). Sem esse campo o histórico é
    uma lista de rodadas soltas, sem como ligar a reexecução à sua origem.
 

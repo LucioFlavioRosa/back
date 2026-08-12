@@ -409,6 +409,33 @@ async def recolher_abandonadas() -> list[str]:
     return [l["run_id"] for l in linhas]
 
 
+async def cancelar(run_id: str) -> bool:
+    """Marca CANCELADA, mas SO se a rodada ainda estiver em voo.
+
+    O `WHERE` faz a condicao valer no banco, e nao no `if` que a precede: entre ler
+    o status e escrever, o executor pode ter publicado. Sem isto, um clique um
+    instante atrasado sobrescreveria SUCESSO por CANCELADA — e o resultado ficaria
+    gravado em `otim_*`, invisivel, com a rodada dizendo que alguem a parou.
+
+    `False` significa que a corrida foi perdida (ou que a rodada ja tinha parado),
+    e quem chama responde 409. Solta tambem `worker_id`/`lease_ate`: o lease
+    protege trabalho em andamento, e ja nao ha trabalho a proteger — deixa-los
+    apontando para o executor faria o vigia de lease vencido tropecar numa rodada
+    que ninguem esta executando.
+    """
+    linhas = await db.buscar(
+        f"""UPDATE {_c()}.run_status
+               SET status = 'CANCELADA',
+                   erro = NULL,
+                   worker_id = NULL, lease_ate = NULL,
+                   atualizado_em = now()
+             WHERE run_id = $1 AND status IN ('PENDENTE', 'RODANDO')
+         RETURNING run_id""",
+        run_id,
+    )
+    return bool(linhas)
+
+
 async def marcar(run_id: str, novo: Status, erro: str | None = None) -> None:
     async with db.pool().acquire() as con:
         await con.execute(
