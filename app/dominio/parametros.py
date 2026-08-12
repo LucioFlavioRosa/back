@@ -229,7 +229,7 @@ def montar_params(corpo: dict[str, Any], unidade_id: str, usuario: str) -> dict[
     # rodada antiga com 3 continua contando a verdade dela.
     params["ANOS_EXTRA_CONCLUSAO"] = 0
 
-    # MAX_TIME_S FIXO EM 1000s, e a tela nao o oferece mais: quanto tempo o solver
+    # MAX_TIME_S FIXO EM 5000s, e a tela nao o oferece mais: quanto tempo o solver
     # tem e afinacao de execucao, nao decisao de negocio — quem dispara a rodada
     # nao tem como calibrar isso.
     #
@@ -241,7 +241,11 @@ def montar_params(corpo: dict[str, Any], unidade_id: str, usuario: str) -> dict[
     #
     # WORKERS nao entra: e paralelismo do processo que executa, e depende da
     # maquina dele. O executor usa o proprio padrao.
-    params["MAX_TIME_S"] = 1000
+    # 5000s (83 min). Subiu de 1000 depois de uma rodada real na maior unidade:
+    # com 1000s a geracao de colunas sozinha levou 302s e o solver mestre terminou
+    # em `VIAVEL(limite de tempo)`, deixando 23 obras obrigatorias de fora. O
+    # limite estava mordendo o resultado, nao so o relogio.
+    params["MAX_TIME_S"] = 5000
 
     _validar(params)
     return params

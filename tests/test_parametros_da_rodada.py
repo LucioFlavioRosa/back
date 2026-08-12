@@ -41,12 +41,12 @@ class TestMetasDeCobertura:
 class TestExecucao:
     """Tempo de solver e paralelismo nao sao decisao de quem dispara a rodada."""
 
-    def test_max_time_s_fixo_em_1000(self):
-        assert montar()["MAX_TIME_S"] == 1000
+    def test_max_time_s_fixo_em_5000(self):
+        assert montar()["MAX_TIME_S"] == 5000
 
     @pytest.mark.parametrize("valor", [30, 400, 99999])
     def test_corpo_que_ainda_mande_nao_muda_nada(self, valor):
-        assert montar(max_time_s=valor)["MAX_TIME_S"] == 1000
+        assert montar(max_time_s=valor)["MAX_TIME_S"] == 5000
 
     def test_workers_nao_viaja(self):
         # Paralelismo depende da maquina que executa; o executor usa o proprio
