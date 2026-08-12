@@ -135,6 +135,12 @@ def montar_params(corpo: dict[str, Any], unidade_id: str, usuario: str) -> dict[
 
     if por_ano and corpo.get("redistribuir_orcamento"):
         # Pre-processamento da celula 3 do notebook — ver o docstring do modulo.
+        #
+        # A TELA NAO OFERECE MAIS a redistribuicao (decisao de produto, reversivel),
+        # entao este ramo nao e alcancado pelo produto hoje. Ele FICA, e nao vira
+        # codigo morto por isso: e a capacidade que o backend tem de oferecer se o
+        # controle voltar, esta coberta por teste, e some do produto sem sumir da
+        # documentacao. Corpo que ainda mande os dois campos e tratado como sempre.
         total = sum(por_ano.values())
         teto = corpo.get("teto_execucao_anual") or max(por_ano.values())
         if teto <= 0:
@@ -180,7 +186,6 @@ def montar_params(corpo: dict[str, Any], unidade_id: str, usuario: str) -> dict[
         "curva_adocao": "CURVA_ADOCAO",
         "usar_cts": "USAR_CTS",
         "incluir_industrial": "INCLUIR_INDUSTRIAL",
-        "anos_extra_conclusao": "ANOS_EXTRA_CONCLUSAO",
         "data_inicio": "DATA_INICIO",
         "max_time_s": "MAX_TIME_S",
         "workers": "WORKERS",
@@ -205,6 +210,21 @@ def montar_params(corpo: dict[str, Any], unidade_id: str, usuario: str) -> dict[
     # a opcao passou a funcionar: produzia rodada sem meta nenhuma, que a regra nao
     # admite. Saiu inteira. Corpo antigo que ainda mande `metas_cobertura` e
     # ignorado em silencio — o resultado e o mesmo que a regra pede.
+
+    # ANOS_EXTRA_CONCLUSAO E FIXO EM ZERO, e a tela nao o oferece mais: a obra
+    # inicia e conclui DENTRO da janela de CAPEX, sem rabo custeado pela sobra
+    # acumulada.
+    #
+    # AFIRMADO, e nao omitido — aqui a receita do `metas_cobertura` faria o
+    # contrario do pedido. O default de `anos_extra_conclusao` no `ler_banco` e
+    # **3**; chave ausente daria tres anos de rabo, nao zero. E o mesmo cuidado do
+    # `ete_faseada`, so que do outro lado: la a omissao desligaria o que se quer,
+    # aqui ela ligaria o que nao se quer.
+    #
+    # Viaja no `params` de proposito, em vez de o executor fixar: assim o
+    # historico REGISTRA o que a rodada usou, e o modal de detalhes o mostra. Uma
+    # rodada antiga com 3 continua contando a verdade dela.
+    params["ANOS_EXTRA_CONCLUSAO"] = 0
 
     _validar(params)
     return params

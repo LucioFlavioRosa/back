@@ -38,6 +38,29 @@ class TestMetasDeCobertura:
         assert "METAS_COBERTURA" not in montar(metas_cobertura=valor)
 
 
+class TestAnosExtraConclusao:
+    """Fixo em ZERO: a obra inicia e conclui dentro da janela de CAPEX.
+
+    O valor e AFIRMADO, e nao omitido. O default do motor e 3 — chave ausente daria
+    tres anos de rabo, que e o oposto do pedido. E o espelho do `ete_faseada`: la a
+    omissao desligaria o que se quer, aqui ligaria o que nao se quer.
+    """
+
+    def test_sempre_zero(self):
+        assert montar()["ANOS_EXTRA_CONCLUSAO"] == 0
+
+    def test_a_chave_existe_sempre(self):
+        # Ela precisa VIAJAR: e assim que o historico registra o que a rodada usou,
+        # e que o modal de detalhes consegue mostra-lo.
+        assert "ANOS_EXTRA_CONCLUSAO" in montar()
+
+    @pytest.mark.parametrize("valor", [3, 5, 0, None])
+    def test_corpo_que_ainda_mande_nao_muda_nada(self, valor):
+        # Cliente antigo pode mandar o campo. O zero e regra do produto, nao
+        # sugestao — entao ele ganha de qualquer valor que chegue.
+        assert montar(anos_extra_conclusao=valor)["ANOS_EXTRA_CONCLUSAO"] == 0
+
+
 class TestEte:
     """O tratamento da ETE sai da FICHA dela, e nao da rodada.
 
