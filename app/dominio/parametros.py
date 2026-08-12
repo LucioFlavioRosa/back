@@ -169,6 +169,12 @@ def montar_params(corpo: dict[str, Any], unidade_id: str, usuario: str) -> dict[
     # entra no params, para o job usar o default do `ler_banco` — se o backend
     # inventasse default proprio, o mesmo pedido daria planos diferentes aqui e no
     # notebook, que foi exatamente o bug mais caro da revisao do pacote.
+    # `PESO_CIDADE` NAO esta aqui, e a ausencia E o padrao pedido: todas as
+    # cidades pesam 1. O motor multiplica a contribuicao de cada uma por
+    # `peso_cidade.get(cidade, 1.0)` (`otimizador_capex_cpsat63.py`), entao sem o
+    # parametro o multiplicador e 1 para todas. Mandar `{}` daria no mesmo e
+    # sugeriria que ha escolha.
+    #
     # `ETE_FASEADA`/`ETE_FIXO` NAO estao aqui, e a ausencia e regra de negocio: o
     # tratamento da ETE sai da FICHA dela, e nao da rodada. ETE com terreno e
     # numero de modulos informados e NOVA e entra como pacote unico; a que ja
@@ -181,7 +187,6 @@ def montar_params(corpo: dict[str, Any], unidade_id: str, usuario: str) -> dict[
     DIRETO = {
         "foco_cobertura": "FOCO_COBERTURA",
         "penalidade_cobertura": "PENALIDADE_COBERTURA",
-        "peso_cidade": "PESO_CIDADE",
         "base_receita": "BASE_RECEITA",
         "curva_adocao": "CURVA_ADOCAO",
         "usar_cts": "USAR_CTS",
