@@ -38,6 +38,23 @@ class TestMetasDeCobertura:
         assert "METAS_COBERTURA" not in montar(metas_cobertura=valor)
 
 
+class TestExecucao:
+    """Tempo de solver e paralelismo nao sao decisao de quem dispara a rodada."""
+
+    def test_max_time_s_fixo_em_1000(self):
+        assert montar()["MAX_TIME_S"] == 1000
+
+    @pytest.mark.parametrize("valor", [30, 400, 99999])
+    def test_corpo_que_ainda_mande_nao_muda_nada(self, valor):
+        assert montar(max_time_s=valor)["MAX_TIME_S"] == 1000
+
+    def test_workers_nao_viaja(self):
+        # Paralelismo depende da maquina que executa; o executor usa o proprio
+        # padrao. Fixar aqui seria decidir por uma maquina que nao conhecemos.
+        assert "WORKERS" not in montar()
+        assert "WORKERS" not in montar(workers=16)
+
+
 class TestPesoCidade:
     """Sem parametro: todas as cidades pesam 1.
 

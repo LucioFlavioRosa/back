@@ -192,8 +192,6 @@ def montar_params(corpo: dict[str, Any], unidade_id: str, usuario: str) -> dict[
         "usar_cts": "USAR_CTS",
         "incluir_industrial": "INCLUIR_INDUSTRIAL",
         "data_inicio": "DATA_INICIO",
-        "max_time_s": "MAX_TIME_S",
-        "workers": "WORKERS",
     }
     for origem, destino in DIRETO.items():
         if origem in corpo:
@@ -230,6 +228,20 @@ def montar_params(corpo: dict[str, Any], unidade_id: str, usuario: str) -> dict[
     # historico REGISTRA o que a rodada usou, e o modal de detalhes o mostra. Uma
     # rodada antiga com 3 continua contando a verdade dela.
     params["ANOS_EXTRA_CONCLUSAO"] = 0
+
+    # MAX_TIME_S FIXO EM 1000s, e a tela nao o oferece mais: quanto tempo o solver
+    # tem e afinacao de execucao, nao decisao de negocio — quem dispara a rodada
+    # nao tem como calibrar isso.
+    #
+    # AFIRMADO, como o `ANOS_EXTRA_CONCLUSAO` e ao contrario do `PESO_CIDADE`: sem
+    # a chave, cada consumidor usaria o proprio default (o executor local cai no
+    # `--tempo` da linha de comando), e a mesma rodada teria tempos diferentes
+    # conforme quem a executa. Viaja no `params` para o historico registrar o que
+    # a rodada teve.
+    #
+    # WORKERS nao entra: e paralelismo do processo que executa, e depende da
+    # maquina dele. O executor usa o proprio padrao.
+    params["MAX_TIME_S"] = 1000
 
     _validar(params)
     return params
