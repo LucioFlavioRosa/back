@@ -33,6 +33,7 @@ terminado seria pior.
 import argparse
 import asyncio
 import concurrent.futures
+import contextlib
 import json
 import os
 import socket
@@ -360,6 +361,74 @@ def pedido(run_id: str) -> dict | None:
     }
 
 
+#: Distancia do otimo em que a busca pode parar. 0.001 = 0,1%.
+#:
+#: Medido na unidade de 67 cidades (MAX_TIME_S=1200): a fase de cobertura gastou
+#: os 720s inteiros e devolveu um plano a 0,006% do limite superior provado. A
+#: ultima melhoria de incumbente reportada veio aos 381s — os 339s seguintes (47%
+#: do tempo de solver) foram tentativa de PROVAR o que ja estava achado. Unidade
+#: pequena nem chega perto disso: prova as tres fases em 1,2s com teto de 5000s.
+#:
+#: 0,1% e o valor conservador de proposito. Com 0,5% a mesma fase pararia aos 24s
+#: em vez de 720s, mas abrindo mao de 0,37% de cobertura — e como os coeficientes
+#: sao inteiros arredondados e as fases anteriores ja travaram obrigatorias e
+#: metas, planos quase-equivalentes podem empatar sob a metrica do solver.
+GAP_RELATIVO = 0.001
+
+
+@contextlib.contextmanager
+def gap_de_convergencia(gap: float):
+    """CONTORNO TEMPORARIO: faz o solver parar quando ja esta perto do otimo.
+
+    O certo e o motor receber isso como PARAMETRO — ver
+    `dev/patches/motor_criterio_de_convergencia.md`. Nenhum dos `CpSolver` que
+    `resolver_por_sistema` cria define `relative_gap_limit`, entao so ha duas
+    paradas possiveis hoje: prova exata (gap zero) ou relogio. Como a assinatura
+    da funcao nao aceita gap, nao ha por onde pedir isso de fora sem alcancar a
+    classe do OR-Tools.
+
+    POR QUE ISTO E CONTORNO, E NAO SOLUCAO:
+
+    1. Age por FORA da API do motor, apoiado num detalhe de implementacao dele
+       (criar `cp_model.CpSolver()` diretamente). Se o pacote mudar essa forma, o
+       contorno deixa de agir EM SILENCIO — as rodadas voltam a gastar o teto
+       inteiro e nada avisa. Um parametro de verdade quebraria com `TypeError`.
+    2. Atinge TODO `CpSolver` do processo enquanto vale, e o escopo do `with` nao
+       resolve isso: a geracao de colunas acontece DENTRO de
+       `resolver_por_sistema`. Com `ete_faseada=True` — nosso caso — ela nao usa
+       CP-SAT e a questao nao se coloca; com faseada desligada, `_colunas_sistema`
+       chama `resolver_cpsat` por cidade, e o gap mudaria as colunas geradas, que
+       sao a materia-prima do master. Seria mudanca de resultado por um caminho
+       que ninguem lembraria de olhar.
+
+    Reverte em `finally` porque o processo do pool e REUSADO entre rodadas: sem
+    isso, o patch continuaria valendo para as seguintes.
+
+    Mora aqui, e nao no modulo, porque `executar` e o que roda no processo FILHO
+    (`ProcessPoolExecutor`, e no Windows o `spawn` reimporta tudo). Aplicado no
+    pai, nao teria efeito nenhum — e falharia calado, que e a mesma armadilha do
+    item 1.
+    """
+    from ortools.sat.python import cp_model
+
+    original = cp_model.CpSolver.Solve
+
+    def com_gap(self, model, *a, **k):
+        # VENCE O MAIS RIGOROSO. Hoje o motor nao define gap nenhum, entao vale o
+        # nosso. No dia em que ele definir, nunca AFROUXAMOS o dele — e se o dele
+        # for mais frouxo, o nosso prevalece. Nos dois sentidos o erro cai para o
+        # lado do plano melhor, nunca para o lado do pior.
+        atual = self.parameters.relative_gap_limit
+        self.parameters.relative_gap_limit = gap if atual <= 0 else min(atual, gap)
+        return original(self, model, *a, **k)
+
+    cp_model.CpSolver.Solve = com_gap
+    try:
+        yield
+    finally:
+        cp_model.CpSolver.Solve = original
+
+
 def executar(run_id: str, tempo: int) -> None:
     """Motor + publicacao, com os parametros DA RODADA. Bloqueante de proposito:
     e trabalho de CPU, e roda em thread propria (ver `processar`)."""
@@ -473,9 +542,10 @@ def executar(run_id: str, tempo: int) -> None:
         # adianta a tela pedir 600s num worker de laptop.
         segundos = min(int(p.get("MAX_TIME_S") or tempo), tempo)
         nucleos = int(p.get("WORKERS") or 8)
-        log(run_id, f"solver: max_time_s={segundos} workers={nucleos}")
+        log(run_id, f"solver: max_time_s={segundos} workers={nucleos} gap={GAP_RELATIVO:.3%}")
         try:
-            res = CP.resolver_por_sistema(cen, max_time_s=segundos, workers=nucleos)
+            with gap_de_convergencia(GAP_RELATIVO):
+                res = CP.resolver_por_sistema(cen, max_time_s=segundos, workers=nucleos)
         except KeyError as e:
             # `KeyError: 'Araruama Leste1'` — o nome de uma cidade, cru, e nada
             # mais. Chegava assim ate a tela, que nao tem como saber que o defeito

@@ -1,8 +1,9 @@
 # Motor: o solver gasta o teto inteiro PROVANDO o que já achou
 
 **Para quem mantém o `Otimizador_CAPEX_v62_pacote`.** Este arquivo descreve uma
-melhoria no pacote e a mudança sugerida. **Nada foi aplicado** — o pacote não é
-versionado por nós, e uma edição local se perderia na próxima atualização dele.
+melhoria no pacote e a mudança sugerida. **Nada foi aplicado ao pacote** — ele não
+é versionado por nós, e uma edição local se perderia na próxima atualização dele.
+Do nosso lado há um contorno, descrito no fim deste arquivo.
 
 Arquivo: `otimizador_capex_cpsat63.py`, função `resolver_por_sistema`.
 Linhas conferem com o `rev11`.
@@ -42,16 +43,24 @@ t= 380,7s   obj=581.748   bound=581.785   gap=0,01%
 t= 720,0s   (nenhuma melhoria; para por relógio, devolve FEASIBLE)
 ```
 
-Ou seja: **47% do tempo de solver correu depois da última melhoria**, e os
-últimos 339s não produziram nada além da tentativa de fechar 0,01%.
+Ou seja: **47% do tempo de solver correu depois da última melhoria de incumbente
+reportada**, e os últimos 339s não produziram nada além da tentativa de fechar
+0,01%.
+
+A formulação é essa, e não "o solver não achou mais nada": com
+`num_search_workers > 1` o CP-SAT roda um portfólio paralelo, e soluções internas
+dominadas ou filtradas por presolve podem não gerar callback. O que sustenta a
+conclusão não é o silêncio dos callbacks — é o gap final de 0,006%, que diz que
+não havia margem para melhorar.
 
 Em unidades menores nada disso acontece — `uA1` (5 cidades) prova as três fases
 em 1,2s no total, com `MAX_TIME_S=5000`. O teto alto não custa nada lá.
 
 ## A causa
 
-Nenhum dos quatro `CpSolver` criados em `resolver_por_sistema` define critério de
-parada por convergência:
+Nenhum `CpSolver` criado no pacote define critério de parada por convergência —
+nem os de `resolver_por_sistema`, nem o de `resolver_cpsat` (linhas 229-231), que
+`_colunas_sistema` usa por cidade quando `ete_faseada=False`:
 
 ```python
 sv=cp_model.CpSolver(); sv.parameters.max_time_in_seconds=...; sv.parameters.num_search_workers=int(workers)
@@ -100,6 +109,11 @@ alvo.
 A escolha do valor é decisão de produto, não de engenharia: 0,5% devolve o plano
 em 24s em vez de 720s, abrindo mão de 0,37% da cobertura.
 
+**Escolhido 0,001 (0,1%)**, o conservador. Os coeficientes da fase 3 são inteiros
+arredondados e as fases anteriores já travaram obrigatórias e metas, então planos
+quase-equivalentes podem empatar sob a métrica do solver — começar apertado custa
+metade do desperdício e quase nada de resultado.
+
 ### Efeito colateral bom: o status deixa de mentir
 
 O CP-SAT devolve **`OPTIMAL`** quando para por `relative_gap_limit`, e
@@ -125,10 +139,31 @@ teto nominal não é o que o nome sugere.
 
 ## Enquanto o patch não existe
 
-Dá para obter o mesmo efeito de fora, sem tocar no pacote: `dev/worker.py` pode
-envolver `cp_model.CpSolver` antes de chamar `resolver_por_sistema` e definir
-`relative_gap_limit` em cada instância. Funciona (foi assim que a medição acima
-foi feita), mas atinge **todos** os solvers do processo, inclusive os da geração
-de colunas quando `ete_faseada=False` — que hoje não é o nosso caso, e passaria a
-ser um acoplamento silencioso se algum dia for. Preferível como medida temporária
-declarada, não como solução.
+**Já está aplicado do nosso lado, como contorno declarado:**
+`gap_de_convergencia()` em `dev/worker.py`, com `GAP_RELATIVO = 0.001`. Ele
+envolve `cp_model.CpSolver.Solve` e define `relative_gap_limit` em cada
+instância.
+
+Três detalhes que quem for reimplementar isso precisa saber, porque cada um deles
+faz o contorno falhar **em silêncio**:
+
+1. **Tem de rodar no processo FILHO.** O executor chama o motor via
+   `ProcessPoolExecutor`, e no Windows o `spawn` reimporta o módulo. Aplicado no
+   processo pai, o patch não alcança o motor e nada avisa. Por isso ele mora
+   dentro de `executar`, que é o que roda no filho.
+2. **Tem de reverter.** O processo do pool é reusado entre rodadas; sem
+   `finally`, o patch continuaria valendo para as seguintes.
+3. **O escopo não isola a geração de colunas.** Ela acontece DENTRO de
+   `resolver_por_sistema` (linha 435), então nem um `with` bem delimitado a deixa
+   de fora. Com `ete_faseada=True` — nosso caso — ela não usa CP-SAT e a questão
+   não se coloca. Com faseada desligada, o gap mudaria as colunas geradas, que
+   são a matéria-prima do master: mudança de resultado por um caminho que ninguém
+   lembraria de olhar.
+
+É por causa de (3), e do fato de o contorno se apoiar num detalhe de
+implementação do pacote (criar `cp_model.CpSolver()` diretamente), que ele
+continua sendo contorno. Se o pacote mudar essa forma, ele para de agir sem erro
+nenhum — enquanto um parâmetro de verdade quebraria com `TypeError`.
+
+Quando o parâmetro existir no motor, `gap_de_convergencia()` sai e a chamada
+passa a `CP.resolver_por_sistema(cen, max_time_s=..., workers=..., gap_relativo=0.001)`.
