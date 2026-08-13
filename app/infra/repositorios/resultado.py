@@ -117,7 +117,16 @@ async def em_voo(
         f"""SELECT r.run_id, r.unidade, r.solicitado_por, r.solicitado_em,
                    r.rotulo, r.params AS pedido,
                    s.status, s.progresso, s.erro,
-                   u.unidade_name
+                   u.unidade_name,
+                   -- O DESFECHO DO SOLVER, quando ele chegou a ter um.
+                   --
+                   -- Rodada que morre entre o solver e a publicacao nao tem linha
+                   -- em `otim_*`, e a tela mostrava so "ERRO": o plano existiu, o
+                   -- VPL existiu, e nada disso sobrevivia. O executor passou a
+                   -- anotar aqui assim que o solver volta.
+                   (SELECT d.detalhe FROM {_c()}.run_diagnostico d
+                     WHERE d.run_id = r.run_id AND d.checagem = 'solver'
+                     ORDER BY d.gravado_em DESC LIMIT 1) AS solver
               FROM {_c()}.run_request r
               JOIN {_c()}.run_status  s USING (run_id)
               LEFT JOIN {_i()}.unidade_regional u ON u.unidade_id = r.unidade
@@ -141,6 +150,8 @@ async def em_voo(
             "status": l["status"],
             "progresso": l.get("progresso") or 0,
             "erro": l.get("erro"),
+            # Ausente quando o solver nem chegou a rodar — e a ausencia diz isso.
+            "solver": l.get("solver"),
             "favorita": l["run_id"] in (favoritas or set()),
             "publicada": False,
             # A rodada em voo tem pedido desde o `POST` — e e a UNICA coisa que

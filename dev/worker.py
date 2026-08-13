@@ -299,6 +299,42 @@ def conferir_cancelamento(run_id: str) -> None:
         raise Cancelada(run_id, encontrado)
 
 
+def anotar_solver(run_id: str, res: dict) -> None:
+    """Registra em `controle.run_diagnostico` o que o solver devolveu.
+
+    A tabela ja existia para as checagens de qualidade do pacote de producao, e a
+    forma dela serve: uma linha por checagem, com nivel e detalhe. O solver e uma
+    checagem como outra qualquer — a diferenca e que esta roda sempre.
+
+    `ok` distingue OTIMO de VIAVEL: os dois produzem plano, mas so o primeiro tem
+    prova de que nao ha melhor. A tela usa isso para nao dizer "pronto" sobre um
+    resultado que parou no limite de tempo.
+
+    Falha aqui NAO derruba a rodada: e registro, nao resultado. Perder a anotacao e
+    ruim; perder a rodada por causa da anotacao seria pior.
+    """
+    milp = str(res.get("milp_status") or "")
+    vpl = res.get("vpl")
+    detalhe = milp + (f"  VPL={vpl:,.0f}" if isinstance(vpl, (int, float)) else "")
+    try:
+        with R.eng.begin() as con:
+            con.execute(
+                text(
+                    """INSERT INTO controle.run_diagnostico
+                           (run_id, checagem, nivel, ok, detalhe)
+                       VALUES (:r, 'solver', :n, :ok, :d)"""
+                ),
+                {
+                    "r": run_id,
+                    "n": "info" if milp.upper().startswith("OTIMO") else "aviso",
+                    "ok": milp.upper().startswith("OTIMO"),
+                    "d": detalhe[:500],
+                },
+            )
+    except Exception as e:  # noqa: BLE001
+        log(run_id, f"nao consegui anotar o desfecho do solver: {type(e).__name__}: {e}")
+
+
 def pedido(run_id: str) -> dict | None:
     with R.eng.begin() as con:
         linha = con.execute(
@@ -479,6 +515,17 @@ def executar(run_id: str, tempo: int) -> None:
         parar.set()
         batedor.join(timeout=2)
     log(run_id, f"solver: {res.get('milp_status')}  VPL={res.get('vpl'):,.0f}")
+    # GRAVA O DESFECHO DO SOLVER ANTES DE MATERIALIZAR.
+    #
+    # Aconteceu: 68 minutos de solver, o plano pronto, e o processo morreu na
+    # materializacao. `otim_*` ficou vazio e a tela mostrou so "ERRO" — o VPL e as
+    # obrigatorias existiam apenas numa linha de log, num terminal. Fechar a janela
+    # apagava o unico registro do que a rodada tinha achado.
+    #
+    # Aqui o numero sobrevive a falha do passo seguinte. Nao substitui o resultado
+    # publicado (que tem a cascata inteira); e o que da para dizer quando a
+    # publicacao nao acontece.
+    anotar_solver(run_id, res)
     # O solver e uma chamada nativa: um cancelamento durante ele so pode ser
     # atendido quando ele volta. E por isso que a espera maxima do cancelamento e
     # o `MAX_TIME_S` da rodada, e nao um numero que este worker escolha.
