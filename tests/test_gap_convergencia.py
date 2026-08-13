@@ -94,12 +94,14 @@ def test_nao_afrouxa_um_gap_mais_rigoroso_do_motor():
         assert s2.parameters.relative_gap_limit == pytest.approx(0.01)
 
 
-def test_o_valor_padrao_e_o_conservador():
-    """0,1%, e nao 0,5%.
+def test_o_valor_padrao_e_o_declarado_pelo_produto():
+    """2%, escolha explicita de quem usa.
 
-    Com 0,5% a fase de cobertura pararia aos 24s em vez de 720s, mas abrindo mao
-    de 0,37% de cobertura. Como os coeficientes sao inteiros arredondados e as
-    fases anteriores ja travaram obrigatorias e metas, planos quase-equivalentes
-    podem empatar sob a metrica do solver — entao o padrao comeca apertado.
+    O teste existe para o numero nao mudar por acidente: ele governa QUANTA
+    cobertura se troca por tempo, e um ajuste distraido aqui muda silenciosamente
+    o plano de investimento que a rodada devolve.
+
+    O que o gap afrouxa e apenas o desempate de cobertura — obrigatorias e metas
+    sao travadas nas fases anteriores, que continuam indo ate a otimalidade.
     """
-    assert _worker().GAP_RELATIVO == 0.001
+    assert _worker().GAP_RELATIVO == 0.02

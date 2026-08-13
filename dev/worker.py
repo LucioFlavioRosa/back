@@ -361,7 +361,10 @@ def pedido(run_id: str) -> dict | None:
     }
 
 
-#: Distancia do otimo em que a busca pode parar. 0.001 = 0,1%.
+#: Distancia do otimo em que a busca pode parar. 0.02 = 2%.
+#:
+#: E DECISAO DE PRODUTO, nao de engenharia: o numero diz quanta cobertura se
+#: aceita trocar por tempo. 2% foi a escolha declarada de quem usa.
 #:
 #: Medido na unidade de 67 cidades (MAX_TIME_S=1200): a fase de cobertura gastou
 #: os 720s inteiros e devolveu um plano a 0,006% do limite superior provado. A
@@ -369,11 +372,12 @@ def pedido(run_id: str) -> dict | None:
 #: do tempo de solver) foram tentativa de PROVAR o que ja estava achado. Unidade
 #: pequena nem chega perto disso: prova as tres fases em 1,2s com teto de 5000s.
 #:
-#: 0,1% e o valor conservador de proposito. Com 0,5% a mesma fase pararia aos 24s
-#: em vez de 720s, mas abrindo mao de 0,37% de cobertura — e como os coeficientes
-#: sao inteiros arredondados e as fases anteriores ja travaram obrigatorias e
-#: metas, planos quase-equivalentes podem empatar sob a metrica do solver.
-GAP_RELATIVO = 0.001
+#: Na trajetoria medida, 2% ja estaria satisfeito na PRIMEIRA solucao reportada
+#: (aos 24,1s o gap era 0,39%) — o corte e agressivo. O contrapeso: as fases 0 e
+#: 1 travam obrigatorias e metas ANTES desta, e elas continuam sendo resolvidas
+#: ate a otimalidade em ~1s. O que o gap afrouxa e so o desempate de cobertura
+#: entre planos que ja cumprem o mesmo numero de obrigatorias e metas.
+GAP_RELATIVO = 0.02
 
 
 @contextlib.contextmanager

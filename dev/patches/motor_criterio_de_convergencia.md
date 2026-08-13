@@ -109,10 +109,19 @@ alvo.
 A escolha do valor é decisão de produto, não de engenharia: 0,5% devolve o plano
 em 24s em vez de 720s, abrindo mão de 0,37% da cobertura.
 
-**Escolhido 0,001 (0,1%)**, o conservador. Os coeficientes da fase 3 são inteiros
-arredondados e as fases anteriores já travaram obrigatórias e metas, então planos
-quase-equivalentes podem empatar sob a métrica do solver — começar apertado custa
-metade do desperdício e quase nada de resultado.
+**Escolhido 0,02 (2%)**, por decisão declarada de produto: o número diz quanta
+cobertura se aceita trocar por tempo, e essa troca não é chamada de engenharia.
+
+O corte é agressivo — na trajetória acima, 2% já estaria satisfeito na primeira
+solução reportada, aos 24,1s. O que o torna defensável é o que ele NÃO afrouxa:
+as fases 0 e 1 travam obrigatórias e metas antes desta, e continuam sendo
+resolvidas até a otimalidade em ~1s. O gap só afrouxa o desempate de cobertura
+entre planos que já cumprem o mesmo número de obrigatórias e o mesmo número de
+metas.
+
+Registro do caminho: 0,1% foi o primeiro valor, e uma rodada real da `uA3` com
+verba de 120 Mi/ano mostrou que ele não fechava — a fase seguia longe do teto sem
+convergir. É o dado que motivou subir.
 
 ### Efeito colateral bom: o status deixa de mentir
 
@@ -140,7 +149,7 @@ teto nominal não é o que o nome sugere.
 ## Enquanto o patch não existe
 
 **Já está aplicado do nosso lado, como contorno declarado:**
-`gap_de_convergencia()` em `dev/worker.py`, com `GAP_RELATIVO = 0.001`. Ele
+`gap_de_convergencia()` em `dev/worker.py`, com `GAP_RELATIVO = 0.02`. Ele
 envolve `cp_model.CpSolver.Solve` e define `relative_gap_limit` em cada
 instância.
 
@@ -166,4 +175,4 @@ continua sendo contorno. Se o pacote mudar essa forma, ele para de agir sem erro
 nenhum — enquanto um parâmetro de verdade quebraria com `TypeError`.
 
 Quando o parâmetro existir no motor, `gap_de_convergencia()` sai e a chamada
-passa a `CP.resolver_por_sistema(cen, max_time_s=..., workers=..., gap_relativo=0.001)`.
+passa a `CP.resolver_por_sistema(cen, max_time_s=..., workers=..., gap_relativo=0.02)`.
