@@ -84,7 +84,8 @@ As migrações do cadastro e a do resultado já estão aplicadas. Índices, cons
 Confira:
 
 ```bash
-docker compose exec -T db psql -U otim -d otimizador -c \n  "select (select count(*) from input.subbacia_operacional) subbacias,
+docker compose exec -T db psql -U otim -d otimizador -c \
+  "select (select count(*) from input.subbacia_operacional) subbacias,
           (select count(*) from public.otim_meta) resultados;"        # 4850 | 0
 
 curl http://localhost:8000/readyz          # migracoesFaltando: []
