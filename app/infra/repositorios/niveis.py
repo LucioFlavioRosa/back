@@ -163,8 +163,28 @@ async def painel(run_id: str) -> dict[str, Any]:
               FROM {_p()}.otim_mes WHERE run_id = $1 ORDER BY mes_indice""",
         run_id,
     )
+    # As TRES leituras do mesmo elemento, na mesma consulta e sobre a mesma populacao —
+    # obras CONSTRUIDAS. Vir de queries separadas deixaria os graficos discordarem sobre
+    # quais obras entraram, e discordancia entre dois quadros da mesma tela e pior que
+    # qualquer um dos dois estar errado sozinho.
+    #
+    #   capex        quanto custou
+    #   obras        quantas obras
+    #   quantidade   quanto foi CONSTRUIDO, na unidade fisica do elemento
+    #                (126.807 ligacoes, 1.042.571 m de rede, 252 unidades de EEE)
+    #
+    # A UNIDADE so viaja quando e UNICA no elemento. Se um mesmo componente aparecer com
+    # `m` e `un` no cadastro, somar as duas produziria um numero sem significado — nesse
+    # caso a quantidade sai nula e a tela mostra travessao. ETE e modulo de ETE nao tem
+    # quantidade nenhuma: o CAPEX delas vem de pacote, nao de quantidade x preco.
     por_componente = await db.buscar(
-        f"""SELECT componente, SUM(capex) AS capex
+        f"""SELECT componente,
+                   SUM(capex) AS capex,
+                   COUNT(*) AS obras,
+                   SUM(quantidade) AS quantidade,
+                   MIN(unidade) FILTER (WHERE COALESCE(unidade, '') <> '') AS unidade,
+                   COUNT(DISTINCT unidade) FILTER (WHERE COALESCE(unidade, '') <> '')
+                       AS unidades_distintas
               FROM {_p()}.otim_obra
              WHERE run_id = $1 AND construida
              GROUP BY componente HAVING SUM(capex) > 0""",
@@ -172,23 +192,39 @@ async def painel(run_id: str) -> dict[str, Any]:
     )
     total_capex = sum(c["capex"] for c in por_componente) or None
 
-    # Histograma do VPL por sub-bacia: `width_bucket` deixaria as faixas dependendo
-    # do min/max da rodada, e duas rodadas ficariam incomparáveis. Faixa fixa de
-    # 1 milhão mantém o eixo estável entre rodadas.
-    histograma = await db.buscar(
-        f"""SELECT (floor(vpl / 1e6) * 1e6)::float8 AS de,
-                   (floor(vpl / 1e6) * 1e6 + 1e6)::float8 AS ate,
-                   COUNT(*) AS quantidade
-              FROM {_p()}.otim_subbacia WHERE run_id = $1
-             GROUP BY 1, 2 ORDER BY 1""",
+    # A ETE NAO TEM QUANTIDADE EM `otim_obra`: o CAPEX dela vem de pacote (ou de modulo),
+    # nao de quantidade x preco unitario. Mas ela TEM uma unidade construida com
+    # significado — a CAPACIDADE ACRESCENTADA pelos modulos, que e o que a estacao passa a
+    # tratar a mais. Ela sai de `otim_sistema`, onde o executor ja publica quantos modulos
+    # foram construidos e quanto cada um vale.
+    #
+    # `ete` (estacao NOVA, obra de pacote unico) fica de fora desta conta: o executor nao
+    # publica a capacidade dela por sistema, e inventar aqui seria pior que o travessao.
+    # A nota do grafico diz isso.
+    # A UNIDADE VEM DO BANCO, e do SNAPSHOT da rodada — nunca de constante no codigo.
+    # Trocar a medida de capacidade e mudanca de cadastro; a soma nao muda com ela, so a
+    # leitura do numero. E ela sai de `otim_sistema` (o snapshot), e nao de `input`,
+    # porque o cadastro muda e a rodada e imutavel: uma rodada de 2026 tem de continuar
+    # dizendo a unidade que ELA usou.
+    #
+    # Mesma regra das obras: unidade so viaja quando e UNICA entre os sistemas que
+    # construiram modulo. Duas unidades diferentes somadas dariam um numero sem
+    # significado — nesse caso a quantidade sai sem sufixo.
+    cap_ete = await db.buscar_um(
+        f"""SELECT SUM(modulos_construidos * capacidade_modulo)::float8 AS capacidade,
+                   MIN(unidade_capacidade) FILTER (
+                       WHERE COALESCE(unidade_capacidade, '') <> '') AS unidade,
+                   COUNT(DISTINCT unidade_capacidade) FILTER (
+                       WHERE COALESCE(unidade_capacidade, '') <> '') AS unidades_distintas
+              FROM {_p()}.otim_sistema
+             WHERE run_id = $1 AND COALESCE(modulos_construidos, 0) > 0""",
         run_id,
     )
-    sinal = await db.buscar_um(
-        f"""SELECT COUNT(*) FILTER (WHERE vpl > 0) AS positivas,
-                   COUNT(*) FILTER (WHERE vpl <= 0) AS negativas
-              FROM {_p()}.otim_subbacia WHERE run_id = $1""",
-        run_id,
+    capacidade_modulos = (cap_ete or {}).get("capacidade")
+    unidade_capacidade = (
+        (cap_ete or {}).get("unidade") if (cap_ete or {}).get("unidades_distintas") == 1 else None
     )
+
     obras_ano = await db.buscar(
         f"""SELECT EXTRACT(YEAR FROM to_date(data_inicio, 'YYYY-MM'))::int AS ano,
                    componente, COUNT(*) AS quantidade
@@ -229,6 +265,20 @@ async def painel(run_id: str) -> dict[str, Any]:
                     "componente": nome_componente(c["componente"]),
                     "capex": c["capex"],
                     "pctDoTotal": _pct(c["capex"], total_capex),
+                    "obras": c["obras"],
+                    # Ausentes quando nao ha o que contar (ETE) ou quando o elemento
+                    # aparece com mais de uma unidade. `None` e a tela mostra travessao —
+                    # zero seria lido como "nada construido".
+                    "unidadesConstruidas": (
+                        capacidade_modulos
+                        if c["componente"] == "ete_mod"
+                        else (c["quantidade"] if c["unidades_distintas"] == 1 else None)
+                    ),
+                    "unidade": (
+                        unidade_capacidade
+                        if c["componente"] == "ete_mod"
+                        else (c["unidade"] if c["unidades_distintas"] == 1 else None)
+                    ),
                 }
                 for c in por_componente
             ),
@@ -236,11 +286,6 @@ async def painel(run_id: str) -> dict[str, Any]:
             if c["componente"] in ORDEM_COMPONENTES
             else len(ORDEM_COMPONENTES),
         ),
-        "histogramaVpl": [
-            {"de": h["de"], "ate": h["ate"], "quantidade": h["quantidade"]} for h in histograma
-        ],
-        "subbaciasPositivas": (sinal or {}).get("positivas", 0),
-        "subbaciasNegativas": (sinal or {}).get("negativas", 0),
         "obrasPorAno": [
             {"ano": ano, "porComponente": comps} for ano, comps in sorted(por_ano.items())
         ],
