@@ -66,19 +66,38 @@ você gera as suas.
 docker compose exec -T db pg_restore -U otim -d otimizador --no-owner < dev/cadastro_base.dump
 ```
 
+**O que vem no dump — a estrutura inteira, o dado só do cadastro:**
+
+| Esquema | Objetos | FKs | Dado |
+|---|---|---|---|
+| `input` | 17 tabelas | 10 | **completo** — 4.850 sub-bacias, 997 ETEs, 141 cidades |
+| `controle` | 7 tabelas | 1 | só as 6 concessões de acesso; **sem histórico de rodadas** |
+| `public` | 14 tabelas + 3 views | 13 | **vazio** — você gera os seus resultados |
+
+As migrações do cadastro e a do resultado já estão aplicadas. Índices, constraints e
+`COMMENT ON COLUMN` vêm junto.
+
+> **Um erro no fim do restore é esperado:** `schema "public" already exists` — ele já existe em
+> qualquer banco Postgres novo. O `pg_restore` conta como "1 error ignored" e segue; as 17
+> tabelas de resultado são criadas normalmente.
+
 Confira:
 
 ```bash
-docker compose exec -T db psql -U otim -d otimizador -c \
-  "select count(*) subbacias from input.subbacia_operacional;"       # 4850
+docker compose exec -T db psql -U otim -d otimizador -c \n  "select (select count(*) from input.subbacia_operacional) subbacias,
+          (select count(*) from public.otim_meta) resultados;"        # 4850 | 0
 
 curl http://localhost:8000/readyz          # migracoesFaltando: []
 ```
 
 > **Por que um dump, e não os DDLs.** O cadastro nasce de uma planilha que não está no
-> repositório (2 MB, no OneDrive do time). O dump é o mesmo dado, com as quatro migrações já
-> aplicadas, em 744 KB. Quem for **regenerar da planilha** usa `dev/recarregar_tudo.py` — leva
+> repositório (2 MB, no OneDrive do time). O dump é o mesmo dado, com as migrações já
+> aplicadas, em 771 KB. Quem for **regenerar da planilha** usa `dev/recarregar_tudo.py` — leva
 > ~20 min porque também roda as 5 unidades.
+>
+> **Por que o `public` vem vazio, mas vem.** Sem as 17 tabelas de resultado, `GET /runs`
+> responderia 500 e a publicação não teria onde gravar. Sem os dados, cada um gera as próprias
+> rodadas — e 366 dos 385 MB do banco são exatamente isso.
 
 ## 4 · Preparar o pacote do motor
 
