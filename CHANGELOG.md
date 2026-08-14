@@ -8,6 +8,37 @@ considerou e descartou — está na mensagem do commit. Este arquivo é o índic
 
 ---
 
+## A rodada aceita um comentário
+
+`PUT /runs/{id}/comentario` (e `DELETE`) gravam uma anotação sobre a rodada, e a
+lista passa a devolvê-la junto de cada item. O front oferece o campo no modal de
+detalhes, que é onde se está olhando o resultado.
+
+É outra coisa que o `nome` da rodada: aquele é dado no disparo e descreve a
+**intenção**; este é escrito depois de ver o que saiu e descreve a **conclusão**.
+
+- `migracoes/010_run_comentario.sql` — tabela própria e **sem FK**, pela mesma
+  razão de `run_favorita` (009): não há uma tabela única com todas as rodadas
+  para apontar, e uma coluna em `run_request` deixaria de fora justamente a
+  rodada publicada direto pelo pacote, que aparece na lista como as outras.
+- **Compartilhado, não por usuário** — quem abre a rodada amanhã precisa ler a
+  conclusão de quem a analisou. Por isso `autor` e `atualizado_em` são gravados:
+  num texto que qualquer um reescreve, quem escreveu e quando é o mínimo para
+  ele significar algo.
+- **Escrever exige o mesmo alcance que ler** (`ve_rodada_de` + `acessa_unidade`,
+  os mesmos métodos de `GET /runs`), e não o de `favorita`, que dispensa recorte
+  porque só afeta a lista de quem pede. Fora do alcance responde `404`, e não
+  `403`: dizer "existe, mas você não pode" já entrega que existe.
+- **Texto vazio apaga a linha.** Assim "sem comentário" tem uma representação só,
+  e a resposta traz `comentario: null` em vez de um bloco com texto vazio.
+- É a **única parte mutável de uma rodada**, e a exceção é deliberada: o
+  comentário não é registro da execução, é leitura humana sobre ela. Não entra em
+  `params` nem em `otim_meta`.
+- No front o salvamento é **pessimista**, ao contrário da estrela de favorita: a
+  pessoa está digitando, e um update otimista revertido apagaria o que ela
+  escreveu durante o voo — o mesmo defeito que fez criar/remover CTS voltarem a
+  ser pessimistas no cadastro.
+
 ## Dá para desistir de uma rodada
 
 `POST /runs/{id}/cancelar` respondia `501`: `CANCELADA` violava o CHECK de

@@ -21,9 +21,9 @@ O front cacheia tudo isto com `staleTime: Infinity` — o que so e correto porqu
 `app/dominio/status.py`).
 """
 
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Body, HTTPException, Query, status
 
 from app.api.deps import Usuario, Quem
 from app.dominio import run_id as rid
@@ -97,6 +97,80 @@ async def excluir(run_id: str, usuario: Usuario) -> None:
     rid.exigir_valido(run_id)
     if not await resultado.excluir(run_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Rodada não encontrada.")
+
+
+#: Teto do comentario. Generoso porque o campo E para texto corrido — o `nome` da
+#: rodada tem 200 justamente por ser rotulo de lista —, mas existe pela mesma
+#: razao que la: sem limite, um colar acidental manda megabytes que atravessam
+#: rede, log e banco de graca. Ver `simulacao.criar`.
+_MAX_COMENTARIO = 4000
+
+
+async def _pode_comentar(run_id: str, quem: Quem) -> None:
+    """Comentar exige o mesmo alcance que LER a rodada — nem mais, nem menos.
+
+    Nao e o caso de `favorita`, que dispensa checagem porque so mexe na lista de
+    quem pede. Aqui o texto e compartilhado: quem escreve altera o que os outros
+    veem, entao anotar uma rodada que a pessoa nao poderia sequer enxergar seria
+    escrever num lugar invisivel para ela — e visivel para os outros.
+
+    As duas regras sao as mesmas de `GET /runs`, na mesma ordem:
+      POSSE   quem nao e admin so alcanca as proprias rodadas;
+      ESCOPO  vale para todo mundo, admin inclusive — a concessao por unidade nao
+              e sobreposta pelo papel.
+
+    404 e nao 403 quando a rodada existe fora do alcance: dizer "existe, mas voce
+    nao pode" ja entrega que ela existe, e o historico e recortado justamente para
+    nao entregar isso.
+    """
+    linha = await resultado.dono_e_unidade(run_id)
+    # `ve_rodada_de` e `acessa_unidade` sao os MESMOS metodos que a leitura usa —
+    # incluindo o caso do dono nulo, que e so do admin. Reescrever a comparacao
+    # aqui criaria uma segunda definicao de posse, e a que fica desatualizada e
+    # sempre a copia.
+    if (
+        not linha
+        or not quem.ve_rodada_de(linha.get("dono"))
+        or not quem.acessa_unidade(linha.get("unidade_id"))
+    ):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Rodada não encontrada.")
+
+
+@router.put("/runs/{run_id}/comentario", status_code=status.HTTP_204_NO_CONTENT)
+async def comentar(
+    run_id: str, quem: Quem, corpo: Annotated[dict[str, Any], Body()]
+) -> None:
+    """A anotacao de quem analisa a rodada. `migracoes/010_run_comentario.sql`.
+
+    `PUT` pela mesma razao que a favorita: o estado pedido e o estado final, e
+    mandar duas vezes o mesmo texto nao produz nada diferente. Reescrever e o caso
+    normal — o campo existe para ser editado depois de ver o resultado.
+
+    TEXTO VAZIO APAGA, e nao grava string vazia. Sem isso "sem comentario" teria
+    duas representacoes no banco (linha ausente e linha com ''), e a tela teria de
+    conhecer as duas. O `DELETE` abaixo continua existindo para quem prefere dizer
+    isso pelo verbo.
+    """
+    rid.exigir_valido(run_id)
+    texto = str(corpo.get("texto") or "").strip()
+    if len(texto) > _MAX_COMENTARIO:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"O comentário é longo demais (máximo {_MAX_COMENTARIO} caracteres).",
+        )
+    await _pode_comentar(run_id, quem)
+    if texto:
+        await resultado.comentar(run_id, texto, quem.login)
+    else:
+        await resultado.descomentar(run_id)
+
+
+@router.delete("/runs/{run_id}/comentario", status_code=status.HTTP_204_NO_CONTENT)
+async def descomentar(run_id: str, quem: Quem) -> None:
+    """Apaga. Idempotente: apagar o que ja nao existe e o mesmo estado final."""
+    rid.exigir_valido(run_id)
+    await _pode_comentar(run_id, quem)
+    await resultado.descomentar(run_id)
 
 
 @router.put("/runs/{run_id}/favorita", status_code=status.HTTP_204_NO_CONTENT)

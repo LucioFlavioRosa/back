@@ -229,7 +229,7 @@ def montar_params(corpo: dict[str, Any], unidade_id: str, usuario: str) -> dict[
     # rodada antiga com 3 continua contando a verdade dela.
     params["ANOS_EXTRA_CONCLUSAO"] = 0
 
-    # MAX_TIME_S FIXO EM 5000s, e a tela nao o oferece mais: quanto tempo o solver
+    # MAX_TIME_S FIXO EM 1000s, e a tela nao o oferece mais: quanto tempo o solver
     # tem e afinacao de execucao, nao decisao de negocio — quem dispara a rodada
     # nao tem como calibrar isso.
     #
@@ -241,11 +241,28 @@ def montar_params(corpo: dict[str, Any], unidade_id: str, usuario: str) -> dict[
     #
     # WORKERS nao entra: e paralelismo do processo que executa, e depende da
     # maquina dele. O executor usa o proprio padrao.
-    # 5000s (83 min). Subiu de 1000 depois de uma rodada real na maior unidade:
-    # com 1000s a geracao de colunas sozinha levou 302s e o solver mestre terminou
-    # em `VIAVEL(limite de tempo)`, deixando 23 obras obrigatorias de fora. O
-    # limite estava mordendo o resultado, nao so o relogio.
-    params["MAX_TIME_S"] = 5000
+    # 1000s, ESCOLHIDO POR MEDICAO em 13/08/2026 — uA3 (67 cidades, 8.079 obras),
+    # mesmos parametros, so o teto mudando:
+    #
+    #             500s                      1000s
+    #   status    OTIMO                     VIAVEL(limite de tempo)
+    #   VPL       141.685.312               170.430.575   (+20,3%)
+    #   plano     815 obras / 47,764%       817 obras / 47,845%
+    #   total     960s                      1.719s
+    #
+    # O PLANO E QUASE O MESMO E O VPL E 20% MAIOR, e a causa nao e ruido: com 500s
+    # a FASE 3 (desempate por retorno) nao chegou a rodar. O motor reparte
+    # `max_time_s*1.35` entre as fases e pula a terceira quando sobram menos de 5s
+    # (`otimizador_capex_cpsat63.py`, `if _resta<5.0: return plano2`), devolvendo o
+    # status da fase 2 — que provou o proprio otimo. Por isso o rotulo melhor sai
+    # na rodada pior: `OTIMO` aqui significa "a ultima fase que rodou provou o
+    # otimo DELA", e nao "melhor plano".
+    #
+    # 500 nao serve para a maior unidade: desliga em silencio a fase que otimiza
+    # retorno. Nas pequenas o teto nao morde — a uA1 fecha em 14s, parando pelo
+    # gap muito antes. Entao 1000 e o unico dos dois que nao erra em nenhuma ponta,
+    # ao custo de 13 minutos na uA3.
+    params["MAX_TIME_S"] = 1000
 
     _validar(params)
     return params
