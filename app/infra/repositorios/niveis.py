@@ -163,10 +163,17 @@ async def painel(run_id: str) -> dict[str, Any]:
               FROM {_p()}.otim_mes WHERE run_id = $1 ORDER BY mes_indice""",
         run_id,
     )
-    # As TRES leituras do mesmo elemento, na mesma consulta e sobre a mesma populacao —
-    # obras CONSTRUIDAS. Vir de queries separadas deixaria os graficos discordarem sobre
-    # quais obras entraram, e discordancia entre dois quadros da mesma tela e pior que
-    # qualquer um dos dois estar errado sozinho.
+    # As tres leituras do elemento saem DESTA consulta, sobre a mesma populacao — obras
+    # CONSTRUIDAS. Vir de queries separadas deixaria os graficos discordarem sobre quais
+    # obras entraram, e discordancia entre dois quadros da mesma tela e pior que qualquer
+    # um dos dois estar errado sozinho.
+    #
+    # COM UMA EXCECAO, e ela esta declarada porque a garantia acima nao a cobre: a
+    # quantidade da ETE vem de OUTRA consulta (`otim_sistema`, mais abaixo), porque a
+    # unidade construida dela e a capacidade dos modulos, e isso nao existe em
+    # `otim_obra`. As duas fontes descrevem a mesma rodada e hoje batem (um modulo
+    # construido = uma obra `ete_mod`), mas nada aqui IMPOE isso — se um dia divergirem,
+    # a linha da ETE vai misturar as duas sem avisar.
     #
     #   capex        quanto custou
     #   obras        quantas obras
