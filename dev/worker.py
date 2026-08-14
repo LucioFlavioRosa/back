@@ -525,7 +525,7 @@ def executar(run_id: str, tempo: int) -> None:
         orcamento=orc,
         base_receita=p.get("BASE_RECEITA", "arrecadada"),
         usar_cts=bool(p.get("USAR_CTS", True)),
-        incluir_industrial=bool(p.get("INCLUIR_INDUSTRIAL", True)),
+        cobertura_so_residencial=bool(p.get("COBERTURA_SO_RESIDENCIAL", False)),
         curva_adocao=p.get("CURVA_ADOCAO", "scurve"),
         foco_cobertura=float(p.get("FOCO_COBERTURA", 1.0)),
         penalidade_cobertura=p.get("PENALIDADE_COBERTURA", "meta+cobertura"),

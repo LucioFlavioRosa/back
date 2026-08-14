@@ -166,7 +166,7 @@ def rodar_e_publicar() -> str:
                    2031: 40e6, 2032: 30e6, 2033: 30e6},
         base_receita="arrecadada",
         usar_cts=True,
-        incluir_industrial=True,
+        cobertura_so_residencial=False,
         curva_adocao="scurve",
         foco_cobertura=1.0,
         penalidade_cobertura="meta+cobertura",

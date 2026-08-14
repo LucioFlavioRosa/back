@@ -64,7 +64,7 @@ async def historico(
                    h.metas_total, h.metas_nao_atingidas, h.tempo_s,
                    m.receita_total, m.opex_total,
                    m.regional, m.unidade_id, m.base_receita_param, m.usar_cts,
-                   m.foco_cobertura, m.incluir_industrial,
+                   m.foco_cobertura, m.cobertura_so_residencial,
                    -- O PEDIDO, como ele foi feito. Ver `_pedido`.
                    -- LEFT JOIN: rodada publicada direto pelo pacote (sem passar
                    -- pela fila) nao tem `run_request`, e continua aparecendo na
@@ -86,7 +86,7 @@ async def historico(
                           params_extra->>'BASE_RECEITA'      AS base_receita_param,
                           (params_extra->>'USAR_CTS')::bool  AS usar_cts,
                           (params_extra->>'FOCO_COBERTURA')::float AS foco_cobertura,
-                          (params_extra->>'INCLUIR_INDUSTRIAL')::bool AS incluir_industrial
+                          (params_extra->>'COBERTURA_SO_RESIDENCIAL')::bool AS cobertura_so_residencial
                      FROM {_p()}.otim_meta WHERE run_id = h.run_id
               ) m ON true
              -- casa por id OU por nome: o front manda o id, mas um script de
@@ -268,7 +268,7 @@ def _resumo(l: dict[str, Any], favoritas: set[str]) -> dict[str, Any]:
             "janelaCapex": l.get("anos_capex"),
             "orcamento": l.get("orcamento_total"),
             "focoCobertura": l.get("foco_cobertura"),
-            "incluirIndustrial": l.get("incluir_industrial"),
+            "coberturaSoResidencial": l.get("cobertura_so_residencial"),
         },
     }
     if not inviavel:
@@ -357,7 +357,7 @@ async def meta(run_id: str) -> dict[str, Any] | None:
             "janelaCapex": linha.get("anos_capex"),
             "orcamento": linha.get("orcamento_total"),
             "focoCobertura": linha.get("foco_cobertura"),
-            "incluirIndustrial": (linha.get("params_extra") or {}).get("INCLUIR_INDUSTRIAL"),
+            "coberturaSoResidencial": (linha.get("params_extra") or {}).get("COBERTURA_SO_RESIDENCIAL"),
         },
     }
 

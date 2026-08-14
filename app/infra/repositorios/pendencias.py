@@ -25,15 +25,11 @@ contradizia, e quem ganhava era a lista. Eram 598 das 997 ETEs travando a
 simulação por um campo cujo default o motor usa em 2 de cada 3 obras
 (`SELECT wacc_origem, count(*) FROM otim_obra` → wacc_medio 11.099, proprio 7.289).
 
-`vazao_contribuicao_industrial` também saiu, e por outro motivo: a planilha de
-origem NÃO TEM essa coluna para sub-bacia (só para CTS), então ela chega NULL nas
-4.850 linhas e não há de onde preencher. O motor só a usa para SUBTRAIR a parcela
-industrial quando se roda `INCLUIR_INDUSTRIAL=False`; na análise que o produto faz
-hoje ela não entra na conta. Cobrar um campo que a origem não tem, para uma
-simulação que não o usa, é travar a unidade inteira por nada.
-
-Se um dia a análise só-residencial virar caso de uso, este campo volta para a
-régua — mas aí junto de uma coluna na planilha que o alimente.
+`vazao_contribuicao_industrial` também saiu da régua na época, por não existir na
+planilha de origem — e hoje a coluna não existe mais em lugar nenhum. O recorte
+residencial deixou de mexer em vazão: ela dimensiona módulo de ETE e rateia obra
+compartilhada, e indústria contribui com esgoto mesmo quando não conta para a meta.
+Descontá-la ali subdimensionaria a estação.
 
 Duas sutilezas que vieram do outro lado e não são óbvias:
 

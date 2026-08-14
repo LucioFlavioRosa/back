@@ -61,7 +61,7 @@ CHAVES_ACEITAS = frozenset(
         "BASE_RECEITA",
         "USAR_CTS",
         "ANOS_EXTRA_CONCLUSAO",
-        "INCLUIR_INDUSTRIAL",
+        "COBERTURA_SO_RESIDENCIAL",
         # CHAVES_DO_JOB — nao vao para o `ler_banco`, ficam com o job
         "USUARIO",
         "MAX_TIME_S",
@@ -190,7 +190,7 @@ def montar_params(corpo: dict[str, Any], unidade_id: str, usuario: str) -> dict[
         "base_receita": "BASE_RECEITA",
         "curva_adocao": "CURVA_ADOCAO",
         "usar_cts": "USAR_CTS",
-        "incluir_industrial": "INCLUIR_INDUSTRIAL",
+        "cobertura_so_residencial": "COBERTURA_SO_RESIDENCIAL",
         "data_inicio": "DATA_INICIO",
     }
     for origem, destino in DIRETO.items():
