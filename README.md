@@ -56,6 +56,13 @@ dependência de framework e é onde estão as decisões que custam caro se errad
 
 ## Rodar
 
+**Primeira vez, ou quer o produto inteiro no navegador?** Vá para
+[`SUBIR_LOCAL.md`](SUBIR_LOCAL.md) — do clone ao resultado na tela, com dado real, em ~20
+minutos. Ele cobre os três repositórios, os 7 containers, o dump do cadastro e o executor da
+rodada (que roda **fora** do Docker).
+
+Só a API, contra um Postgres que você já tem:
+
 ```bash
 python -m venv .venv && .venv/Scripts/activate    # Windows
 pip install -r requirements.txt
