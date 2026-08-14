@@ -1,5 +1,13 @@
 # Motor: o solver gasta o teto inteiro PROVANDO o que já achou
 
+> **IMPLEMENTADO.** Esta mudança deixou de ser proposta: ela está no repositório de
+> produção do motor (`LucioFlavioRosa/otimzador_capex`, branch
+> `desempate-por-retorno-e-convergencia`), com testes. O documento continua aqui
+> porque o pacote `rev11` que a máquina local carrega por padrão **não** a tem — e é
+> por isso que `dev/worker.py` detecta, por assinatura, qual geração do motor está
+> em uso antes de escolher como chamar.
+
+
 **Para quem mantém o `Otimizador_CAPEX_v62_pacote`.** Este arquivo descreve uma
 melhoria no pacote e a mudança sugerida. **Nada foi aplicado ao pacote** — ele não
 é versionado por nós, e uma edição local se perderia na próxima atualização dele.

@@ -94,14 +94,74 @@ def test_nao_afrouxa_um_gap_mais_rigoroso_do_motor():
         assert s2.parameters.relative_gap_limit == pytest.approx(0.01)
 
 
-def test_o_valor_padrao_e_o_declarado_pelo_produto():
-    """2%, escolha explicita de quem usa.
+def test_a_cobertura_e_apertada_e_o_retorno_e_folgado():
+    """A ASSIMETRIA e o ponto, e o teste existe para ela nao se perder num ajuste.
 
-    O teste existe para o numero nao mudar por acidente: ele governa QUANTA
-    cobertura se troca por tempo, e um ajuste distraido aqui muda silenciosamente
-    o plano de investimento que a rodada devolve.
+    A medicao desfez a hipotese inicial. Com folga unica de 2%, duas execucoes
+    deram `C*` de 670.092 e 670.193 — 0,015% de diferenca — e mesmo assim VPL de
+    181,70 e 175,02 Mi, 3,7% de diferenca. Variacao de 0,015% na restricao nao
+    causa 3,7% no resultado: a dispersao vem da FASE 3, nao do `C*`.
 
-    O que o gap afrouxa e apenas o desempate de cobertura — obrigatorias e metas
-    sao travadas nas fases anteriores, que continuam indo ate a otimalidade.
+    Por isso a cobertura fica em 2%, que e barato (o `C*` variou 0,46% no pior caso
+    entre tres execucoes), e o retorno em 5%, escolha de produto pela velocidade.
+
+    O QUE ESTE TESTE PROTEGE nao e o par de numeros — e a relacao entre eles. Se
+    alguem igualar os dois, a separacao inteira perde sentido: seria voltar ao botao
+    unico que governava duas moedas diferentes.
     """
-    assert _worker().GAP_RELATIVO == 0.02
+    w = _worker()
+    assert w.GAP_RELATIVO == 0.02
+    assert w.GAP_RETORNO == 0.05
+    assert w.GAP_RETORNO > w.GAP_RELATIVO
+
+
+def test_escolhe_o_parametro_nativo_quando_o_motor_o_tem():
+    """A escolha entre o parametro do motor e o contorno e por INSPECAO, nao por fe.
+
+    Os dois lados andam em cadencias diferentes: o motor do job Databricks e o
+    pacote que a maquina local carrega nao sobem juntos. Passar `gap_relativo`
+    para um motor antigo da `TypeError` e derruba a rodada; presumir o contrario
+    deixa o remendo por fora ativo sobre um motor que ja faz certo — e esse erro e
+    silencioso, que e o pior dos dois.
+    """
+    w = _worker()
+
+    class MotorComDois:
+        @staticmethod
+        def resolver_por_sistema(cen, max_time_s=60, workers=8, gap_relativo=0.0,
+                                 gap_retorno=None): ...
+
+    class MotorComUm:
+        @staticmethod
+        def resolver_por_sistema(cen, max_time_s=60, workers=8, gap_relativo=0.0): ...
+
+    class MotorAntigo:
+        @staticmethod
+        def resolver_por_sistema(cen, max_time_s=60, workers=8): ...
+
+    # Tres geracoes em circulacao, e cada uma exige uma chamada diferente.
+    assert "gap_retorno" in w._parametros_do_motor(MotorComDois)
+    assert "gap_retorno" not in w._parametros_do_motor(MotorComUm)
+    assert "gap_relativo" in w._parametros_do_motor(MotorComUm)
+    assert "gap_relativo" not in w._parametros_do_motor(MotorAntigo)
+
+
+def test_motor_opaco_nao_recebe_chave_nenhuma():
+    """Sem assinatura legivel, NADA de gap: na duvida vale o contorno, que funciona
+    nos tres mundos, enquanto o parametro so funciona em dois.
+
+    O que importa nao e o conjunto vir vazio — e nenhuma chave de gap aparecer
+    nele. Um builtin como `len` TEM assinatura (`(obj, /)`), entao exigir vazio
+    testaria o detalhe errado.
+    """
+    w = _worker()
+
+    class MotorOpaco:
+        resolver_por_sistema = object()   # `inspect.signature` levanta TypeError
+
+    class MotorBuiltin:
+        resolver_por_sistema = len        # tem assinatura, mas nao a nossa
+
+    for motor in (MotorOpaco, MotorBuiltin):
+        aceita = w._parametros_do_motor(motor)
+        assert "gap_relativo" not in aceita and "gap_retorno" not in aceita

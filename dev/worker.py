@@ -379,13 +379,62 @@ def pedido(run_id: str) -> dict | None:
 #: entre planos que ja cumprem o mesmo numero de obrigatorias e metas.
 GAP_RELATIVO = 0.02
 
+#: Folga da fase de DESEMPATE POR RETORNO. Moeda diferente da de cima, e por isso
+#: numero diferente.
+#:
+#: `GAP_RELATIVO` afrouxa a COBERTURA, e com ela o `C*` que a fase seguinte trava —
+#: `C*` e a base de comparacao entre cenarios. Medido em tres execucoes IDENTICAS
+#: com folga unica de 2%: `C*` deu 670.092, 670.193 e 673.202, e o VPL acompanhou na
+#: direcao contraria (181,70 / 175,02 / 171,56 Mi). Dispersao de 10 Mi entre rodadas
+#: iguais torna comparacao entre cenarios um exercicio de fe.
+#:
+#: `GAP_RETORNO` nao mexe em `C*`: ele so decide quanto tempo a fase 3 gasta
+#: refinando o VPL dentro da cobertura ja travada — e era ela que consumia ~20 min
+#: por rodada tentando fechar os ultimos 2%.
+#:
+#: A ASSIMETRIA MUDOU DE LADO depois da medicao. A hipotese inicial era cobertura
+#: apertada para estabilizar a comparacao — e ela nao se sustentou. Duas execucoes
+#: com folga unica de 2% deram `C*` de 670.092 e 670.193 (0,015% de diferenca) e
+#: mesmo assim VPL de 181,70 e 175,02 Mi (3,7%). Variacao de 0,015% na restricao nao
+#: causa 3,7% no resultado: a dispersao vem da FASE 3, nao do `C*`.
+#:
+#: Entao a cobertura volta a 2%, que e barato — entre tres execucoes o `C*` variou
+#: 0,46% no pior caso. E o retorno fica em 5%, escolha declarada de produto pela
+#: VELOCIDADE. O custo conhecido, registrado aqui para nao virar surpresa: e a folga
+#: do retorno que governa a dispersao do VPL entre execucoes iguais, e 5% e larga.
+#: Se o VPL passar a ser usado para ranquear cenarios que diferem de poucos milhoes,
+#: este e o numero a apertar.
+GAP_RETORNO = 0.05
+
+
+def _parametros_do_motor(CP) -> frozenset[str]:
+    """Que parametros o motor carregado aceita.
+
+    Ha TRES geracoes em circulacao: sem folga nenhuma, com folga unica
+    (`gap_relativo`), e com as duas separadas (`+ gap_retorno`). Elas nao sobem
+    juntas — o motor do job Databricks e o pacote que a maquina local carrega tem
+    cadencias proprias. A escolha precisa ser por INSPECAO e nao por fe: passar uma
+    chave que o motor nao tem da `TypeError` e derruba a rodada; presumir o
+    contrario deixa o remendo por fora ativo sobre um motor que ja faz certo — e
+    esse erro e silencioso, que e o pior dos dois.
+    """
+    import inspect
+
+    try:
+        return frozenset(inspect.signature(CP.resolver_por_sistema).parameters)
+    except (TypeError, ValueError):  # builtin/C, sem assinatura introspectavel
+        return frozenset()
+
 
 @contextlib.contextmanager
 def gap_de_convergencia(gap: float):
-    """CONTORNO TEMPORARIO: faz o solver parar quando ja esta perto do otimo.
+    """CONTORNO, so para pacote SEM `gap_relativo`: faz o solver parar perto do otimo.
 
-    O certo e o motor receber isso como PARAMETRO — ver
-    `dev/patches/motor_criterio_de_convergencia.md`. Nenhum dos `CpSolver` que
+    O motor de producao ja recebe isso como parametro; este caminho existe para a
+    maquina que ainda carrega um pacote anterior, e `_motor_aceita_gap` decide qual
+    dos dois vale. Quando nao houver mais pacote antigo em uso, isto sai inteiro.
+
+    Nenhum dos `CpSolver` que
     `resolver_por_sistema` cria define `relative_gap_limit`, entao so ha duas
     paradas possiveis hoje: prova exata (gap zero) ou relogio. Como a assinatura
     da funcao nao aceita gap, nao ha por onde pedir isso de fora sem alcancar a
@@ -546,10 +595,26 @@ def executar(run_id: str, tempo: int) -> None:
         # adianta a tela pedir 600s num worker de laptop.
         segundos = min(int(p.get("MAX_TIME_S") or tempo), tempo)
         nucleos = int(p.get("WORKERS") or 8)
-        log(run_id, f"solver: max_time_s={segundos} workers={nucleos} gap={GAP_RELATIVO:.3%}")
+        log(run_id, f"solver: max_time_s={segundos} workers={nucleos} "
+                    f"gap_cobertura={GAP_RELATIVO:.3%} gap_retorno={GAP_RETORNO:.3%}")
         try:
-            with gap_de_convergencia(GAP_RELATIVO):
-                res = CP.resolver_por_sistema(cen, max_time_s=segundos, workers=nucleos)
+            aceita = _parametros_do_motor(CP)
+            if "gap_retorno" in aceita:
+                res = CP.resolver_por_sistema(cen, max_time_s=segundos, workers=nucleos,
+                                              gap_relativo=GAP_RELATIVO,
+                                              gap_retorno=GAP_RETORNO)
+            elif "gap_relativo" in aceita:
+                # Motor com folga UNICA: manda a da cobertura, que e a que muda o
+                # resultado. A do retorno so mudaria o tempo, e mandar o valor folgado
+                # aqui afrouxaria a cobertura junto — exatamente o que a separacao
+                # existe para evitar.
+                log(run_id, "motor com folga unica: aplicando so a de cobertura")
+                res = CP.resolver_por_sistema(cen, max_time_s=segundos, workers=nucleos,
+                                              gap_relativo=GAP_RELATIVO)
+            else:
+                log(run_id, "motor sem `gap_relativo`: usando o contorno por fora")
+                with gap_de_convergencia(GAP_RELATIVO):
+                    res = CP.resolver_por_sistema(cen, max_time_s=segundos, workers=nucleos)
         except KeyError as e:
             # `KeyError: 'Araruama Leste1'` — o nome de uma cidade, cru, e nada
             # mais. Chegava assim ate a tela, que nao tem como saber que o defeito
