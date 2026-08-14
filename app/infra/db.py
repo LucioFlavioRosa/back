@@ -114,6 +114,10 @@ _EXIGIDO = [
     # quem pediu. Sem ela o historico inteiro responde 500 — nao e degradacao, e a
     # tela principal fora do ar. Por isso o /readyz precisa recusar o pod.
     ("controle", "run_favorita", None, "009_favoritas.sql"),
+    # Mesma razao da linha de cima, e o mesmo custo: `GET /runs` faz LEFT JOIN
+    # nesta tabela em toda listagem, para trazer a anotacao junto da rodada. Sem
+    # ela, a lista inteira responde 500 — nao e o comentario que some, e a tela.
+    ("controle", "run_comentario", None, "010_run_comentario.sql"),
     # As quatro fichas de cadastro, uma linha cada: a migracao acrescenta as duas
     # colunas nas quatro tabelas, e aplicar em tres e o engano provavel. Basta
     # conferir `atualizado_por` — as duas entram no mesmo ALTER, entao uma sem a

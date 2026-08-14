@@ -105,9 +105,10 @@ def _numero(v: Any, campo: str = "") -> Any:
 #: (taxa negativa e exotica mas existe), e `pot` (potencial de crescimento)
 #: tambem, porque encolher e um cenario legitimo.
 _NAO_NEGATIVOS = {
-    "preco", "vaz", "vazInd", "tarr", "ramp",
-    "popU", "popA", "fat", "arr", "fatInd", "arrInd",
-    "ligU", "ligA", "ligN", "ligUInd", "ligAInd", "ecoU", "ecoA", "ecoN",
+    "preco", "vaz", "tarr", "ramp",
+    "popU", "popA", "fat", "arr",
+    "ligU", "ligA", "ligN", "ligURes", "ligARes",
+    "ecoU", "ecoA", "ecoN", "ecoURes", "ecoARes",
     "obra.qtd", "obra.preco", "obra.opex", "obra.dur", "obra.tPred",
 }
 
@@ -122,8 +123,8 @@ _NAO_NEGATIVOS = {
 _INTEIROS = {
     # coleta (subbacia_operacional / cts_operacional)
     "tarr", "ramp",
-    "ligU", "ligA", "ligN", "ligUInd", "ligAInd",
-    "ecoU", "ecoA", "ecoN",
+    "ligU", "ligA", "ligN", "ligURes", "ligARes",
+    "ecoU", "ecoA", "ecoN", "ecoURes", "ecoARes",
     # obras (componentes_*_capex)
     "obra.tPred", "obra.dur", "obra.anoObrig", "obra.proibAte",
     # ETE

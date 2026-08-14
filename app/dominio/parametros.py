@@ -61,7 +61,7 @@ CHAVES_ACEITAS = frozenset(
         "BASE_RECEITA",
         "USAR_CTS",
         "ANOS_EXTRA_CONCLUSAO",
-        "INCLUIR_INDUSTRIAL",
+        "COBERTURA_SO_RESIDENCIAL",
         # CHAVES_DO_JOB — nao vao para o `ler_banco`, ficam com o job
         "USUARIO",
         "MAX_TIME_S",
@@ -169,6 +169,12 @@ def montar_params(corpo: dict[str, Any], unidade_id: str, usuario: str) -> dict[
     # entra no params, para o job usar o default do `ler_banco` — se o backend
     # inventasse default proprio, o mesmo pedido daria planos diferentes aqui e no
     # notebook, que foi exatamente o bug mais caro da revisao do pacote.
+    # `PESO_CIDADE` NAO esta aqui, e a ausencia E o padrao pedido: todas as
+    # cidades pesam 1. O motor multiplica a contribuicao de cada uma por
+    # `peso_cidade.get(cidade, 1.0)` (`otimizador_capex_cpsat63.py`), entao sem o
+    # parametro o multiplicador e 1 para todas. Mandar `{}` daria no mesmo e
+    # sugeriria que ha escolha.
+    #
     # `ETE_FASEADA`/`ETE_FIXO` NAO estao aqui, e a ausencia e regra de negocio: o
     # tratamento da ETE sai da FICHA dela, e nao da rodada. ETE com terreno e
     # numero de modulos informados e NOVA e entra como pacote unico; a que ja
@@ -181,14 +187,11 @@ def montar_params(corpo: dict[str, Any], unidade_id: str, usuario: str) -> dict[
     DIRETO = {
         "foco_cobertura": "FOCO_COBERTURA",
         "penalidade_cobertura": "PENALIDADE_COBERTURA",
-        "peso_cidade": "PESO_CIDADE",
         "base_receita": "BASE_RECEITA",
         "curva_adocao": "CURVA_ADOCAO",
         "usar_cts": "USAR_CTS",
-        "incluir_industrial": "INCLUIR_INDUSTRIAL",
+        "cobertura_so_residencial": "COBERTURA_SO_RESIDENCIAL",
         "data_inicio": "DATA_INICIO",
-        "max_time_s": "MAX_TIME_S",
-        "workers": "WORKERS",
     }
     for origem, destino in DIRETO.items():
         if origem in corpo:
@@ -225,6 +228,41 @@ def montar_params(corpo: dict[str, Any], unidade_id: str, usuario: str) -> dict[
     # historico REGISTRA o que a rodada usou, e o modal de detalhes o mostra. Uma
     # rodada antiga com 3 continua contando a verdade dela.
     params["ANOS_EXTRA_CONCLUSAO"] = 0
+
+    # MAX_TIME_S FIXO EM 1000s, e a tela nao o oferece mais: quanto tempo o solver
+    # tem e afinacao de execucao, nao decisao de negocio — quem dispara a rodada
+    # nao tem como calibrar isso.
+    #
+    # AFIRMADO, como o `ANOS_EXTRA_CONCLUSAO` e ao contrario do `PESO_CIDADE`: sem
+    # a chave, cada consumidor usaria o proprio default (o executor local cai no
+    # `--tempo` da linha de comando), e a mesma rodada teria tempos diferentes
+    # conforme quem a executa. Viaja no `params` para o historico registrar o que
+    # a rodada teve.
+    #
+    # WORKERS nao entra: e paralelismo do processo que executa, e depende da
+    # maquina dele. O executor usa o proprio padrao.
+    # 1000s, ESCOLHIDO POR MEDICAO em 13/08/2026 — uA3 (67 cidades, 8.079 obras),
+    # mesmos parametros, so o teto mudando:
+    #
+    #             500s                      1000s
+    #   status    OTIMO                     VIAVEL(limite de tempo)
+    #   VPL       141.685.312               170.430.575   (+20,3%)
+    #   plano     815 obras / 47,764%       817 obras / 47,845%
+    #   total     960s                      1.719s
+    #
+    # O PLANO E QUASE O MESMO E O VPL E 20% MAIOR, e a causa nao e ruido: com 500s
+    # a FASE 3 (desempate por retorno) nao chegou a rodar. O motor reparte
+    # `max_time_s*1.35` entre as fases e pula a terceira quando sobram menos de 5s
+    # (`otimizador_capex_cpsat63.py`, `if _resta<5.0: return plano2`), devolvendo o
+    # status da fase 2 — que provou o proprio otimo. Por isso o rotulo melhor sai
+    # na rodada pior: `OTIMO` aqui significa "a ultima fase que rodou provou o
+    # otimo DELA", e nao "melhor plano".
+    #
+    # 500 nao serve para a maior unidade: desliga em silencio a fase que otimiza
+    # retorno. Nas pequenas o teto nao morde — a uA1 fecha em 14s, parando pelo
+    # gap muito antes. Entao 1000 e o unico dos dois que nao erra em nenhuma ponta,
+    # ao custo de 13 minutos na uA3.
+    params["MAX_TIME_S"] = 1000
 
     _validar(params)
     return params

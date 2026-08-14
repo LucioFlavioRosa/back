@@ -399,23 +399,20 @@ _COLETA = {
     "populacao_atual": "popA",
     "populacao_novas_obras": "popN",
     "potencial_crescimento": "pot",
-    "universo_ligacoes_industrial": "ligUInd",
-    "ligacoes_atuais_industrial": "ligAInd",
-    "receita_faturada_industrial": "fatInd",
-    "receita_arrecadada_industrial": "arrInd",
-    "vazao_contribuicao_industrial": "vazInd",
+    "universo_ligacoes_residencial": "ligURes",
+    "ligacoes_atuais_residencial": "ligARes",
+    "universo_economias_residencial": "ecoURes",
+    "economias_atuais_residencial": "ecoARes",
 }
 
 #: Quais campos vêm do Databricks (travados, corrigíveis só por override) e quais
-#: a Regional preenche. A divisão é a do `DEPLOY.md` §3, e eu a tinha errado: o
-#: RECORTE INDUSTRIAL (`ligUInd`, `ligAInd`, `fatInd`, `arrInd`) é medida do
-#: Databricks como as do topo, e estava caindo em `params` — a tela mostraria como
-#: campo a preencher o que é dado travado, e a Regional digitaria por cima sem
-#: gerar trilha de override.
+#: a Regional preenche. A divisão é a do `DEPLOY.md` §3.
 #:
-#: `vazInd` fica em `params` de propósito, e não é inconsistência: `vazao_contribuicao`
-#: é o total do Databricks e a parcela industrial dentro dele é estimativa da
-#: Regional. Está assim no `DEPLOY.md`.
+#: O RECORTE RESIDENCIAL (`ligURes`, `ligARes`, `ecoURes`, `ecoARes`) é medida do
+#: Databricks como as do topo — é a parcela residencial APURADA na base comercial, e
+#: não uma estimativa de quem cadastra. Cair em `params` faria a tela pedir como
+#: preenchimento o que é dado travado, e a Regional digitaria por cima sem gerar
+#: trilha de override.
 _DO_DATABRICKS = {
     "fat",
     "arr",
@@ -425,10 +422,10 @@ _DO_DATABRICKS = {
     "ecoU",
     "ecoA",
     "ecoN",
-    "ligUInd",
-    "ligAInd",
-    "fatInd",
-    "arrInd",
+    "ligURes",
+    "ligARes",
+    "ecoURes",
+    "ecoARes",
 }
 
 #: O que a ficha de coleta DEVE trazer em cada bloco. É o contrato do front
@@ -438,7 +435,7 @@ _DO_DATABRICKS = {
 #: PUT nao o grava. Exigi-lo no corpo obrigaria o cliente a devolver uma conta que
 #: o servidor mesmo fez.
 CAMPOS_DB = sorted(_DO_DATABRICKS)
-CAMPOS_PARAMS = ["preco", "tarr", "ramp", "vaz", "vazInd", "pot", "popU", "popA"]
+CAMPOS_PARAMS = ["preco", "tarr", "ramp", "vaz", "pot", "popU", "popA"]
 
 #: `popN` (`populacao_novas_obras`) existe na tabela e NÃO é modelado pelo front:
 #: não está em `SubBaciaDb` nem em `SubBaciaParams`. Por isso a escrita nunca o

@@ -15,12 +15,19 @@ de resultado outra.
 """
 
 import json
+import os
 import sys
 from pathlib import Path
 
+#: Onde mora o pacote do otimizador. `OTIMIZADOR_PACOTE` aponta para uma COPIA
+#: modificada sem tocar no original — foi assim que a fase de desempate por
+#: retorno foi medida antes de existir no pacote instalado.
 PACOTE = Path(
-    r"C:\Users\LúcioFláviodosSantos\OneDrive - Peers Consulting\Área de Trabalho"
-    r"\aegea\Otimizador_CAPEX_v62_pacote_rev11\Otimizador_CAPEX_v62_pacote"
+    os.environ.get("OTIMIZADOR_PACOTE")
+    or (
+        r"C:\Users\LúcioFláviodosSantos\OneDrive - Peers Consulting\Área de Trabalho"
+        r"\aegea\Otimizador_CAPEX_v62_pacote_rev11\Otimizador_CAPEX_v62_pacote"
+    )
 )
 sys.path.insert(0, str(PACOTE))
 
@@ -159,7 +166,7 @@ def rodar_e_publicar() -> str:
                    2031: 40e6, 2032: 30e6, 2033: 30e6},
         base_receita="arrecadada",
         usar_cts=True,
-        incluir_industrial=True,
+        cobertura_so_residencial=False,
         curva_adocao="scurve",
         foco_cobertura=1.0,
         penalidade_cobertura="meta+cobertura",

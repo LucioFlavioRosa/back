@@ -64,14 +64,20 @@ async def historico(
                    h.metas_total, h.metas_nao_atingidas, h.tempo_s,
                    m.receita_total, m.opex_total,
                    m.regional, m.unidade_id, m.base_receita_param, m.usar_cts,
-                   m.foco_cobertura, m.incluir_industrial,
+                   m.foco_cobertura, m.cobertura_so_residencial,
                    -- O PEDIDO, como ele foi feito. Ver `_pedido`.
                    -- LEFT JOIN: rodada publicada direto pelo pacote (sem passar
                    -- pela fila) nao tem `run_request`, e continua aparecendo na
                    -- lista — sem o pedido, e nao ausente da tela.
-                   rq.params AS pedido
+                   rq.params AS pedido,
+                   -- A anotacao humana sobre a rodada (migracao 010). LEFT JOIN
+                   -- pela mesma razao do de cima: a maioria das rodadas nao tem
+                   -- comentario, e ausencia nao pode sumir com a linha.
+                   c.texto AS comentario, c.autor AS comentario_por,
+                   c.atualizado_em AS comentario_em
               FROM {_p()}.otim_vw_historico h
               LEFT JOIN {_c()}.run_request rq ON rq.run_id = h.run_id
+              LEFT JOIN {_c()}.run_comentario c ON c.run_id = h.run_id
               JOIN LATERAL (
                    SELECT regional,
                           (SELECT u.unidade_id FROM {_i()}.unidade_regional u
@@ -80,7 +86,7 @@ async def historico(
                           params_extra->>'BASE_RECEITA'      AS base_receita_param,
                           (params_extra->>'USAR_CTS')::bool  AS usar_cts,
                           (params_extra->>'FOCO_COBERTURA')::float AS foco_cobertura,
-                          (params_extra->>'INCLUIR_INDUSTRIAL')::bool AS incluir_industrial
+                          (params_extra->>'COBERTURA_SO_RESIDENCIAL')::bool AS cobertura_so_residencial
                      FROM {_p()}.otim_meta WHERE run_id = h.run_id
               ) m ON true
              -- casa por id OU por nome: o front manda o id, mas um script de
@@ -117,10 +123,24 @@ async def em_voo(
         f"""SELECT r.run_id, r.unidade, r.solicitado_por, r.solicitado_em,
                    r.rotulo, r.params AS pedido,
                    s.status, s.progresso, s.erro,
-                   u.unidade_name
+                   u.unidade_name,
+                   -- O DESFECHO DO SOLVER, quando ele chegou a ter um.
+                   --
+                   -- Rodada que morre entre o solver e a publicacao nao tem linha
+                   -- em `otim_*`, e a tela mostrava so "ERRO": o plano existiu, o
+                   -- VPL existiu, e nada disso sobrevivia. O executor passou a
+                   -- anotar aqui assim que o solver volta.
+                   (SELECT d.detalhe FROM {_c()}.run_diagnostico d
+                     WHERE d.run_id = r.run_id AND d.checagem = 'solver'
+                     ORDER BY d.gravado_em DESC LIMIT 1) AS solver,
+                   -- Vale para a rodada em voo tambem: uma que morreu em ERRO e
+                   -- justamente a que mais pede anotacao ("o banco caiu, refazer").
+                   c.texto AS comentario, c.autor AS comentario_por,
+                   c.atualizado_em AS comentario_em
               FROM {_c()}.run_request r
               JOIN {_c()}.run_status  s USING (run_id)
               LEFT JOIN {_i()}.unidade_regional u ON u.unidade_id = r.unidade
+              LEFT JOIN {_c()}.run_comentario c ON c.run_id = r.run_id
              WHERE NOT EXISTS (
                    SELECT 1 FROM {_p()}.otim_meta m WHERE m.run_id = r.run_id)
                AND ($1::text IS NULL OR r.unidade = $1)
@@ -141,7 +161,10 @@ async def em_voo(
             "status": l["status"],
             "progresso": l.get("progresso") or 0,
             "erro": l.get("erro"),
+            # Ausente quando o solver nem chegou a rodar — e a ausencia diz isso.
+            "solver": l.get("solver"),
             "favorita": l["run_id"] in (favoritas or set()),
+            "comentario": _comentario(l),
             "publicada": False,
             # A rodada em voo tem pedido desde o `POST` — e e a UNICA coisa que
             # da para mostrar dela: metricas e parametros so existem depois da
@@ -188,6 +211,26 @@ def _pedido(bruto: Any) -> dict[str, Any] | None:
     return {k: v for k, v in bruto.items() if k not in _PEDIDO_REDUNDANTE} or None
 
 
+def _comentario(l: dict[str, Any]) -> dict[str, Any] | None:
+    """A anotacao da rodada, ou `None` quando nao ha.
+
+    AUSENTE, e nao um bloco com texto vazio, pela mesma regra que `metricas` segue
+    aqui: a tela distingue "ninguem anotou" de "anotaram e apagaram" pela ausencia,
+    e um `{texto: ""}` faria a segunda leitura. Como apagar o texto APAGA A LINHA
+    (ver a migracao 010), os dois casos colapsam num so no banco — e o `None` e o
+    que representa isso sem mentir.
+    """
+    texto = l.get("comentario")
+    if not texto:
+        return None
+    quando = l.get("comentario_em")
+    return {
+        "texto": texto,
+        "autor": l.get("comentario_por"),
+        "atualizadoEm": quando.isoformat() if quando else None,
+    }
+
+
 def _resumo(l: dict[str, Any], favoritas: set[str]) -> dict[str, Any]:
     """Molda uma linha para o `RunResumo` do front.
 
@@ -213,6 +256,7 @@ def _resumo(l: dict[str, Any], favoritas: set[str]) -> dict[str, Any]:
         "duracaoS": l.get("tempo_s"),
         "status": situacao,
         "favorita": l["run_id"] in favoritas,
+        "comentario": _comentario(l),
         # A tela precisa distinguir "terminou" de "ainda esta acontecendo" sem
         # deduzir pelo status: `em_voo` devolve `publicada: False`, e so a rodada
         # publicada tem drill-down para oferecer.
@@ -224,7 +268,7 @@ def _resumo(l: dict[str, Any], favoritas: set[str]) -> dict[str, Any]:
             "janelaCapex": l.get("anos_capex"),
             "orcamento": l.get("orcamento_total"),
             "focoCobertura": l.get("foco_cobertura"),
-            "incluirIndustrial": l.get("incluir_industrial"),
+            "coberturaSoResidencial": l.get("cobertura_so_residencial"),
         },
     }
     if not inviavel:
@@ -313,14 +357,30 @@ async def meta(run_id: str) -> dict[str, Any] | None:
             "janelaCapex": linha.get("anos_capex"),
             "orcamento": linha.get("orcamento_total"),
             "focoCobertura": linha.get("foco_cobertura"),
-            "incluirIndustrial": (linha.get("params_extra") or {}).get("INCLUIR_INDUSTRIAL"),
+            "coberturaSoResidencial": (linha.get("params_extra") or {}).get("COBERTURA_SO_RESIDENCIAL"),
         },
     }
 
 
 async def excluir(run_id: str) -> bool:
     """`ON DELETE CASCADE` leva as 13 tabelas de detalhe junto — por isso o DELETE
-    e so em `otim_meta`."""
+    e so em `otim_meta`.
+
+    O RETORNO OLHA AS TRES TABELAS ONDE A RODADA PODE EXISTIR, e nao so
+    `otim_meta`. Enquanto ele saia do primeiro DELETE, apagar uma rodada que NUNCA
+    PUBLICOU (`ERRO`, `PENDENTE`, `CANCELADA`) devolvia `False`: nao ha linha em
+    `otim_meta` para essas. A API lia isso como "nao encontrada" e respondia 404 —
+    depois de a transacao ter commitado a exclusao.
+
+    O usuario via "nao foi possivel excluir" sobre uma rodada que tinha acabado de
+    ser excluida, e a linha so sumia da tela no refresh seguinte. Atingia
+    exatamente as rodadas que mais se quer limpar, e nunca as que deram certo —
+    por isso passou tanto tempo sem aparecer.
+
+    `run_favorita` e `run_comentario` NAO entram na conta: sao satelites. Uma
+    marca orfa, sem rodada em nenhuma das tres, nao e rodada — e responder 204
+    sobre ela esconderia um `run_id` que nao existe.
+    """
     async with db.transacao() as con:
         r = await con.execute(f"DELETE FROM {_p()}.otim_meta WHERE run_id = $1", run_id)
         # O CONTROLE sai junto. Sem isto, `GET /runs/{id}/status` seguia
@@ -330,13 +390,81 @@ async def excluir(run_id: str) -> bool:
         # uma das duas sozinha.
         ctrl = config().schema_controle
         await con.execute(f"DELETE FROM {ctrl}.run_diagnostico WHERE run_id = $1", run_id)
-        await con.execute(f"DELETE FROM {ctrl}.run_status WHERE run_id = $1", run_id)
-        await con.execute(f"DELETE FROM {ctrl}.run_request WHERE run_id = $1", run_id)
+        rs = await con.execute(f"DELETE FROM {ctrl}.run_status WHERE run_id = $1", run_id)
+        rq = await con.execute(f"DELETE FROM {ctrl}.run_request WHERE run_id = $1", run_id)
         # As marcas de favorita de TODOS os usuarios. Elas nao tem FK — nao ha uma
         # tabela unica com todas as rodadas para apontar (ver `009_favoritas.sql`)
         # —, entao a limpeza e aqui ou nao acontece.
         await con.execute(f"DELETE FROM {ctrl}.run_favorita WHERE run_id = $1", run_id)
-    return r != "DELETE 0"
+        # A anotacao sai junto, e pelo mesmo motivo: tambem nao tem FK (010). Sem
+        # isto ela sobreviveria a rodada e reapareceria colada em outra que
+        # reusasse o `run_id` — o `/reexecutar` reusa o id de proposito.
+        await con.execute(f"DELETE FROM {ctrl}.run_comentario WHERE run_id = $1", run_id)
+    # `DELETE 0` e o que o asyncpg devolve quando nada casou. Basta UMA das tres
+    # ter apagado algo para a rodada ter existido — e exclusao e idempotente do
+    # ponto de vista de quem pediu: o estado final e o mesmo.
+    return any(tag != "DELETE 0" for tag in (r, rs, rq))
+
+
+async def comentar(run_id: str, texto: str, autor: str) -> None:
+    """Grava a anotacao. Reescrever e o caso NORMAL, nao a excecao.
+
+    `ON CONFLICT DO UPDATE` e nao INSERT+erro: e um campo de texto que a pessoa
+    edita, e "ja existe comentario" nao e informacao que a tela saiba usar. O
+    autor e a data sao sobrescritos junto, senao o rodape mostraria quem escreveu
+    a PRIMEIRA versao de um texto que outra pessoa reescreveu.
+    """
+    async with db.pool().acquire() as con:
+        await con.execute(
+            f"""INSERT INTO {_c()}.run_comentario (run_id, texto, autor, atualizado_em)
+                     VALUES ($1, $2, $3, now())
+                ON CONFLICT (run_id) DO UPDATE
+                        SET texto = EXCLUDED.texto,
+                            autor = EXCLUDED.autor,
+                            atualizado_em = now()""",
+            run_id,
+            texto,
+            autor,
+        )
+
+
+async def descomentar(run_id: str) -> None:
+    """Apaga a anotacao. Idempotente: o estado pedido e o estado final.
+
+    Apagar o texto apaga a LINHA, e nao grava string vazia. Assim "sem comentario"
+    tem uma representacao so — ver `_comentario`.
+    """
+    async with db.pool().acquire() as con:
+        await con.execute(f"DELETE FROM {_c()}.run_comentario WHERE run_id = $1", run_id)
+
+
+async def dono_e_unidade(run_id: str) -> dict[str, Any] | None:
+    """Quem pediu a rodada e em que unidade — para o recorte de quem COMENTA.
+
+    Comentario e compartilhado: quem escreve altera o que os outros leem. Entao a
+    escrita tem de respeitar o mesmo recorte da LEITURA (`GET /runs`), e nao o de
+    `favorita`, que nao precisa de nenhum porque so afeta a propria lista.
+
+    Duas fontes porque a rodada vive em duas: `run_request` desde o `POST`, e
+    `otim_meta` depois de publicar. A segunda existe sozinha no caso da rodada
+    publicada direto pelo pacote, sem passar pela fila — ela aparece na lista, e
+    portanto tem de poder receber anotacao. A ordem e essa porque `run_request` tem
+    o `unidade_id` de verdade; em `otim_meta` ele e reconstruido pelo NOME da
+    unidade (ver `_ID_DA_UNIDADE`).
+    """
+    linhas = await db.buscar(
+        f"""SELECT r.solicitado_por AS dono, r.unidade AS unidade_id
+              FROM {_c()}.run_request r WHERE r.run_id = $1
+             UNION ALL
+            SELECT m.usuario AS dono,
+                   (SELECT u.unidade_id FROM {_i()}.unidade_regional u
+                     WHERE u.unidade_name = m.regional) AS unidade_id
+              FROM {_p()}.otim_meta m
+             WHERE m.run_id = $1
+               AND NOT EXISTS (SELECT 1 FROM {_c()}.run_request q WHERE q.run_id = $1)""",
+        run_id,
+    )
+    return dict(linhas[0]) if linhas else None
 
 
 async def favoritas_de(usuario: str) -> set[str]:

@@ -38,6 +38,40 @@ class TestMetasDeCobertura:
         assert "METAS_COBERTURA" not in montar(metas_cobertura=valor)
 
 
+class TestExecucao:
+    """Tempo de solver e paralelismo nao sao decisao de quem dispara a rodada."""
+
+    def test_max_time_s_fixo_em_1000(self):
+        assert montar()["MAX_TIME_S"] == 1000
+
+    @pytest.mark.parametrize("valor", [30, 400, 99999])
+    def test_corpo_que_ainda_mande_nao_muda_nada(self, valor):
+        assert montar(max_time_s=valor)["MAX_TIME_S"] == 1000
+
+    def test_workers_nao_viaja(self):
+        # Paralelismo depende da maquina que executa; o executor usa o proprio
+        # padrao. Fixar aqui seria decidir por uma maquina que nao conhecemos.
+        assert "WORKERS" not in montar()
+        assert "WORKERS" not in montar(workers=16)
+
+
+class TestPesoCidade:
+    """Sem parametro: todas as cidades pesam 1.
+
+    A ausencia E o padrao pedido — o motor multiplica por
+    `peso_cidade.get(cidade, 1.0)`. Mandar `{}` daria no mesmo e sugeriria escolha.
+    E o caso oposto ao `ANOS_EXTRA_CONCLUSAO`, onde o default do motor (3) nao era
+    o que se queria e o valor precisou ser afirmado.
+    """
+
+    def test_nunca_produz_a_chave(self):
+        assert "PESO_CIDADE" not in montar()
+
+    @pytest.mark.parametrize("valor", [{}, {"Cabo Frio": 5}])
+    def test_corpo_que_ainda_mande_e_ignorado(self, valor):
+        assert "PESO_CIDADE" not in montar(peso_cidade=valor)
+
+
 class TestAnosExtraConclusao:
     """Fixo em ZERO: a obra inicia e conclui dentro da janela de CAPEX.
 
@@ -85,7 +119,6 @@ class TestRepasseDireto:
     @pytest.mark.parametrize(
         "campo,chave,valor",
         [
-            ("peso_cidade", "PESO_CIDADE", {"Cabo Frio": 5}),
             ("data_inicio", "DATA_INICIO", "2027-01"),
             ("curva_adocao", "CURVA_ADOCAO", "linear"),
             ("usar_cts", "USAR_CTS", False),

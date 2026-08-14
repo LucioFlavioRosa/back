@@ -33,6 +33,7 @@ terminado seria pior.
 import argparse
 import asyncio
 import concurrent.futures
+import contextlib
 import json
 import os
 import socket
@@ -299,6 +300,42 @@ def conferir_cancelamento(run_id: str) -> None:
         raise Cancelada(run_id, encontrado)
 
 
+def anotar_solver(run_id: str, res: dict) -> None:
+    """Registra em `controle.run_diagnostico` o que o solver devolveu.
+
+    A tabela ja existia para as checagens de qualidade do pacote de producao, e a
+    forma dela serve: uma linha por checagem, com nivel e detalhe. O solver e uma
+    checagem como outra qualquer — a diferenca e que esta roda sempre.
+
+    `ok` distingue OTIMO de VIAVEL: os dois produzem plano, mas so o primeiro tem
+    prova de que nao ha melhor. A tela usa isso para nao dizer "pronto" sobre um
+    resultado que parou no limite de tempo.
+
+    Falha aqui NAO derruba a rodada: e registro, nao resultado. Perder a anotacao e
+    ruim; perder a rodada por causa da anotacao seria pior.
+    """
+    milp = str(res.get("milp_status") or "")
+    vpl = res.get("vpl")
+    detalhe = milp + (f"  VPL={vpl:,.0f}" if isinstance(vpl, (int, float)) else "")
+    try:
+        with R.eng.begin() as con:
+            con.execute(
+                text(
+                    """INSERT INTO controle.run_diagnostico
+                           (run_id, checagem, nivel, ok, detalhe)
+                       VALUES (:r, 'solver', :n, :ok, :d)"""
+                ),
+                {
+                    "r": run_id,
+                    "n": "info" if milp.upper().startswith("OTIMO") else "aviso",
+                    "ok": milp.upper().startswith("OTIMO"),
+                    "d": detalhe[:500],
+                },
+            )
+    except Exception as e:  # noqa: BLE001
+        log(run_id, f"nao consegui anotar o desfecho do solver: {type(e).__name__}: {e}")
+
+
 def pedido(run_id: str) -> dict | None:
     with R.eng.begin() as con:
         linha = con.execute(
@@ -322,6 +359,127 @@ def pedido(run_id: str) -> dict | None:
         "rotulo": linha[2],
         "solicitado_por": linha[3],
     }
+
+
+#: Distancia do otimo em que a busca pode parar. 0.02 = 2%.
+#:
+#: E DECISAO DE PRODUTO, nao de engenharia: o numero diz quanta cobertura se
+#: aceita trocar por tempo. 2% foi a escolha declarada de quem usa.
+#:
+#: Medido na unidade de 67 cidades (MAX_TIME_S=1200): a fase de cobertura gastou
+#: os 720s inteiros e devolveu um plano a 0,006% do limite superior provado. A
+#: ultima melhoria de incumbente reportada veio aos 381s — os 339s seguintes (47%
+#: do tempo de solver) foram tentativa de PROVAR o que ja estava achado. Unidade
+#: pequena nem chega perto disso: prova as tres fases em 1,2s com teto de 5000s.
+#:
+#: Na trajetoria medida, 2% ja estaria satisfeito na PRIMEIRA solucao reportada
+#: (aos 24,1s o gap era 0,39%) — o corte e agressivo. O contrapeso: as fases 0 e
+#: 1 travam obrigatorias e metas ANTES desta, e elas continuam sendo resolvidas
+#: ate a otimalidade em ~1s. O que o gap afrouxa e so o desempate de cobertura
+#: entre planos que ja cumprem o mesmo numero de obrigatorias e metas.
+GAP_RELATIVO = 0.02
+
+#: Folga da fase de DESEMPATE POR RETORNO. Moeda diferente da de cima, e por isso
+#: numero diferente.
+#:
+#: `GAP_RELATIVO` afrouxa a COBERTURA, e com ela o `C*` que a fase seguinte trava —
+#: `C*` e a base de comparacao entre cenarios. Medido em tres execucoes IDENTICAS
+#: com folga unica de 2%: `C*` deu 670.092, 670.193 e 673.202, e o VPL acompanhou na
+#: direcao contraria (181,70 / 175,02 / 171,56 Mi). Dispersao de 10 Mi entre rodadas
+#: iguais torna comparacao entre cenarios um exercicio de fe.
+#:
+#: `GAP_RETORNO` nao mexe em `C*`: ele so decide quanto tempo a fase 3 gasta
+#: refinando o VPL dentro da cobertura ja travada — e era ela que consumia ~20 min
+#: por rodada tentando fechar os ultimos 2%.
+#:
+#: A ASSIMETRIA MUDOU DE LADO depois da medicao. A hipotese inicial era cobertura
+#: apertada para estabilizar a comparacao — e ela nao se sustentou. Duas execucoes
+#: com folga unica de 2% deram `C*` de 670.092 e 670.193 (0,015% de diferenca) e
+#: mesmo assim VPL de 181,70 e 175,02 Mi (3,7%). Variacao de 0,015% na restricao nao
+#: causa 3,7% no resultado: a dispersao vem da FASE 3, nao do `C*`.
+#:
+#: Entao a cobertura volta a 2%, que e barato — entre tres execucoes o `C*` variou
+#: 0,46% no pior caso. E o retorno fica em 5%, escolha declarada de produto pela
+#: VELOCIDADE. O custo conhecido, registrado aqui para nao virar surpresa: e a folga
+#: do retorno que governa a dispersao do VPL entre execucoes iguais, e 5% e larga.
+#: Se o VPL passar a ser usado para ranquear cenarios que diferem de poucos milhoes,
+#: este e o numero a apertar.
+GAP_RETORNO = 0.05
+
+
+def _parametros_do_motor(CP) -> frozenset[str]:
+    """Que parametros o motor carregado aceita.
+
+    Ha TRES geracoes em circulacao: sem folga nenhuma, com folga unica
+    (`gap_relativo`), e com as duas separadas (`+ gap_retorno`). Elas nao sobem
+    juntas — o motor do job Databricks e o pacote que a maquina local carrega tem
+    cadencias proprias. A escolha precisa ser por INSPECAO e nao por fe: passar uma
+    chave que o motor nao tem da `TypeError` e derruba a rodada; presumir o
+    contrario deixa o remendo por fora ativo sobre um motor que ja faz certo — e
+    esse erro e silencioso, que e o pior dos dois.
+    """
+    import inspect
+
+    try:
+        return frozenset(inspect.signature(CP.resolver_por_sistema).parameters)
+    except (TypeError, ValueError):  # builtin/C, sem assinatura introspectavel
+        return frozenset()
+
+
+@contextlib.contextmanager
+def gap_de_convergencia(gap: float):
+    """CONTORNO, so para pacote SEM `gap_relativo`: faz o solver parar perto do otimo.
+
+    O motor de producao ja recebe isso como parametro; este caminho existe para a
+    maquina que ainda carrega um pacote anterior, e `_motor_aceita_gap` decide qual
+    dos dois vale. Quando nao houver mais pacote antigo em uso, isto sai inteiro.
+
+    Nenhum dos `CpSolver` que
+    `resolver_por_sistema` cria define `relative_gap_limit`, entao so ha duas
+    paradas possiveis hoje: prova exata (gap zero) ou relogio. Como a assinatura
+    da funcao nao aceita gap, nao ha por onde pedir isso de fora sem alcancar a
+    classe do OR-Tools.
+
+    POR QUE ISTO E CONTORNO, E NAO SOLUCAO:
+
+    1. Age por FORA da API do motor, apoiado num detalhe de implementacao dele
+       (criar `cp_model.CpSolver()` diretamente). Se o pacote mudar essa forma, o
+       contorno deixa de agir EM SILENCIO — as rodadas voltam a gastar o teto
+       inteiro e nada avisa. Um parametro de verdade quebraria com `TypeError`.
+    2. Atinge TODO `CpSolver` do processo enquanto vale, e o escopo do `with` nao
+       resolve isso: a geracao de colunas acontece DENTRO de
+       `resolver_por_sistema`. Com `ete_faseada=True` — nosso caso — ela nao usa
+       CP-SAT e a questao nao se coloca; com faseada desligada, `_colunas_sistema`
+       chama `resolver_cpsat` por cidade, e o gap mudaria as colunas geradas, que
+       sao a materia-prima do master. Seria mudanca de resultado por um caminho
+       que ninguem lembraria de olhar.
+
+    Reverte em `finally` porque o processo do pool e REUSADO entre rodadas: sem
+    isso, o patch continuaria valendo para as seguintes.
+
+    Mora aqui, e nao no modulo, porque `executar` e o que roda no processo FILHO
+    (`ProcessPoolExecutor`, e no Windows o `spawn` reimporta tudo). Aplicado no
+    pai, nao teria efeito nenhum — e falharia calado, que e a mesma armadilha do
+    item 1.
+    """
+    from ortools.sat.python import cp_model
+
+    original = cp_model.CpSolver.Solve
+
+    def com_gap(self, model, *a, **k):
+        # VENCE O MAIS RIGOROSO. Hoje o motor nao define gap nenhum, entao vale o
+        # nosso. No dia em que ele definir, nunca AFROUXAMOS o dele — e se o dele
+        # for mais frouxo, o nosso prevalece. Nos dois sentidos o erro cai para o
+        # lado do plano melhor, nunca para o lado do pior.
+        atual = self.parameters.relative_gap_limit
+        self.parameters.relative_gap_limit = gap if atual <= 0 else min(atual, gap)
+        return original(self, model, *a, **k)
+
+    cp_model.CpSolver.Solve = com_gap
+    try:
+        yield
+    finally:
+        cp_model.CpSolver.Solve = original
 
 
 def executar(run_id: str, tempo: int) -> None:
@@ -367,7 +525,7 @@ def executar(run_id: str, tempo: int) -> None:
         orcamento=orc,
         base_receita=p.get("BASE_RECEITA", "arrecadada"),
         usar_cts=bool(p.get("USAR_CTS", True)),
-        incluir_industrial=bool(p.get("INCLUIR_INDUSTRIAL", True)),
+        cobertura_so_residencial=bool(p.get("COBERTURA_SO_RESIDENCIAL", False)),
         curva_adocao=p.get("CURVA_ADOCAO", "scurve"),
         foco_cobertura=float(p.get("FOCO_COBERTURA", 1.0)),
         penalidade_cobertura=p.get("PENALIDADE_COBERTURA", "meta+cobertura"),
@@ -437,9 +595,26 @@ def executar(run_id: str, tempo: int) -> None:
         # adianta a tela pedir 600s num worker de laptop.
         segundos = min(int(p.get("MAX_TIME_S") or tempo), tempo)
         nucleos = int(p.get("WORKERS") or 8)
-        log(run_id, f"solver: max_time_s={segundos} workers={nucleos}")
+        log(run_id, f"solver: max_time_s={segundos} workers={nucleos} "
+                    f"gap_cobertura={GAP_RELATIVO:.3%} gap_retorno={GAP_RETORNO:.3%}")
         try:
-            res = CP.resolver_por_sistema(cen, max_time_s=segundos, workers=nucleos)
+            aceita = _parametros_do_motor(CP)
+            if "gap_retorno" in aceita:
+                res = CP.resolver_por_sistema(cen, max_time_s=segundos, workers=nucleos,
+                                              gap_relativo=GAP_RELATIVO,
+                                              gap_retorno=GAP_RETORNO)
+            elif "gap_relativo" in aceita:
+                # Motor com folga UNICA: manda a da cobertura, que e a que muda o
+                # resultado. A do retorno so mudaria o tempo, e mandar o valor folgado
+                # aqui afrouxaria a cobertura junto — exatamente o que a separacao
+                # existe para evitar.
+                log(run_id, "motor com folga unica: aplicando so a de cobertura")
+                res = CP.resolver_por_sistema(cen, max_time_s=segundos, workers=nucleos,
+                                              gap_relativo=GAP_RELATIVO)
+            else:
+                log(run_id, "motor sem `gap_relativo`: usando o contorno por fora")
+                with gap_de_convergencia(GAP_RELATIVO):
+                    res = CP.resolver_por_sistema(cen, max_time_s=segundos, workers=nucleos)
         except KeyError as e:
             # `KeyError: 'Araruama Leste1'` — o nome de uma cidade, cru, e nada
             # mais. Chegava assim ate a tela, que nao tem como saber que o defeito
@@ -479,6 +654,17 @@ def executar(run_id: str, tempo: int) -> None:
         parar.set()
         batedor.join(timeout=2)
     log(run_id, f"solver: {res.get('milp_status')}  VPL={res.get('vpl'):,.0f}")
+    # GRAVA O DESFECHO DO SOLVER ANTES DE MATERIALIZAR.
+    #
+    # Aconteceu: 68 minutos de solver, o plano pronto, e o processo morreu na
+    # materializacao. `otim_*` ficou vazio e a tela mostrou so "ERRO" — o VPL e as
+    # obrigatorias existiam apenas numa linha de log, num terminal. Fechar a janela
+    # apagava o unico registro do que a rodada tinha achado.
+    #
+    # Aqui o numero sobrevive a falha do passo seguinte. Nao substitui o resultado
+    # publicado (que tem a cascata inteira); e o que da para dizer quando a
+    # publicacao nao acontece.
+    anotar_solver(run_id, res)
     # O solver e uma chamada nativa: um cancelamento durante ele so pode ser
     # atendido quando ele volta. E por isso que a espera maxima do cancelamento e
     # o `MAX_TIME_S` da rodada, e nao um numero que este worker escolha.

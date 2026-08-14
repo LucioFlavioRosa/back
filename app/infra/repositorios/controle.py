@@ -395,16 +395,41 @@ async def recolher_abandonadas() -> list[str]:
 
     O que se recolhe aqui é lease abandonado: alguém disse "estou nisso, me cobre
     em 30 segundos" e parou de dizer. Não é dedução, é a promessa vencendo.
+
+    MAS PARAR DE PROMETER NÃO É MORRER. Uma máquina saturada atrasa a batida sem
+    que o executor tenha morrido — e matar a rodada dele destrói trabalho vivo,
+    que é exatamente o que o critério estreito acima existe para evitar. Por isso
+    a segunda condição: só recolhe se o dono também sumiu de `controle.executor`.
+
+    Foi um caso real: 68 minutos de solver descartados no último passo, com o
+    executor dono batendo ponto no mesmo segundo em que a rodada foi marcada ERRO.
+    E a mensagem gravada — "parou de responder" — mandava investigar a coisa
+    errada, porque o executor estava vivo e o log dele tinha a causa verdadeira.
     """
     linhas = await db.buscar(
-        f"""UPDATE {_c()}.run_status
+        f"""UPDATE {_c()}.run_status s
                SET status = 'ERRO',
-                   erro = 'O executor que reivindicou esta rodada parou de responder '
-                          '(lease vencido). A rodada nao chegou ao fim e pode ser '
-                          'reexecutada.',
+                   erro = 'O executor que reivindicou esta rodada deixou de renovar o '
+                          'lease e nao esta mais batendo ponto. A rodada nao chegou ao '
+                          'fim e pode ser reexecutada; a causa exata, se houver, esta '
+                          'no log do executor.',
                    worker_id = NULL, lease_ate = NULL, atualizado_em = now()
-             WHERE status = 'RODANDO' AND lease_ate IS NOT NULL AND lease_ate < now()
-         RETURNING run_id"""
+             WHERE s.status = 'RODANDO'
+               AND s.lease_ate IS NOT NULL AND s.lease_ate < now()
+               -- E O DONO NAO ESTA MAIS VIVO. Sem isto, o vigia mata rodada de
+               -- executor que esta trabalhando: lease vencido significa "parou de
+               -- prometer", e uma maquina saturada para de prometer sem parar de
+               -- trabalhar. Aconteceu — 68 minutos de solver descartados no ultimo
+               -- passo, com o executor dono batendo ponto no mesmo segundo.
+               --
+               -- `controle.executor` distingue as duas coisas, e e a unica coisa que
+               -- distingue: quem morreu para de bater, quem esta lento continua.
+               AND NOT EXISTS (
+                   SELECT 1 FROM {_c()}.executor e
+                    WHERE e.worker_id = s.worker_id
+                      AND e.visto_em > now() - make_interval(secs => $1))
+         RETURNING run_id""",
+        _LIMITE_VISTO,
     )
     return [l["run_id"] for l in linhas]
 
