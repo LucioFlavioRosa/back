@@ -71,8 +71,21 @@ docker compose exec -T db pg_restore -U otim -d otimizador --no-owner < dev/cada
 | Esquema | Objetos | FKs | Dado |
 |---|---|---|---|
 | `input` | 17 tabelas | 10 | **completo** — 4.850 sub-bacias, 997 ETEs, 141 cidades |
-| `controle` | 7 tabelas | 1 | só as 6 concessões de acesso; **sem histórico de rodadas** |
+| `controle` | 7 tabelas | 1 | as 3 concessões de acesso; **sem histórico de rodadas** |
 | `public` | 14 tabelas + 3 views | 13 | **vazio** — você gera os seus resultados |
+
+**Quem enxerga o quê** já vem configurado em `controle.usuario_acesso`, e é o que faz o
+recorte por unidade funcionar:
+
+| login | papel | escopo |
+|---|---|---|
+| `dev@local` | admin | tudo — é o usuário assumido quando o SSO está desligado |
+| `ana@aegea` | analista | regional `rA` |
+| `bruno@aegea` | analista | só a unidade `uB2` |
+
+A trilha de correções do cadastro (`input.override`) vem com 18 linhas de exemplo — override
+tem valor antigo, valor novo, autor e data, e é assim que a tela mostra o que foi corrigido à
+mão sobre o dado do Databricks.
 
 As migrações do cadastro e a do resultado já estão aplicadas. Índices, constraints e
 `COMMENT ON COLUMN` vêm junto.
