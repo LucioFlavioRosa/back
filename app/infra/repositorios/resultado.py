@@ -364,7 +364,23 @@ async def meta(run_id: str) -> dict[str, Any] | None:
 
 async def excluir(run_id: str) -> bool:
     """`ON DELETE CASCADE` leva as 13 tabelas de detalhe junto — por isso o DELETE
-    e so em `otim_meta`."""
+    e so em `otim_meta`.
+
+    O RETORNO OLHA AS TRES TABELAS ONDE A RODADA PODE EXISTIR, e nao so
+    `otim_meta`. Enquanto ele saia do primeiro DELETE, apagar uma rodada que NUNCA
+    PUBLICOU (`ERRO`, `PENDENTE`, `CANCELADA`) devolvia `False`: nao ha linha em
+    `otim_meta` para essas. A API lia isso como "nao encontrada" e respondia 404 —
+    depois de a transacao ter commitado a exclusao.
+
+    O usuario via "nao foi possivel excluir" sobre uma rodada que tinha acabado de
+    ser excluida, e a linha so sumia da tela no refresh seguinte. Atingia
+    exatamente as rodadas que mais se quer limpar, e nunca as que deram certo —
+    por isso passou tanto tempo sem aparecer.
+
+    `run_favorita` e `run_comentario` NAO entram na conta: sao satelites. Uma
+    marca orfa, sem rodada em nenhuma das tres, nao e rodada — e responder 204
+    sobre ela esconderia um `run_id` que nao existe.
+    """
     async with db.transacao() as con:
         r = await con.execute(f"DELETE FROM {_p()}.otim_meta WHERE run_id = $1", run_id)
         # O CONTROLE sai junto. Sem isto, `GET /runs/{id}/status` seguia
@@ -374,8 +390,8 @@ async def excluir(run_id: str) -> bool:
         # uma das duas sozinha.
         ctrl = config().schema_controle
         await con.execute(f"DELETE FROM {ctrl}.run_diagnostico WHERE run_id = $1", run_id)
-        await con.execute(f"DELETE FROM {ctrl}.run_status WHERE run_id = $1", run_id)
-        await con.execute(f"DELETE FROM {ctrl}.run_request WHERE run_id = $1", run_id)
+        rs = await con.execute(f"DELETE FROM {ctrl}.run_status WHERE run_id = $1", run_id)
+        rq = await con.execute(f"DELETE FROM {ctrl}.run_request WHERE run_id = $1", run_id)
         # As marcas de favorita de TODOS os usuarios. Elas nao tem FK — nao ha uma
         # tabela unica com todas as rodadas para apontar (ver `009_favoritas.sql`)
         # —, entao a limpeza e aqui ou nao acontece.
@@ -384,7 +400,10 @@ async def excluir(run_id: str) -> bool:
         # isto ela sobreviveria a rodada e reapareceria colada em outra que
         # reusasse o `run_id` — o `/reexecutar` reusa o id de proposito.
         await con.execute(f"DELETE FROM {ctrl}.run_comentario WHERE run_id = $1", run_id)
-    return r != "DELETE 0"
+    # `DELETE 0` e o que o asyncpg devolve quando nada casou. Basta UMA das tres
+    # ter apagado algo para a rodada ter existido — e exclusao e idempotente do
+    # ponto de vista de quem pediu: o estado final e o mesmo.
+    return any(tag != "DELETE 0" for tag in (r, rs, rq))
 
 
 async def comentar(run_id: str, texto: str, autor: str) -> None:
