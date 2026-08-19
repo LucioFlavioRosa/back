@@ -211,33 +211,77 @@ async def salvar_ete(
     )
 
 
+@router.put("/unidades/{unidade_id}/topologia/{componente_id}")
+async def salvar_topologia(
+    unidade_id: str, componente_id: str, corpo: Corpo, usuario: Usuario
+) -> dict[str, Any]:
+    """Grupo 01 — em que sistema o componente entra, e para onde ele escoa.
+
+    O corpo é a posição inteira: `{"sisId": "d1s25", "jusante": "d1b25_1_1"}`.
+    `jusante` vazio é caminho ainda não montado; `sisId` vazio tira o componente
+    do sistema, o mesmo que o `DELETE` abaixo.
+
+    **Não há `atualizadoEm`/`atualizadoPor` na resposta**, ao contrário das outras
+    quatro rotas: `sistema_topologia` não tem essas colunas. Quem gravou o quê está
+    na trilha (`GET /alteracoes?tipo=topologia`), que é onde a tela vai buscar.
+    """
+    return await cadastro_escrita.salvar_topologia(
+        unidade_id=unidade_id, componente_id=componente_id, corpo=corpo, autor=usuario
+    )
+
+
+@router.put("/unidades/{unidade_id}/sistemas/{sistema_id}")
+async def salvar_sistema(
+    unidade_id: str, sistema_id: str, corpo: Corpo, usuario: Usuario
+) -> dict[str, Any]:
+    """Grupo 01 — o que o sistema declara sobre si: `{"usaCts": true|false}`.
+
+    Marcado, o sistema aceita **uma** CTS; desmarcado, aceita várias. É regra de
+    cadastro, e não de simulação: o motor nunca contou CTS por sistema.
+
+    O nome do sistema NÃO entra aqui — ele vem do Databricks e não tem rota de
+    escrita, como o resto dos nomes do Grupo 01.
+    """
+    return await cadastro_escrita.salvar_sistema(
+        unidade_id=unidade_id, sistema_id=sistema_id, corpo=corpo, autor=usuario
+    )
+
+
+@router.delete("/unidades/{unidade_id}/topologia/{componente_id}")
+async def remover_da_topologia(
+    unidade_id: str, componente_id: str, usuario: Usuario
+) -> dict[str, Any]:
+    """Tira o componente do sistema. A ficha dele CONTINUA no cadastro.
+
+    Não é apagar: a linha fica com `sistema_id` nulo, e é isso que preserva o nome
+    do componente e permite colocá-lo noutro sistema depois. Fora de sistema, ele
+    some da simulação — o motor pula quem não tem sistema.
+    """
+    return await cadastro_escrita.remover_da_topologia(
+        unidade_id=unidade_id, componente_id=componente_id, autor=usuario
+    )
+
+
 # ---------------------------------------------------------------------------
-# CRIAR e APAGAR CTS: removidos de proposito
+# COLOCAR e TIRAR CTS: pela TOPOLOGIA, e so por ela
 # ---------------------------------------------------------------------------
-# A CTS NAO e algo que se cria escolhendo uma sub-bacia. Ela e um NO DO SISTEMA,
-# como a sub-bacia, e a posicao dela ja esta em `input.sistema_topologia` — com
-# jusante proprio: no banco carregado da planilha, TODAS estao la.
+# A CTS e um NO DO SISTEMA, como a sub-bacia. Onde ela esta e uma linha de
+# `input.sistema_topologia`, e e por isso que colocar e tirar CTS sao as duas
+# rotas de topologia acima, e nao um `POST`/`DELETE` de ficha.
 #
-# (Houve um periodo com 339 fichas para 337 nos. As duas sobrando nao vinham
-# da planilha — foram criadas pelo `POST /cts` que existia aqui, que gravava
-# ficha e par sem tocar na topologia. E a prova pratica do argumento abaixo.)
+# O motor deixa isso obrigatorio (`otimizador_capex_v62.py`): os nos saem do laco
+# sobre `sistema-topologia`, e `cen.cts_ids = set(cts_operacional) & set(cen.nos)`.
+# So e CTS efetiva a ficha que TAMBEM e no. Mexer num lado sem o outro produz meia
+# CTS, das duas formas possiveis — e as duas ja aconteceram aqui:
 #
-# O motor confirma (`otimizador_capex_v62.py`): os nos saem do laco sobre
-# `sistema-topologia`, e `cen.cts_ids = set(cts_operacional) & set(cen.nos)`. So e
-# CTS efetiva a ficha que TAMBEM e no.
+#   - ficha sem no: visivel no cadastro, invisivel para a simulacao. Houve um
+#     periodo com 339 fichas para 337 nos, e as duas sobrando eram exatamente isso.
+#   - no sem ficha: pior. Vira um no comum, sem componentes e com demanda ZERADA,
+#     que continua no caminho ate a ETE sem aparecer em tela nenhuma.
 #
-# Entao:
-#   - `POST /cts` gravava `cts_operacional` + `subbacia_cts` e NAO tocava na
-#     topologia: criava uma ficha visivel no cadastro e invisivel para a simulacao.
-#   - `DELETE /cts` era pior. Apagava a ficha e deixava o no na topologia: a CTS
-#     virava um no comum, sem ficha, sem componentes e com demanda ZERADA. E como
-#     o par tambem sumia, com `usar_cts=False` a demanda dela nao era nem somada a
-#     sub-bacia pareada. Destruia dado de duas formas ao mesmo tempo.
+# Por isso `salvar_topologia` exige que o componente ja exista em alguma ficha, e
+# `remover_da_topologia` NAO apaga a linha: ela fica com `sistema_id` nulo. As duas
+# metades permanecem presas uma na outra.
 #
-# `subbacia_cts` e SOBREPOSICAO de area, nao pertencimento: e ela que permite ao
-# `USAR_CTS` decidir se a CTS entra como estrutura propria ou se ligacoes, receita
-# e vazao dela sao somadas a sub-bacia irma.
-#
-# O que sobra e o que faz sentido: LER e EDITAR a ficha de uma CTS que o cadastro
-# ja tem. Criar e remover CTS e mudanca de topologia, e topologia vem do
-# Databricks como todo o resto do Grupo 01.
+# `subbacia_cts` e SOBREPOSICAO de area, e nao pertencimento — nem a sistema, nem a
+# unidade. Ela nao diz onde a CTS esta.

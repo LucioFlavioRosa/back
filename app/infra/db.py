@@ -138,6 +138,39 @@ _EXIGIDO_RESTRICAO = [
     ("input", "componentes_cts_capex", "capex_e_derivado", "005_capex_derivado.sql"),
 ]
 
+#: Migracao que AFROUXA uma restricao existente — procurar o nome dela nao serve,
+#: porque o nome nao muda: `override_tipo_check` existe antes e depois, e so a
+#: DEFINICAO passa a listar mais um tipo. Aqui a busca e no texto da restricao.
+#:
+#: Sem a 011, gravar topologia insere na trilha com `tipo='topologia'` e o banco
+#: recusa a transacao INTEIRA — a gravacao falha no fim, depois de validada, com
+#: erro de constraint que nao diz nada a quem esta montando o sistema.
+_EXIGIDO_NA_RESTRICAO = [
+    ("input", "override_tipo_check", "topologia", "011_trilha_da_topologia.sql"),
+    ("input", "override_tipo_check", "sistema", "012_trilha_do_sistema.sql"),
+]
+
+#: Coluna que precisa ACEITAR NULO. O contrario das listas acima: aqui a coluna
+#: sempre existiu, e o que muda e ela deixar de ser NOT NULL.
+#:
+#: Esta migracao NAO mora em `migracoes/`: `sistema_topologia` e tabela do
+#: Databricks, e o DDL dela e do repositorio do motor
+#: (`otimizador/infraestrutura/sql/`). O servico depende dela mesmo assim — tirar
+#: um componente do sistema grava `sistema_id = NULL` —, entao a ausencia precisa
+#: aparecer aqui e nao no meio de um 500.
+_EXIGIDO_NULAVEL = [
+    ("input", "sistema_topologia", "sistema_id",
+     "ddl_input_migracao_05.sql (repositorio do motor)"),
+]
+
+#: Mesma razao de `_EXIGIDO_NULAVEL`: tabela do Databricks, DDL no repositorio do
+#: motor, e o servico depende dela — a leitura do Grupo 01 seleciona a coluna, e
+#: sem ela `GET /hierarquia` responde 500.
+_EXIGIDO_COLUNA = [
+    ("input", "cidade_sistema", "usa_sistema_cts",
+     "ddl_input_migracao_06.sql (repositorio do motor)"),
+]
+
 
 async def migracoes_faltando() -> list[str]:
     """Quais migracoes de `migracoes/` ainda nao foram aplicadas neste banco."""
@@ -171,6 +204,39 @@ async def migracoes_faltando() -> list[str]:
         )
         if not existe:
             faltam.append(f"{arquivo} (falta {schema}.{tabela} CHECK {restricao})")
+    for schema, restricao, termo, arquivo in _EXIGIDO_NA_RESTRICAO:
+        existe = await buscar_um(
+            "SELECT 1 FROM pg_constraint c"
+            "  JOIN pg_namespace n ON n.oid = c.connamespace"
+            " WHERE n.nspname = $1 AND c.conname = $2"
+            "   AND pg_get_constraintdef(c.oid) LIKE '%' || $3 || '%'",
+            schema,
+            restricao,
+            termo,
+        )
+        if not existe:
+            faltam.append(f"{arquivo} ({restricao} nao aceita '{termo}')")
+    for schema, tabela, coluna, arquivo in _EXIGIDO_COLUNA:
+        existe = await buscar_um(
+            "SELECT 1 FROM information_schema.columns"
+            " WHERE table_schema = $1 AND table_name = $2 AND column_name = $3",
+            schema,
+            tabela,
+            coluna,
+        )
+        if not existe:
+            faltam.append(f"{arquivo} (falta {schema}.{tabela}.{coluna})")
+    for schema, tabela, coluna, arquivo in _EXIGIDO_NULAVEL:
+        nulavel = await buscar_um(
+            "SELECT 1 FROM information_schema.columns"
+            " WHERE table_schema = $1 AND table_name = $2 AND column_name = $3"
+            "   AND is_nullable = 'YES'",
+            schema,
+            tabela,
+            coluna,
+        )
+        if not nulavel:
+            faltam.append(f"{arquivo} ({schema}.{tabela}.{coluna} ainda e NOT NULL)")
     return faltam
 
 

@@ -208,18 +208,20 @@ async def unidade(unidade_id: str) -> dict[str, Any] | None:
                      FROM {_i()}.componentes_subbacias_capex k
                     WHERE k.sub_bacia IN (SELECT componente_sistema_id FROM sub)
                    UNION ALL
+                   -- A CTS e componente da topologia como qualquer outro, entao
+                   -- as obras dela entram por `sub` (que e a topologia da
+                   -- unidade), e nao pelo par com a sub-bacia.
                    SELECT k.capex, k.tempo_execucao
-                     FROM {_i()}.subbacia_cts p
-                     JOIN {_i()}.componentes_cts_capex k ON k.cts = p.cts
-                    WHERE p.sub_bacia IN (SELECT componente_sistema_id FROM sub))
+                     FROM {_i()}.componentes_cts_capex k
+                    WHERE k.cts IN (SELECT componente_sistema_id FROM sub))
             SELECT (SELECT count(*) FROM cid) AS cidades,
                    (SELECT count(*) FROM sis) AS sistemas,
                    (SELECT count(*) FROM {_i()}.subbacia_operacional b
                      WHERE b.sub_bacia IN (SELECT componente_sistema_id FROM sub)) AS sub_bacias,
                    (SELECT count(*) FROM {_i()}.ete_capex e
                      WHERE e.ete_id IN (SELECT componente_sistema_id FROM sub)) AS etes,
-                   (SELECT count(*) FROM {_i()}.subbacia_cts p
-                     WHERE p.sub_bacia IN (SELECT componente_sistema_id FROM sub)) AS cts,
+                   (SELECT count(*) FROM {_i()}.cts_operacional o
+                     WHERE o.cts IN (SELECT componente_sistema_id FROM sub)) AS cts,
                    -- Os tres baldes do componente de CAPEX, exaustivos e sem
                    -- sobreposicao: a soma e o total de linhas das duas tabelas.
                    (SELECT count(*) FROM obr
@@ -279,22 +281,64 @@ async def hierarquia(unidade_id: str) -> dict[str, Any]:
               FROM ({_cidades_cte()}) c ORDER BY cidade_name""",
         unidade_id,
     )
+    # `usaCts` sai como `'true'`/`'false'` MINUSCULO, e a conversao e feita aqui,
+    # no SQL. O contrato do Grupo 01 e "tudo string" (`txt()` abaixo converte a
+    # resposta inteira), e `str(True)` em Python daria `'True'` — o front
+    # compararia com `'true'` e acharia que nenhum sistema usa CTS, calado.
     sistemas = await db.buscar(
-        f"""SELECT s.sistema_id AS id, s.sistema_name AS nome, s.cidade_id AS "cidId"
+        f"""SELECT s.sistema_id AS id, s.sistema_name AS nome, s.cidade_id AS "cidId",
+                   CASE WHEN s.usa_sistema_cts THEN 'true' ELSE 'false' END AS "usaCts"
               FROM {_i()}.cidade_sistema s
               JOIN ({_cidades_cte()}) c ON c.cidade_id = s.cidade_id
              ORDER BY s.sistema_name""",
         unidade_id,
     )
+    # O `JOIN` recorta pela unidade E, por ser interno, deixa de fora quem nao tem
+    # sistema. Os dois efeitos sao desejados aqui: `topo` e a arvore MONTADA desta
+    # unidade. Quem esta fora de sistema vem em `semSistema`, logo abaixo.
+    # `tipo` vem junto porque a tela trata os tres de forma diferente: sub-bacia e
+    # ETE pertencem ao sistema por carga do Databricks, e a CTS e a unica que a
+    # Regional coloca e tira. Sem o tipo, a tela ofereceria "tirar do sistema"
+    # para uma sub-bacia — o que nao e decisao dela.
     topo = await db.buscar(
         f"""SELECT t.sistema_id AS sis, t.componente_sistema_id AS id,
                    t.componente_sistema_nome AS nome,
-                   t.componente_sistema_id_jusante AS jus
+                   t.componente_sistema_id_jusante AS jus,
+                   CASE WHEN e.ete_id IS NOT NULL THEN 'ete'
+                        WHEN k.cts    IS NOT NULL THEN 'cts'
+                        ELSE 'sub-bacia' END AS tipo
               FROM {_i()}.sistema_topologia t
               JOIN {_i()}.cidade_sistema s USING (sistema_id)
               JOIN ({_cidades_cte()}) c ON c.cidade_id = s.cidade_id
+              LEFT JOIN {_i()}.ete_capex e ON e.ete_id = t.componente_sistema_id
+              LEFT JOIN {_i()}.cts_operacional k ON k.cts = t.componente_sistema_id
              ORDER BY t.sistema_id, t.componente_sistema_id""",
         unidade_id,
+    )
+    # COMPONENTE SEM SISTEMA — cadastrado, ainda nao colocado em lugar nenhum.
+    #
+    # NAO e recortado por unidade, e nao poderia ser: sem sistema nao ha cidade,
+    # nao ha superintendencia, nao ha unidade. E o modelo real do produto — do
+    # Databricks vem quais sub-bacias e qual ETE sao do sistema, e TODAS as CTS
+    # cadastradas; em que sistema cada CTS entra e a Regional que decide, e ela
+    # pode colocar qualquer uma que exista na base.
+    #
+    # `tipo` viaja junto porque a tela precisa rotular a lista, e a natureza do
+    # componente nao esta na topologia: ela e a tabela em que ele tem ficha.
+    sem_sistema = await db.buscar(
+        f"""SELECT t.componente_sistema_id AS id,
+                   t.componente_sistema_nome AS nome,
+                   CASE WHEN e.ete_id IS NOT NULL THEN 'ete'
+                        WHEN c.cts    IS NOT NULL THEN 'cts'
+                        WHEN b.sub_bacia IS NOT NULL THEN 'sub-bacia'
+                        ELSE '' END AS tipo
+              FROM {_i()}.sistema_topologia t
+              LEFT JOIN {_i()}.ete_capex e ON e.ete_id = t.componente_sistema_id
+              LEFT JOIN {_i()}.cts_operacional c ON c.cts = t.componente_sistema_id
+              LEFT JOIN {_i()}.subbacia_operacional b
+                     ON b.sub_bacia = t.componente_sistema_id
+             WHERE t.sistema_id IS NULL
+             ORDER BY 3, 2, 1"""
     )
 
     def txt(linhas):
@@ -306,6 +350,7 @@ async def hierarquia(unidade_id: str) -> dict[str, Any]:
         "cidades": txt(cidades),
         "sistemas": txt(sistemas),
         "topo": txt(topo),
+        "semSistema": txt(sem_sistema),
     }
 
 
@@ -713,41 +758,46 @@ async def etes(unidade_id: str) -> dict[str, Any]:
 
 
 async def cts(unidade_id: str) -> dict[str, Any]:
-    """Grupo 05 — CTS e o pareamento 1:1 com a sub-bacia.
+    """Grupo 05 — as CTS COLOCADAS nos sistemas desta unidade.
 
-    `ctss` e um MAPA por id, como `subs`. E `pares` vem separado porque uma CTS SEM
-    par e estado invalido que a tela precisa mostrar — sem a lista, ela nao teria
-    como saber que a CTS ficou orfa.
+    `ctss` e um MAPA por id, como `subs`.
 
-    `inconsistencias` traz as CTS que existem pela metade — ver
-    `_cts_inconsistentes`. Ele NAO substitui `ctss`, e cruza com ele: uma CTS com
-    ficha e par mas sem no aparece nos DOIS (continua editavel, e agora se sabe
-    que a simulacao nao a ve), enquanto um no sem ficha so existe aqui, porque
-    nao ha ficha para editar. E de proposito: a lista de fichas responde "o que
-    da para mexer", esta responde "no que confiar".
+    A ancora e a TOPOLOGIA, e nao o pareamento com a sub-bacia: quem diz que uma
+    CTS e desta unidade e o sistema em que ela foi colocada, e sistema e coisa que
+    a Regional monta (Grupo 01). Uma CTS ainda nao colocada nao aparece aqui —
+    ela nao e de unidade nenhuma, nao entra na simulacao e nao tem o que preencher
+    ainda. Ela vive na lista do Grupo 01, esperando ser adicionada a um sistema.
+
+    `sisId`, `sistema` e `jusante` saem da linha DA PROPRIA CTS. Antes vinham da
+    linha da sub-bacia pareada, o que fazia a tela mostrar o caminho de outro
+    componente como se fosse o dela.
+
+    `inconsistencias` traz componente colocado no sistema que nao tem ficha —
+    ver `_cts_inconsistentes`. Ela NAO cruza com `ctss`: sao justamente os que
+    nao tem ficha para editar.
     """
-    linhas = await db.buscar(
-        f"""SELECT p.sub_bacia AS sub, p.cts,
-                   t.componente_sistema_id_jusante AS jusante,
-                   s.sistema_id, s.sistema_name
-              FROM {_i()}.subbacia_cts p
-              JOIN {_i()}.sistema_topologia t ON t.componente_sistema_id = p.sub_bacia
-              JOIN {_i()}.cidade_sistema s USING (sistema_id)
-              JOIN ({_cidades_cte()}) c ON c.cidade_id = s.cidade_id
-             ORDER BY p.sub_bacia""",
-        unidade_id,
-    )
     fichas = {
         f["cts"]: f
         for f in await db.buscar(
             f"""SELECT o.* FROM {_i()}.cts_operacional o
-                  JOIN {_i()}.subbacia_cts p ON p.cts = o.cts
-                  JOIN {_i()}.sistema_topologia t ON t.componente_sistema_id = p.sub_bacia
+                  JOIN {_i()}.sistema_topologia t ON t.componente_sistema_id = o.cts
                   JOIN {_i()}.cidade_sistema s USING (sistema_id)
                   JOIN ({_cidades_cte()}) c ON c.cidade_id = s.cidade_id""",
             unidade_id,
         )
     }
+    linhas = await db.buscar(
+        f"""SELECT t.componente_sistema_id AS cts,
+                   t.componente_sistema_nome AS nome,
+                   t.componente_sistema_id_jusante AS jusante,
+                   s.sistema_id, s.sistema_name
+              FROM {_i()}.sistema_topologia t
+              JOIN {_i()}.cts_operacional o ON o.cts = t.componente_sistema_id
+              JOIN {_i()}.cidade_sistema s USING (sistema_id)
+              JOIN ({_cidades_cte()}) c ON c.cidade_id = s.cidade_id
+             ORDER BY s.sistema_name, t.componente_sistema_id""",
+        unidade_id,
+    )
     obras = await _obras_por_ficha(
         "componentes_cts_capex", "cts", list(fichas), _INDICE_CTS
     )
@@ -757,91 +807,63 @@ async def cts(unidade_id: str) -> dict[str, Any]:
         cid = l["cts"]
         if cid not in fichas:
             continue
-        ficha = {
+        ctss[cid] = {
             **_ficha_coleta(fichas[cid], "cts"),
-            "nome": cid,
-            "subId": l["sub"],
+            "nome": l["nome"] or cid,
             "sisId": l["sistema_id"],
             "sistema": l["sistema_name"] or l["sistema_id"],
             "jusante": l["jusante"] or "",
             "obrasOverride": obras.get(cid, {}),
         }
-        ctss[cid] = ficha
 
     return {
-        "pares": [{"sub": l["sub"], "cts": l["cts"]} for l in linhas],
         "ctss": ctss,
         "inconsistencias": await _cts_inconsistentes(unidade_id),
     }
 
 
 async def _cts_inconsistentes(unidade_id: str) -> list[dict[str, Any]]:
-    """As CTS que existem pela metade — as que a leitura normal nao denuncia.
+    """Componente COLOCADO no sistema que nao tem ficha em lugar nenhum.
 
-    Uma CTS precisa de TRES coisas para existir de verdade: um no em
-    `sistema_topologia` (e dele que sai a posicao na rede, com jusante proprio),
-    uma ficha em `cts_operacional` (a demanda) e um par em `subbacia_cts` (a
-    sobreposicao de area com a sub-bacia irma). O motor so a considera onde no e
-    ficha coincidem — `cts_ids = fichas ∩ nos` — e o par e o que permite ao
-    `USAR_CTS` somar a demanda dela na sub-bacia quando ela e desligada.
+    Um componente precisa de duas coisas para existir de verdade: estar num
+    sistema (`sistema_topologia` com `sistema_id`) e ter ficha — em
+    `subbacia_operacional`, `cts_operacional` ou `ete_capex`. O motor monta os nos
+    percorrendo a topologia; sem ficha, o no entra na simulacao com demanda ZERO,
+    ocupa posicao na rede e puxa a media do sistema para baixo, sem aparecer como
+    erro em lugar nenhum.
 
-    Faltando qualquer uma das tres, o efeito e SILENCIOSO: a rodada roda, o plano
-    sai, e a CTS simplesmente nao esta la — ou pior, esta como um no de demanda
-    zero. Nenhum erro, nenhum aviso; so um numero diferente no fim. Foi assim que
-    duas CTS ficaram meio existindo no cadastro real sem ninguem notar.
+    E o unico estado meio-existente que sobrou, e o unico que MUDA O RESULTADO.
+    Componente sem sistema nao entra aqui: nao estar colocado e estado normal —
+    e o que acontece com toda CTS antes de a Regional adiciona-la a um sistema.
 
-    Por isso o `GET` passa a devolve-las. Nao e diagnostico de infraestrutura: e
-    informacao de cadastro, e quem le a tela e exatamente quem pode corrigi-la.
+    Nao ha mais "ficha sem no" nem "sem par". O primeiro virou o estado normal
+    acima; o segundo dependia de `subbacia_cts`, que e sobreposicao de area e nao
+    diz onde a CTS esta.
+
+    O `GET` devolve isto porque nao e diagnostico de infraestrutura: e informacao
+    de cadastro, e quem le a tela e exatamente quem pode corrigi-la.
+
+    A checagem NAO usa prefixo de id (havia um `LIKE 'cts%'` aqui). Prefixo e
+    convencao de quem gerou a base, e um componente sem ficha e problema seja ele
+    qual for — inclusive um que ninguem consiga classificar, que e justamente o
+    caso mais suspeito.
     """
     achados = await db.buscar(
         f"""
-        -- (1) FICHA SEM NO: tem ficha e par, nao esta na topologia.
-        --     O motor monta os nos percorrendo `sistema_topologia`; sem no, a
-        --     intersecao nao a pega e ela e invisivel para a simulacao.
-        SELECT 'ficha-sem-no' AS tipo, o.cts AS id, p.sub_bacia AS "subId",
-               'Tem ficha e par, mas nao esta na topologia do sistema. '
-               'A simulacao nao a enxerga.' AS detalhe
-          FROM {_i()}.cts_operacional o
-          JOIN {_i()}.subbacia_cts p ON p.cts = o.cts
-          JOIN {_i()}.sistema_topologia ts ON ts.componente_sistema_id = p.sub_bacia
-          JOIN {_i()}.cidade_sistema s USING (sistema_id)
-          JOIN ({_cidades_cte()}) c ON c.cidade_id = s.cidade_id
-         WHERE NOT EXISTS (SELECT 1 FROM {_i()}.sistema_topologia t
-                            WHERE t.componente_sistema_id = o.cts)
-
-        UNION ALL
-
-        -- (2) NO SEM FICHA: esta na topologia, nao tem demanda cadastrada.
-        --     Este e o pior dos tres, e o unico que MUDA O RESULTADO: o no entra
-        --     na simulacao com demanda zero, ocupa posicao na rede e puxa a media
-        --     do sistema para baixo — sem aparecer como erro em lugar nenhum.
-        SELECT 'no-sem-ficha', t.componente_sistema_id,
-               (SELECT p.sub_bacia FROM {_i()}.subbacia_cts p
-                 WHERE p.cts = t.componente_sistema_id),
-               'Esta na topologia e nao tem ficha em cts_operacional. '
-               'Entra na simulacao com demanda zero.'
+        SELECT 'no-sem-ficha' AS tipo, t.componente_sistema_id AS id,
+               t.componente_sistema_nome AS nome,
+               'Esta num sistema e nao tem ficha em lugar nenhum. '
+               'Entra na simulacao com demanda zero.' AS detalhe
           FROM {_i()}.sistema_topologia t
           JOIN {_i()}.cidade_sistema s USING (sistema_id)
           JOIN ({_cidades_cte()}) c ON c.cidade_id = s.cidade_id
-         WHERE t.componente_sistema_id LIKE 'cts%'
-           AND NOT EXISTS (SELECT 1 FROM {_i()}.cts_operacional o
+         WHERE NOT EXISTS (SELECT 1 FROM {_i()}.cts_operacional o
                             WHERE o.cts = t.componente_sistema_id)
-
-        UNION ALL
-
-        -- (3) SEM PAR: existe e e simulavel, mas nao esta pareada com sub-bacia
-        --     nenhuma. Com `USAR_CTS` desligado a demanda dela some da conta, em
-        --     vez de ser somada a sub-bacia irma.
-        SELECT 'sem-par', o.cts, NULL,
-               'Nao esta pareada com nenhuma sub-bacia. Com USAR_CTS desligado, '
-               'a demanda dela nao e somada a lugar nenhum.'
-          FROM {_i()}.cts_operacional o
-          JOIN {_i()}.sistema_topologia t ON t.componente_sistema_id = o.cts
-          JOIN {_i()}.cidade_sistema s USING (sistema_id)
-          JOIN ({_cidades_cte()}) c ON c.cidade_id = s.cidade_id
-         WHERE NOT EXISTS (SELECT 1 FROM {_i()}.subbacia_cts p WHERE p.cts = o.cts)
-
-         ORDER BY 1, 2""",
+           AND NOT EXISTS (SELECT 1 FROM {_i()}.subbacia_operacional b
+                            WHERE b.sub_bacia = t.componente_sistema_id)
+           AND NOT EXISTS (SELECT 1 FROM {_i()}.ete_capex e
+                            WHERE e.ete_id = t.componente_sistema_id)
+         ORDER BY 2""",
         unidade_id,
     )
     if achados:
