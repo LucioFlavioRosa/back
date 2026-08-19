@@ -50,8 +50,9 @@ FORMAS_DO_CONTRATO = {
     "POST /runs/{}/cancelar",
     "POST /runs/{}/reexecutar",
     # DEPLOY.md §3 — cadastro. `input.override` ja existe e os PUT estao listados
-    # abaixo. NAO ha POST nem DELETE de CTS: a CTS e no da topologia, e criar uma
-    # pela tela produzia ficha que o motor nunca carrega.
+    # abaixo. NAO ha POST nem DELETE de CTS: colocar e tirar CTS e mudanca de
+    # TOPOLOGIA, e vai pelas rotas de topologia — mexer na ficha sem mexer no no
+    # produz meia CTS. Ver `app/api/cadastro.py`.
     "GET /regionais",
     "GET /regionais/{}/unidades",
     "GET /unidades/{}",
@@ -67,12 +68,25 @@ FORMAS_DO_CONTRATO = {
     # DEPLOY.md §3 — cadastro (escrita). Uma ficha por vez; o corpo e a ficha
     # inteira, e a trilha de override viaja junto.
     #
-    # NAO ha POST nem DELETE de CTS: ela e no da topologia, e criar/remover no e
-    # mudanca de cadastro estrutural, nao acao de tela. Ver `app/api/cadastro.py`.
     "PUT /unidades/{}/sub-bacias/{}",
     "PUT /unidades/{}/cts/{}",
     "PUT /unidades/{}/contrato/{}",
     "PUT /unidades/{}/etes/{}",
+    # A TOPOLOGIA — em que sistema o componente entra, e para onde ele escoa. Ela
+    # nao vem do Databricks: de fora vem quais sub-bacias e qual ETE sao do
+    # sistema, e todas as CTS; quem monta o sistema e a Regional. Sem estas duas
+    # rotas a tela do Grupo 01 editava contra o `sessionStorage` do navegador.
+    #
+    # O `DELETE` NAO apaga a ficha: ele poe `sistema_id` nulo, e o componente
+    # continua cadastrado, fora de qualquer sistema. Apagar a linha perderia o
+    # nome, que so existe em `sistema_topologia`.
+    "PUT /unidades/{}/topologia/{}",
+    "DELETE /unidades/{}/topologia/{}",
+    # O que o SISTEMA declara sobre si — hoje so `usaCts`: marcado, ele aceita uma
+    # CTS; desmarcado, varias. E regra de cadastro, e nao de simulacao (o motor
+    # nunca contou CTS por sistema). O NOME do sistema nao entra: vem do
+    # Databricks e nao tem rota de escrita, como o resto dos nomes do Grupo 01.
+    "PUT /unidades/{}/sistemas/{}",
 }
 
 
@@ -111,7 +125,7 @@ def test_nenhum_endpoint_a_mais():
 def test_a_lista_nao_esta_vazia():
     # Guarda contra o teste passar por não encontrar rota nenhuma — se `_expostas`
     # quebrar com uma mudança do FastAPI, os dois testes acima passariam vazios.
-    assert len(_expostas()) == len(FORMAS_DO_CONTRATO) == 32
+    assert len(_expostas()) == len(FORMAS_DO_CONTRATO) == 35
 
 
 @pytest.mark.parametrize("run_id", ["r1' OR 1=1", "../etc", "com espaco", ""])

@@ -169,10 +169,11 @@ SELECT max(quando) AS em FROM (
     SELECT max(b.atualizado_em)
       FROM {i}.subbacia_operacional b JOIN comps c ON c.id = b.sub_bacia
     UNION ALL
+    -- A CTS entra por `comps` como qualquer componente da topologia. Pelo par
+    -- com a sub-bacia, a data de uma CTS colocada num sistema de OUTRA unidade
+    -- contava para esta, e a de uma CTS sem par nao contava para nenhuma.
     SELECT max(o.atualizado_em)
-      FROM {i}.cts_operacional o
-      JOIN {i}.subbacia_cts p ON p.cts = o.cts
-      JOIN comps c ON c.id = p.sub_bacia
+      FROM {i}.cts_operacional o JOIN comps c ON c.id = o.cts
     UNION ALL
     SELECT max(e.atualizado_em)
       FROM {i}.ete_capex e JOIN comps c ON c.id = e.ete_id

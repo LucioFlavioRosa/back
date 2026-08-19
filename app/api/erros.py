@@ -28,6 +28,7 @@ from app.infra.fila import FilaIndisponivel
 from app.infra.repositorios.cadastro_escrita import (
     FichaDeOutraUnidade,
     FichaIncompleta,
+    TopologiaInvalida,
     ValorInvalido,
 )
 
@@ -75,6 +76,16 @@ def registrar(app: FastAPI) -> None:
 
     @app.exception_handler(ValorInvalido)
     async def _valor(_: Request, e: ValorInvalido) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content=_corpo(str(e))
+        )
+
+    @app.exception_handler(TopologiaInvalida)
+    async def _topologia(_: Request, e: TopologiaInvalida) -> JSONResponse:
+        # 422 com o motivo INTEIRO, e nao uma frase generica: a mensagem nomeia os
+        # componentes do ciclo ou quem escoa para o alvo, e e isso que diz a quem
+        # monta o sistema qual ligacao desfazer. Trocar por "topologia invalida"
+        # devolveria a pessoa a um sistema de sete componentes sem pista nenhuma.
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content=_corpo(str(e))
         )

@@ -635,14 +635,24 @@ _DONO = {
           FROM {i}.superintendencia_cidade c
           JOIN {i}.regional_superintendencia s USING (superintendencia_id)
          WHERE c.cidade_id = $1""",
+    # A CTS percorre o MESMO caminho da sub-bacia: quem diz de que unidade ela e
+    # e o SISTEMA em que ela foi colocada. Antes o caminho passava por
+    # `subbacia_cts` — o par com a sub-bacia —, e isso dizia a unidade errada por
+    # duas vias: uma CTS sem par nao pertencia a unidade nenhuma (e nao dava para
+    # editar a ficha dela), e uma pareada herdava a unidade da IRMA, mesmo estando
+    # num sistema de outra.
+    #
+    # CTS fora de sistema nao tem unidade, e por isso nao passa aqui. E o certo:
+    # ela tambem nao aparece no Grupo 05, que so lista as colocadas. Adiciona-la a
+    # um sistema (Grupo 01) e o que a torna editavel.
     "cts": """
         SELECT s.unidade_id
-          FROM {i}.subbacia_cts p
-          JOIN {i}.sistema_topologia t ON t.componente_sistema_id = p.sub_bacia
+          FROM {i}.sistema_topologia t
+          JOIN {i}.cts_operacional o ON o.cts = t.componente_sistema_id
           JOIN {i}.cidade_sistema cs USING (sistema_id)
           JOIN {i}.superintendencia_cidade c ON c.cidade_id = cs.cidade_id
           JOIN {i}.regional_superintendencia s USING (superintendencia_id)
-         WHERE p.cts = $1""",
+         WHERE t.componente_sistema_id = $1""",
     # A ETE percorre o MESMO caminho da sub-bacia, e nao um caminho proprio: em
     # `sistema_topologia` ela e um componente do sistema como qualquer outro. O que
     # a distingue e o id dela tambem existir em `ete_capex` — e assim que o motor a
@@ -1047,6 +1057,494 @@ async def salvar_ete(
     return {"id": ete_id, "alteracoesGravadas": n, **auditoria}
 
 
-# ---------------------------------------------------------------------- CTS
-# `criar_cts` e `apagar_cts` sairam: criar/remover CTS e mudanca de TOPOLOGIA, e a
-# topologia vem do cadastro. Ver o comentario em `app/api/cadastro.py`.
+# ---------------------------------------------------------------- TOPOLOGIA
+# O caminho ate a ETE, e em que sistema cada componente entra.
+#
+# Isto NAO vem do Databricks, e essa era a premissa errada que deixou a tabela mais
+# critica da base sem escrita nenhuma: de fora vem quais sub-bacias e qual ETE
+# pertencem ao sistema, e todas as CTS cadastradas. Quem monta o sistema — quem
+# liga cada componente ao seguinte ate a ETE, e em que sistema cada CTS entra — e a
+# Regional. Ate aqui a tela do Grupo 01 editava contra o `sessionStorage` do
+# navegador e avisava, em letras, que nada daquilo chegava ao cadastro.
+#
+# POR QUE A VALIDACAO E MAIS DURA QUE NAS OUTRAS FICHAS. Preco errado sai errado na
+# conta e alguem estranha o numero. Caminho errado nao aparece: o motor percorre
+# `jusante` ate a lista acabar (`caminho()`, otimizador_capex_v62.py) e, se o
+# caminho nao chega na ETE, ele simplesmente NAO soma as obras de transporte
+# daquele trecho — o plano sai mais barato e continua plausivel. Um ciclo e pior:
+# o laco tem trava em 200 saltos, entao ele nao trava a maquina, ele repete o mesmo
+# trecho ate 200 vezes e infla os requisitos. Nenhum dos dois levanta erro.
+#
+# Por isso o que e INCOERENTE e recusado aqui (ciclo, jusante em outro sistema,
+# jusante em si mesmo, ETE com jusante, segunda ETE no sistema), e o que e apenas
+# INCOMPLETO passa: durante a montagem o caminho fica pela metade o tempo todo, e
+# recusar isso impediria de montar. "Chegou na ETE?" e pergunta de prontidao, e
+# nao de gravacao.
+
+
+class TopologiaInvalida(ValueError):
+    """A ligacao pedida deixaria o cadastro incoerente — 422, com o motivo.
+
+    Separada de `ValorInvalido` porque nao fala de formato de numero: fala de
+    forma do grafo. A mensagem nomeia os componentes envolvidos, porque quem
+    monta um sistema de sete componentes precisa saber QUAL deles fechou o ciclo.
+    """
+
+
+#: Componente ja conhecido do cadastro? Um id que nao esta em lugar nenhum seria um
+#: no INVENTADO: o motor o trataria como no de demanda ZERO, sem ficha e sem obras,
+#: e ele entraria no caminho ate a ETE sem nunca aparecer numa tela. Foi assim que o
+#: antigo `POST /cts` produziu 339 fichas para 337 nos — ele gravava ficha e par sem
+#: tocar na topologia, o espelho exato deste erro.
+_EXISTE_COMPONENTE = """
+    SELECT 1 FROM {i}.sistema_topologia WHERE componente_sistema_id = $1
+    UNION ALL SELECT 1 FROM {i}.subbacia_operacional WHERE sub_bacia = $1
+    UNION ALL SELECT 1 FROM {i}.cts_operacional      WHERE cts       = $1
+    UNION ALL SELECT 1 FROM {i}.ete_capex            WHERE ete_id    = $1
+    LIMIT 1"""
+
+
+async def _travar_sistemas(con: Any, *sistemas: str | None) -> None:
+    """Serializa TODA escrita que toca estes sistemas.
+
+    O lock é do SISTEMA, e não do componente, porque as regras são do sistema:
+    "um caminho sem ciclo", "uma ETE só", "uma CTS quando marcado" — todas se
+    verificam olhando os OUTROS componentes. Travando só o componente alterado,
+    duas requisições liam o estado antigo uma da outra e as duas passavam:
+
+      A → B e B → A ao mesmo tempo    fecham um ciclo que nenhuma das duas viu
+      A → B e B mudando de sistema    deixam A escoando para fora do sistema
+      duas CTS no mesmo sistema       furam o limite de uma
+
+    Nenhum dos três levanta erro depois: o motor segue `jusante` com trava em 200
+    saltos e nunca confere fronteira nem contagem.
+
+    ORDENADO, e sem repetição: mover um componente entre sistemas tranca os dois,
+    e duas requisições que trancassem o mesmo par em ordens opostas travariam uma
+    na outra. `sorted` dá a ordem global que evita isso. O lock é `xact`: sai
+    sozinho no fim da transação, com commit ou rollback.
+    """
+    for sistema in sorted({s for s in sistemas if s}):
+        await con.execute("SELECT pg_advisory_xact_lock(hashtext($1))", sistema)
+
+
+def _id_ou_nada(v: Any) -> str | None:
+    """Id em branco é AUSÊNCIA, e não um id chamado `""`.
+
+    `_texto` não serve aqui: ele existe para a trilha, onde o que importa é
+    preservar o que foi digitado, e devolve `""` para string vazia. Aqui vazio tem
+    significado — `jusante` em branco é caminho ainda não montado, `sisId` em
+    branco é componente fora de sistema —, e tratá-lo como valor faria a validação
+    procurar um componente de id vazio. É a mesma régua de `_numero`, que também
+    transforma campo em branco em `None`.
+    """
+    if v is None:
+        return None
+    s = str(v).strip()
+    return s or None
+
+
+def ciclo_ao_ligar(
+    escoa: dict[str, str | None], de: str, para: str | None
+) -> list[str]:
+    """Ligar `de → para` fecharia um ciclo? Devolve a volta, ou lista vazia.
+
+    `escoa` é o sistema como está no banco (componente → jusante); a ligação nova
+    é aplicada por cima, e o passeio começa do componente que está mudando. A
+    volta devolvida começa e termina no mesmo componente, porque é isso que se
+    mostra para quem monta: `A → B → C → A` diz qual ligação desfazer, e "ciclo
+    detectado" não diz.
+
+    É separado do banco de propósito: é a única regra aqui que é de GRAFO, e não
+    de pertencimento — e é a que erra em silêncio se estiver errada. O motor
+    percorre `jusante` com trava em 200 saltos, então um ciclo não trava nada: ele
+    repete o mesmo trecho até 200 vezes e infla os requisitos da sub-bacia.
+    """
+    if para is None:
+        return []
+    caminho = {**escoa, de: para}
+    visto = [de]
+    atual: str | None = para
+    while atual is not None:
+        if atual in visto:
+            return visto[visto.index(atual):] + [atual]
+        visto.append(atual)
+        atual = caminho.get(atual)
+    return []
+
+
+async def _unidade_do_sistema(con: Any, sistema_id: str) -> str | None:
+    linha = await con.fetchrow(
+        f"""SELECT s.unidade_id
+              FROM {_i()}.cidade_sistema cs
+              JOIN {_i()}.superintendencia_cidade c ON c.cidade_id = cs.cidade_id
+              JOIN {_i()}.regional_superintendencia s USING (superintendencia_id)
+             WHERE cs.sistema_id = $1""",
+        sistema_id,
+    )
+    return linha["unidade_id"] if linha else None
+
+
+async def _cts_do_sistema(con: Any, sistema_id: str, exceto: str = "") -> list[str]:
+    """As CTS já colocadas neste sistema, fora a que está sendo gravada."""
+    linhas = await con.fetch(
+        f"""SELECT t.componente_sistema_id AS id
+              FROM {_i()}.sistema_topologia t
+              JOIN {_i()}.cts_operacional o ON o.cts = t.componente_sistema_id
+             WHERE t.sistema_id = $1 AND t.componente_sistema_id <> $2
+             ORDER BY 1""",
+        sistema_id,
+        exceto,
+    )
+    return [l["id"] for l in linhas]
+
+
+async def _usa_sistema_cts(con: Any, sistema_id: str) -> bool:
+    linha = await con.fetchrow(
+        f"SELECT usa_sistema_cts FROM {_i()}.cidade_sistema WHERE sistema_id = $1",
+        sistema_id,
+    )
+    return bool(linha and linha["usa_sistema_cts"])
+
+
+async def _e_ete(con: Any, componente_id: str) -> bool:
+    return bool(
+        await con.fetchrow(
+            f"SELECT 1 FROM {_i()}.ete_capex WHERE ete_id = $1", componente_id
+        )
+    )
+
+
+async def _e_cts(con: Any, componente_id: str) -> bool:
+    return bool(
+        await con.fetchrow(
+            f"SELECT 1 FROM {_i()}.cts_operacional WHERE cts = $1", componente_id
+        )
+    )
+
+
+async def _quem_aponta_para(con: Any, componente_id: str) -> list[str]:
+    """Componentes cujo jusante é este. Tirar o alvo do sistema os deixaria pendurados."""
+    linhas = await con.fetch(
+        f"""SELECT componente_sistema_id AS id FROM {_i()}.sistema_topologia
+             WHERE componente_sistema_id_jusante = $1
+             ORDER BY 1""",
+        componente_id,
+    )
+    return [l["id"] for l in linhas]
+
+
+async def _exigir_caminho_coerente(
+    con: Any, *, componente_id: str, sistema_id: str, jusante: str | None
+) -> None:
+    """As cinco regras de forma. Todas verificadas com a mudança JÁ aplicada em memória."""
+    if jusante is None:
+        return
+    if jusante == componente_id:
+        raise TopologiaInvalida(
+            f"{componente_id!r} não pode escoar para si mesmo."
+        )
+    alvo = await con.fetchrow(
+        f"""SELECT sistema_id FROM {_i()}.sistema_topologia
+             WHERE componente_sistema_id = $1""",
+        jusante,
+    )
+    if alvo is None:
+        raise TopologiaInvalida(
+            f"{jusante!r} não é um componente do cadastro — não dá para escoar para ele."
+        )
+    # MESMO sistema, e nao so "algum sistema": a ETE que fecha o caminho e a do
+    # sistema (`ete_do_sis[sistema]`), entao um caminho que atravessa a fronteira
+    # terminaria numa ETE que nao e a sua. Na base inteira nao ha uma linha assim.
+    if alvo["sistema_id"] != sistema_id:
+        raise TopologiaInvalida(
+            f"{jusante!r} está em outro sistema. O caminho até a ETE não atravessa "
+            f"a fronteira do sistema — escolha um componente de {sistema_id!r}."
+        )
+
+    # CICLO. O sistema tem poucos componentes, entao o passeio e feito em memoria,
+    # com a ligacao nova ja no lugar — e nao numa CTE recursiva, que precisaria da
+    # mesma substituicao para valer alguma coisa.
+    linhas = await con.fetch(
+        f"""SELECT componente_sistema_id AS id, componente_sistema_id_jusante AS jus
+              FROM {_i()}.sistema_topologia WHERE sistema_id = $1""",
+        sistema_id,
+    )
+    volta = ciclo_ao_ligar({l["id"]: l["jus"] for l in linhas}, componente_id, jusante)
+    if volta:
+        raise TopologiaInvalida(
+            "Isso fecharia um ciclo: " + " → ".join(volta) + ". O caminho precisa "
+            "terminar na ETE, e um ciclo faria o motor repetir o mesmo trecho."
+        )
+
+
+async def salvar_topologia(
+    *, unidade_id: str, componente_id: str, corpo: dict[str, Any], autor: str
+) -> dict[str, Any]:
+    """Coloca o componente num sistema e/ou diz para onde ele escoa.
+
+    O corpo é a posição INTEIRA — `sisId` e `jusante` —, pela mesma razão das
+    outras fichas: reenviar o mesmo corpo não acumula efeito. `sisId` vazio tira o
+    componente do sistema sem apagar a linha; ver `remover_da_topologia`.
+    """
+    sistema_id = _id_ou_nada(corpo.get("sisId"))
+    jusante = _id_ou_nada(corpo.get("jusante"))
+    if sistema_id is None:
+        return await remover_da_topologia(
+            unidade_id=unidade_id, componente_id=componente_id, autor=autor
+        )
+
+    async with db.transacao() as con:
+        # ESPIADA sem lock, só para descobrir QUAIS sistemas travar: mover um
+        # componente toca o sistema de origem e o de destino, e o de origem só se
+        # sabe lendo. Depois de travar, o valor é lido de novo e conferido — se
+        # outra gravação moveu o componente nesse intervalo, esta transação não
+        # tem o lock do sistema certo e desiste em vez de decidir no escuro.
+        espiada = await con.fetchrow(
+            f"""SELECT sistema_id FROM {_i()}.sistema_topologia
+                 WHERE componente_sistema_id = $1""",
+            componente_id,
+        )
+        await _travar_sistemas(
+            con, sistema_id, espiada["sistema_id"] if espiada else None
+        )
+
+        if not await con.fetchrow(_EXISTE_COMPONENTE.format(i=_i()), componente_id):
+            raise FichaDeOutraUnidade(
+                f"componente {componente_id!r} nao existe no cadastro"
+            )
+        # O SISTEMA DE DESTINO e que decide a unidade — e nao a posicao atual do
+        # componente. Uma CTS ainda nao colocada nao pertence a unidade nenhuma, e
+        # exigir que ela ja fosse desta unidade tornaria impossivel coloca-la.
+        if await _unidade_do_sistema(con, sistema_id) != unidade_id:
+            raise FichaDeOutraUnidade(
+                f"sistema {sistema_id!r} nao pertence a unidade {unidade_id!r}"
+            )
+
+        antes = await con.fetchrow(
+            f"""SELECT sistema_id, componente_sistema_id_jusante AS jus
+                  FROM {_i()}.sistema_topologia WHERE componente_sistema_id = $1""",
+            componente_id,
+        )
+        sis_antigo = antes["sistema_id"] if antes else None
+        if sis_antigo != (espiada["sistema_id"] if espiada else None):
+            raise TopologiaInvalida(
+                f"Outra gravação moveu {componente_id!r} de sistema agora mesmo. "
+                "Recarregue a tela e refaça esta alteração."
+            )
+        # Estava noutra unidade? Recusa. Sem isto, trocar o id da URL movia o
+        # componente de uma unidade para outra — e a trilha registrava a de destino
+        # como se sempre tivesse sido dela.
+        if sis_antigo and sis_antigo != sistema_id:
+            if await _unidade_do_sistema(con, sis_antigo) != unidade_id:
+                raise FichaDeOutraUnidade(
+                    f"componente {componente_id!r} pertence a outra unidade"
+                )
+            # MUDANCA DE SISTEMA com gente apontando para ele: os que ficam para tras
+            # passariam a apontar para fora do sistema deles. Recusar nomeando quem
+            # aponta e melhor que religar por conta propria — quem monta o sistema
+            # sabe para onde aquele trecho deve escoar; o servidor nao.
+            if presos := await _quem_aponta_para(con, componente_id):
+                raise TopologiaInvalida(
+                    f"{componente_id!r} não pode mudar de sistema enquanto "
+                    + ", ".join(repr(p) for p in presos)
+                    + " escoa(m) para ele. Reaponte esse(s) primeiro."
+                )
+
+        if await _e_ete(con, componente_id):
+            # A ETE e o FIM do caminho: na base inteira nao ha uma com jusante.
+            if jusante is not None:
+                raise TopologiaInvalida(
+                    f"{componente_id!r} é a ETE do sistema — ela é o fim do caminho e "
+                    "não escoa para lugar nenhum."
+                )
+            outra = await con.fetchrow(
+                f"""SELECT t.componente_sistema_id AS id
+                      FROM {_i()}.sistema_topologia t
+                      JOIN {_i()}.ete_capex e ON e.ete_id = t.componente_sistema_id
+                     WHERE t.sistema_id = $1 AND t.componente_sistema_id <> $2""",
+                sistema_id,
+                componente_id,
+            )
+            # O motor guarda UMA ETE por sistema (`ete_do_sis[sis] = comp`): a
+            # segunda sobrescreveria a primeira em silencio, e o sistema inteiro
+            # passaria a tratar como destino uma estacao que ninguem escolheu.
+            if outra:
+                raise TopologiaInvalida(
+                    f"O sistema {sistema_id!r} já tem a ETE {outra['id']!r}. "
+                    "Um sistema tem uma ETE só."
+                )
+
+        # UMA CTS POR SISTEMA, quando o sistema declara usar sistema de CTS.
+        # A regra e do CADASTRO, e nao do motor — para ele uma ou duas CTS sao nos
+        # como quaisquer outros. Fica no servidor mesmo assim: a tela ja esconde o
+        # seletor, mas quem desmarcar a caixa, adicionar duas e marcar de volta
+        # passaria pela tela sem passar por aqui.
+        if await _e_cts(con, componente_id) and await _usa_sistema_cts(con, sistema_id):
+            if ja := await _cts_do_sistema(con, sistema_id, exceto=componente_id):
+                raise TopologiaInvalida(
+                    f"O sistema {sistema_id!r} está marcado como sistema de CTS, e já tem "
+                    + ", ".join(repr(c) for c in ja)
+                    + ". Desmarque a opção no sistema para ter mais de uma CTS."
+                )
+
+        await _exigir_caminho_coerente(
+            con, componente_id=componente_id, sistema_id=sistema_id, jusante=jusante
+        )
+
+        mudancas = diferencas(
+            {"sisId": sis_antigo, "jusante": antes["jus"] if antes else None},
+            {"sisId": sistema_id, "jusante": jusante},
+            origem=REGIONAL,
+        )
+        # `componente_sistema_nome` NAO e tocado: ele vem do Databricks e nao esta
+        # no corpo. Um `INSERT` de componente novo o deixa nulo, e a tela cai no id.
+        await con.execute(
+            f"""INSERT INTO {_i()}.sistema_topologia
+                    (componente_sistema_id, sistema_id, componente_sistema_id_jusante)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (componente_sistema_id) DO UPDATE
+                  SET sistema_id                    = EXCLUDED.sistema_id,
+                      componente_sistema_id_jusante = EXCLUDED.componente_sistema_id_jusante""",
+            componente_id,
+            sistema_id,
+            jusante,
+        )
+        n = await _registrar(
+            con,
+            tipo="topologia",
+            ficha_id=componente_id,
+            unidade_id=unidade_id,
+            autor=autor,
+            mudancas=mudancas,
+        )
+    return {"id": componente_id, "alteracoesGravadas": n}
+
+
+async def salvar_sistema(
+    *, unidade_id: str, sistema_id: str, corpo: dict[str, Any], autor: str
+) -> dict[str, Any]:
+    """O que o SISTEMA declara sobre si — hoje, se ele usa sistema de CTS.
+
+    Marcado, o sistema aceita UMA CTS; desmarcado, aceita várias. É regra de
+    cadastro: o motor não conta CTS por sistema, e para ele elas são nós como
+    quaisquer outros.
+
+    Marcar com mais de uma CTS já colocada é RECUSADO, e nomeia as que estão lá.
+    A alternativa seria aceitar e deixar o sistema num estado que ele próprio
+    declara impossível — e a recusa da próxima gravação de topologia apareceria
+    depois, longe daqui, parecendo defeito.
+    """
+    usa = corpo.get("usaCts")
+    if not isinstance(usa, bool):
+        raise FichaIncompleta("O corpo precisa trazer `usaCts` como true ou false.")
+
+    async with db.transacao() as con:
+        # O MESMO lock que a topologia usa, e e isso que serializa as duas: marcar
+        # "usa sistema de CTS" e adicionar a segunda CTS sao a mesma regra vista de
+        # dois lados, e travando chaves diferentes as duas passavam juntas.
+        await _travar_sistemas(con, sistema_id)
+        if await _unidade_do_sistema(con, sistema_id) != unidade_id:
+            raise FichaDeOutraUnidade(
+                f"sistema {sistema_id!r} nao pertence a unidade {unidade_id!r}"
+            )
+        antes = await con.fetchrow(
+            f"SELECT usa_sistema_cts FROM {_i()}.cidade_sistema WHERE sistema_id = $1",
+            sistema_id,
+        )
+        if usa and (cts := await _cts_do_sistema(con, sistema_id)) and len(cts) > 1:
+            raise TopologiaInvalida(
+                f"O sistema {sistema_id!r} tem {len(cts)} CTS ("
+                + ", ".join(repr(c) for c in cts)
+                + "). Tire as excedentes antes de marcar que ele usa sistema de CTS."
+            )
+
+        mudancas = diferencas(
+            {"usaCts": bool(antes and antes["usa_sistema_cts"])},
+            {"usaCts": usa},
+            origem=REGIONAL,
+        )
+        await con.execute(
+            f"UPDATE {_i()}.cidade_sistema SET usa_sistema_cts = $2 WHERE sistema_id = $1",
+            sistema_id,
+            usa,
+        )
+        n = await _registrar(
+            con,
+            tipo="sistema",
+            ficha_id=sistema_id,
+            unidade_id=unidade_id,
+            autor=autor,
+            mudancas=mudancas,
+        )
+    return {"id": sistema_id, "alteracoesGravadas": n}
+
+
+async def remover_da_topologia(
+    *, unidade_id: str, componente_id: str, autor: str
+) -> dict[str, Any]:
+    """Tira o componente do sistema — a linha FICA, com `sistema_id` nulo.
+
+    Apagar a linha perderia o nome: `componente_sistema_nome` não tem equivalente
+    em `cts_operacional`, `subbacia_operacional` nem `ete_capex`, e a lista de CTS
+    disponíveis para colocar num sistema viraria uma lista de ids. Com o sistema
+    nulo o componente continua cadastrado, some da simulação (o motor pula quem
+    não tem sistema) e pode ser colocado em outro sistema depois.
+    """
+    async with db.transacao() as con:
+        # Mesma espiada de `salvar_topologia`: o lock e do SISTEMA de onde ele
+        # sai, e qual e so se sabe lendo.
+        espiada = await con.fetchrow(
+            f"""SELECT sistema_id FROM {_i()}.sistema_topologia
+                 WHERE componente_sistema_id = $1""",
+            componente_id,
+        )
+        await _travar_sistemas(con, espiada["sistema_id"] if espiada else None)
+        antes = await con.fetchrow(
+            f"""SELECT sistema_id, componente_sistema_id_jusante AS jus
+                  FROM {_i()}.sistema_topologia WHERE componente_sistema_id = $1""",
+            componente_id,
+        )
+        if antes is None:
+            raise FichaDeOutraUnidade(f"componente {componente_id!r} nao existe")
+        if antes["sistema_id"] != (espiada["sistema_id"] if espiada else None):
+            raise TopologiaInvalida(
+                f"Outra gravação moveu {componente_id!r} de sistema agora mesmo. "
+                "Recarregue a tela e refaça esta alteração."
+            )
+        if antes["sistema_id"] is None:
+            # Ja esta fora de qualquer sistema: nada a fazer, e nada na trilha.
+            return {"id": componente_id, "alteracoesGravadas": 0}
+        if await _unidade_do_sistema(con, antes["sistema_id"]) != unidade_id:
+            raise FichaDeOutraUnidade(
+                f"componente {componente_id!r} nao pertence a unidade {unidade_id!r}"
+            )
+        if presos := await _quem_aponta_para(con, componente_id):
+            raise TopologiaInvalida(
+                f"{componente_id!r} não pode sair do sistema enquanto "
+                + ", ".join(repr(p) for p in presos)
+                + " escoa(m) para ele. Reaponte esse(s) primeiro."
+            )
+
+        mudancas = diferencas(
+            {"sisId": antes["sistema_id"], "jusante": antes["jus"]},
+            {"sisId": None, "jusante": None},
+            origem=REGIONAL,
+        )
+        await con.execute(
+            f"""UPDATE {_i()}.sistema_topologia
+                   SET sistema_id = NULL, componente_sistema_id_jusante = NULL
+                 WHERE componente_sistema_id = $1""",
+            componente_id,
+        )
+        n = await _registrar(
+            con,
+            tipo="topologia",
+            ficha_id=componente_id,
+            # A unidade da trilha e a de ONDE ele saiu: depois da remocao o
+            # componente nao tem unidade, e a coluna e NOT NULL com FK.
+            unidade_id=unidade_id,
+            autor=autor,
+            mudancas=mudancas,
+        )
+    return {"id": componente_id, "alteracoesGravadas": n}
