@@ -721,6 +721,7 @@ async def etes(unidade_id: str) -> dict[str, Any]:
                    e.capacidade_por_modulo, e.capex_por_modulo, e.opex_por_modulo,
                    e.tempo_de_execucao, e.capacidade_nominal_atual,
                    e.vazao_de_operacao_atual, e.capex_terreno, e.modulos, e.wacc,
+                   e.tempo_predecessoras, e.obra_obrigatoria_ano, e.obra_proibida_ate,
                    e.nova, e.atualizado_em, e.atualizado_por
               FROM {_i()}.ete_capex e
               JOIN {_i()}.sistema_topologia t ON t.componente_sistema_id = e.ete_id
@@ -741,6 +742,21 @@ async def etes(unidade_id: str) -> dict[str, Any]:
         "capex_terreno": "terreno",
         "modulos": "modulos",
         "wacc": "wacc",
+        #: A OBRA DA ETE TEM PRAZO E JANELA, como qualquer outra obra.
+        #:
+        #: As tres colunas sempre existiram em `ete_capex` e o motor sempre as leu
+        #: (`otimizador_capex_v62.py:1314-1315`: `prazo_inicio`, `obrigatoria`,
+        #: `proibida_ate` da ETE saem daqui). Faltava so mandá-las — entao a
+        #: restricao valia na simulacao e nenhuma tela conseguia defini-la: quem
+        #: precisasse dizer "esta ETE e obrigatoria em 2028" nao tinha onde.
+        #:
+        #: `capacidade_ociosa` continua de FORA de propósito: e derivada
+        #: (nominal menos vazao de operacao) e o motor avisa quando o valor
+        #: gravado discorda da conta. Campo derivado nao volta no PUT — mesma
+        #: regra do `ticket` da sub-bacia.
+        "tempo_predecessoras": "tPred",
+        "obra_obrigatoria_ano": "anoObrig",
+        "obra_proibida_ate": "proibAte",
     }
 
     etes = []
@@ -750,7 +766,15 @@ async def etes(unidade_id: str) -> dict[str, Any]:
             "sub": l["sub"] or "",
             "cidId": l["cidade_id"] or "",
             "nova": (l["nova"] or "Nao"),
-            **{destino: pt_br(l[col]) for col, destino in MAPA.items()},
+            #: `pt_br_ano` nos que sao ANO, pela mesma razao da aba de obras: um
+            #: `pt_br(2028)` devolve "2.028", e ano com separador de milhar e erro
+            #: de leitura na tela. A regra ja existia em `SEM_SEPARADOR`; a ETE e
+            #: que passava tudo por `pt_br` porque, ate agora, nao tinha campo de
+            #: ano nenhum.
+            **{
+                destino: (pt_br_ano if destino in SEM_SEPARADOR else pt_br)(l[col])
+                for col, destino in MAPA.items()
+            },
             **_auditoria(l),
         }
         etes.append(e)
