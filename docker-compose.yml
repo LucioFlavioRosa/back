@@ -27,6 +27,17 @@ services:
       POSTGRES_DB: otimizador
     ports:
       - "55432:5432" # 55432 para não brigar com um Postgres local na 5432
+    volumes:
+      # Volume NOMEADO, e não anônimo. Sem esta linha o Postgres também guarda o
+      # dado num volume — mas num de nome sorteado, que ninguém reconhece: um
+      # `up` que decida recriar o container o abandona, e um `docker volume prune`
+      # de rotina o apaga junto com o resto do lixo. Aconteceu, e a volta foi
+      # restaurar dump.
+      #
+      # Com nome, o volume sobrevive a `up`, a `down` e ao prune, e some só com
+      # `docker compose down -v` — que é explícito, e é o que se quer quando de
+      # fato se quer começar do zero.
+      - db-dados:/var/lib/postgresql/data
     healthcheck:
       # `-d otimizador` NÃO é redundante: sem ele o `pg_isready` usa o nome do
       # USUÁRIO como nome do banco, tenta abrir "otim", e o Postgres registra
@@ -77,3 +88,6 @@ services:
     image: redis:7-alpine
     ports:
       - "6379:6379"
+
+volumes:
+  db-dados:

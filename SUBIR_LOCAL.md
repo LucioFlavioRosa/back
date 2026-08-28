@@ -196,11 +196,11 @@ Um roteiro de 5 minutos:
 | rodada vai a **ERRO** com `ModuleNotFoundError: otimizador` | imports do pacote plano | passo 4 |
 | `readyz` com `migracoesFaltando` | banco vazio ou desatualizado | passo 3 |
 | a tela abre mas não lista unidades | o dump não entrou | repita o passo 3 e confira as 4.850 sub-bacias |
-| reiniciou a máquina e nada sobe | containers parados | `docker compose -f docker-compose.yml -f docker-compose.e2e.yml start` — **`start`, não `up`** |
+| reiniciou a máquina e nada sobe | containers parados | `docker compose -f docker-compose.yml -f docker-compose.e2e.yml start` |
 
-> **Sobre `start` e não `up`:** o serviço `db` **não tem volume nomeado**, então o dado mora na
-> camada gravável do container. `start` religa o que existe; um `up` que decida recriar o `db`
-> apaga o banco. Se isso acontecer, é o passo 3 de novo — que é justamente por que o dump existe.
+> **O banco fica no volume `db-dados`**, declarado no `docker-compose.yml`. Ele sobrevive a
+> `up`, a `down` e ao `docker volume prune`; some só com `docker compose down -v`, que é
+> explícito. Se um dia sumir mesmo assim, é o passo 3 de novo.
 
 ---
 
