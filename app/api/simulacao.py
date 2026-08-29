@@ -23,19 +23,30 @@ Se a ordem fosse 4-3, o job poderia acordar antes do commit e nao encontrar a
 from datetime import datetime, timezone
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Body, HTTPException, Response, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Response, status
 
-from app.api.deps import Quem, Usuario, exigir_unidade
+from app.api.deps import Quem, Usuario, exigir_unidade, guarda_de_rota
+from app.api import formas_cadastro as formas
 from app.dominio import run_id as rid
 from app.dominio import status as st
 from app.dominio.parametros import montar_params
 from app.infra import fila
 from app.infra.repositorios import controle, pendencias
 
-router = APIRouter(tags=["simulação"])
+#: PREFIXO E GUARDA MORAM NO ROTEADOR, e nao no `include_router`. Assim quem
+#: le este arquivo ve sob que caminho as rotas abaixo vivem e que elas ja
+#: nascem protegidas — sem precisar abrir o `main.py` para descobrir.
+#:
+#: `main.py` nao perde a visao do conjunto: `test_guarda_de_rota.py` cobra
+#: que TODO roteador servido sob /api traga esta dependencia.
+router = APIRouter(
+    prefix="/api",
+    tags=["simulação"],
+    dependencies=[Depends(guarda_de_rota)],
+)
 
 
-@router.get("/unidades/{unidade_id}/prontidao")
+@router.get("/unidades/{unidade_id}/prontidao", response_model=formas.Prontidao)
 async def prontidao(unidade_id: str) -> dict[str, Any]:
     """Quantas pendencias o cadastro da unidade tem AGORA.
 
@@ -65,7 +76,7 @@ async def prontidao(unidade_id: str) -> dict[str, Any]:
     }
 
 
-@router.post("/runs", status_code=status.HTTP_201_CREATED)
+@router.post("/runs", status_code=status.HTTP_201_CREATED, response_model=formas.RodadaCriada)
 async def criar(
     quem: Quem, corpo: Annotated[dict[str, Any], Body()], resposta: Response
 ) -> dict[str, Any]:
@@ -189,7 +200,11 @@ def _todas_ocupadas(capacidade: int) -> str:
     return f"Todas as {capacidade} vagas estão ocupadas."
 
 
-@router.get("/runs/{run_id}/status")
+@router.get(
+    "/runs/{run_id}/status",
+    response_model=formas.StatusDaRodada,
+    response_model_exclude_unset=True,
+)
 async def status_da_rodada(run_id: str) -> dict[str, Any]:
     rid.exigir_valido(run_id)
     linha = await controle.status(run_id)
@@ -255,7 +270,7 @@ async def status_da_rodada(run_id: str) -> dict[str, Any]:
     return resposta
 
 
-@router.post("/runs/{run_id}/reexecutar", status_code=status.HTTP_202_ACCEPTED)
+@router.post("/runs/{run_id}/reexecutar", status_code=status.HTTP_202_ACCEPTED, response_model=formas.RodadaAceita)
 async def reexecutar(run_id: str, usuario: Usuario) -> dict[str, str]:
     """Retry tecnico — reusa o mesmo `run_id`.  `CONTRATO.md` §4.5.
 
