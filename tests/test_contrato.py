@@ -92,6 +92,14 @@ FORMAS_DO_CONTRATO = {
     # nome, que so existe em `sistema_topologia`.
     "PUT /unidades/{}/topologia/{}",
     "DELETE /unidades/{}/topologia/{}",
+    # E A MESMA TOPOLOGIA GRAVADA DE OUTRO JEITO: o sistema INTEIRO numa
+    # transacao, com `componentes` sendo a lista completa (quem nao vem, sai). As
+    # duas rotas acima validam cada mudanca contra o que esta gravado, e por isso
+    # cobram do cliente uma ordem de envio que as vezes NAO EXISTE — tirar uma CTS
+    # e reapontar quem escoava para ela e recusado nas duas ordens possiveis. Esta
+    # confere o desenho final, com as mesmas regras. As de um componente por vez
+    # ficam: sao o caminho certo para mexer numa linha so.
+    "PUT /unidades/{}/topologia",
     # O que o SISTEMA declara sobre si — hoje so `usaCts`: marcado, ele aceita uma
     # CTS; desmarcado, varias. E regra de cadastro, e nao de simulacao (o motor
     # nunca contou CTS por sistema). O NOME do sistema nao entra: vem do
@@ -135,7 +143,7 @@ def test_nenhum_endpoint_a_mais():
 def test_a_lista_nao_esta_vazia():
     # Guarda contra o teste passar por não encontrar rota nenhuma — se `_expostas`
     # quebrar com uma mudança do FastAPI, os dois testes acima passariam vazios.
-    assert len(_expostas()) == len(FORMAS_DO_CONTRATO) == 39
+    assert len(_expostas()) == len(FORMAS_DO_CONTRATO) == 40
 
 
 @pytest.mark.parametrize("run_id", ["r1' OR 1=1", "../etc", "com espaco", ""])

@@ -14,281 +14,39 @@ Duas regras atravessam tudo aqui:
     janela que um processo cai.
 """
 
-import re
-from typing import Any, NamedTuple
+from typing import Any
 
 from app.config import config
-from app.infra import db
-from app.infra.repositorios.cadastro import (
-    _COLETA,
-    _DO_DATABRICKS,
-    CAMPOS_DB,
-    CAMPOS_PARAMS,
-    NAO_MODELADOS,
-    _ficha_coleta,
-    pt_br,
-    pt_br_ano,
-    SEM_SEPARADOR,
+from app.dominio.campos import COLETA, NAO_MODELADOS
+from app.dominio.erros import FichaDeOutraUnidade, FichaIncompleta, TopologiaInvalida
+from app.dominio.ficha import (
+    ETE,
+    ETE_NUM,
+    OBRA,
+    capex,
+    exigir_ficha_inteira,
+    obras_da_ficha,
+    valor_de_obra,
 )
+from app.dominio.formato import numerico, texto_trilha
+from app.dominio.topologia import (
+    ciclo_ao_ligar,
+    id_ou_nada,
+    pedido_do_corpo,
+    problemas_do_sistema,
+)
+from app.dominio.trilha import Alteracao, REGIONAL, diferencas, origem_do_campo
+from app.infra import db
 
 # A cardinalidade vem de `pendencias`, e nao de um numero repetido aqui: e a MESMA
 # regua que o `/prontidao` usa para denunciar obra ausente. Duas copias dela
 # fariam a tela dizer que a ficha esta incompleta e o `PUT` aceita-la — ou o
 # contrario, que e pior.
-from app.infra.repositorios.pendencias import OBRAS_CTS, OBRAS_SUBBACIA
-
-
-class FichaIncompleta(ValueError):
-    """O corpo nao trouxe a ficha inteira — 422, com os campos que faltaram.
-
-    O contrato e explicito: "o corpo carrega a ficha INTEIRA (idempotente), nao um
-    patch", e "`params` viaja sempre inteiro". A implementacao, no entanto, gravava
-    so as colunas presentes no corpo — ou seja, um PATCH com nome de PUT.
-
-    Enquanto o front manda tudo, os dois coincidem. A divergencia mordia noutro
-    lugar: um cliente que ESQUECESSE um campo teria o valor antigo preservado em
-    silencio, e o bug dele ficaria invisivel; e ninguem conseguia raciocinar sobre
-    o endpoint pelo contrato, porque o contrato descrevia outra coisa.
-
-    Recusar e melhor que aceitar E ZERAR o que faltou: o segundo tambem honraria o
-    contrato, mas apagaria dado de verdade por causa de um bug de cliente. Aqui, o
-    pior caso e uma requisicao recusada com a lista do que falta.
-    """
-
-
-class ValorInvalido(ValueError):
-    """Numero fora do formato pt-BR — 422, e nao 500.
-
-    `_numero` devolvia a string crua quando ela nao casava com o formato, e o
-    driver estourava com DataError la no `INSERT` -> 500 generico. `"123abc"` num
-    campo de preco e erro do usuario, e a resposta precisa dizer o campo.
-    """
-
-
-class FichaDeOutraUnidade(LookupError):
-    """A ficha nao pertence a unidade do caminho — vira 404 no endpoint."""
-
-
-# `1.234,5` -> 1234.5. O contrato e explicito: numero viaja como STRING pt-BR
-# estrita, sem unidade nem simbolo. Mandar a string crua para uma coluna
-# `double precision` faz o driver recusar; pior, `"2.497,70"` lido como ingles
-# viraria 2.49770 — tres ordens de grandeza, sem erro nenhum pelo caminho.
-_PT_BR = re.compile(r"^-?\d{1,3}(\.\d{3})*(,\d+)?$|^-?\d+(,\d+)?$")
-
-
-def _numero(v: Any, campo: str = "") -> Any:
-    """String pt-BR vira float; o que ja e numero passa; o que nao e numero segue texto.
-
-    String vazia vira None: no contrato, campo em branco e ausencia — e `wacc`
-    vazio significa "usa o WACC medio da unidade". Zero seria outra coisa.
-    """
-    # `bool` ANTES de `int`: em Python `True` E `int`, entao `isinstance(True, int)`
-    # e verdadeiro e um JSON `{"preco": true}` era aceito e gravado como 1. Nao ha
-    # leitura razoavel de "preco verdadeiro" — e o cadastro passava a ter um valor
-    # que ninguem digitou, indistinguivel de um preco real de R$ 1,00.
-    if isinstance(v, bool):
-        return str(v)  # segue como texto: `_numerico` transforma em 422
-    if v is None or isinstance(v, (int, float)):
-        return v
-    s = str(v).strip()
-    if not s:
-        return None
-    if not _PT_BR.match(s):
-        return v
-    return float(s.replace(".", "").replace(",", "."))
-
-
-#: Campos que NAO podem ser negativos. Vazao, preco, quantidade, receita e
-#: populacao sao grandezas fisicas ou monetarias sem sentido abaixo de zero — e
-#: uma vazao negativa nao para no cadastro: ela entra na simulacao e sai como um
-#: plano que ninguem sabe que esta errado. `wacc` fica de fora de proposito
-#: (taxa negativa e exotica mas existe), e `pot` (potencial de crescimento)
-#: tambem, porque encolher e um cenario legitimo.
-_NAO_NEGATIVOS = {
-    "preco", "vaz", "tarr", "ramp",
-    "popU", "popA", "fat", "arr",
-    "ligU", "ligA", "ligN", "ligURes", "ligARes",
-    "ecoU", "ecoA", "ecoN", "ecoURes", "ecoARes",
-    "obra.qtd", "obra.preco", "obra.opex", "obra.dur", "obra.tPred",
-    #: Espera nao e negativa — mesma regra de `obra.tPred`, que ja estava aqui.
-    #: `ete.anoObrig`/`ete.proibAte` NAO entram, e a assimetria e proposital:
-    #: `obra_obrigatoria_ano` tambem e CODIGO (0 = nao obrigatoria, -1 = qualquer
-    #: ano), entao um negativo ali e valor legitimo. As irmas de obra tambem estao
-    #: fora desta lista, pela mesma razao.
-    "ete.tPred",
-}
-
-
-#: Campos cuja coluna e INTEIRA. Decimal aqui nao e precisao a mais: e um valor
-#: que o Postgres arredondaria na gravacao, devolvendo depois um numero que
-#: ninguem digitou. Ligacao e economia se contam; tempo de ramp-up e de
-#: arrecadacao sao meses inteiros; ano de obra e ano.
-#:
-#: A lista espelha o schema, e `tests/test_campos_inteiros.py` a confere contra o
-#: `information_schema` — coluna que mudar de tipo sem passar por aqui reprova.
-_INTEIROS = {
-    # coleta (subbacia_operacional / cts_operacional)
-    "tarr", "ramp",
-    "ligU", "ligA", "ligN", "ligURes", "ligARes",
-    "ecoU", "ecoA", "ecoN", "ecoURes", "ecoARes",
-    # obras (componentes_*_capex)
-    "obra.tPred", "obra.dur", "obra.anoObrig", "obra.proibAte",
-    # ETE
-    #: As tres ultimas entraram junto com os campos de prazo/janela da ETE. Sem
-    #: elas, `anoObrig: "2028,5"` respondia 200 e o banco guardava 2028 — a coluna
-    #: e `integer`, e o truncamento acontecia sem ninguem ver. E a mesma perda
-    #: silenciosa que este conjunto existe para impedir, e as colunas irmas de
-    #: obra (`obra.anoObrig`, `obra.proibAte`) ja estavam protegidas ali em cima:
-    #: era a ETE que tinha ficado de fora.
-    "ete.tExec", "ete.modulos", "ete.tPred", "ete.anoObrig", "ete.proibAte",
-    # contrato
-    "cidade.fim", "meta.ano",
-}
-
-
-def _numerico(v: Any, campo: str) -> Any:
-    """Como `_numero`, mas para coluna que SO aceita numero: texto vira 422.
-
-    Booleano tambem: `_numero` o devolve como texto justamente para cair aqui.
-
-    E decimal em coluna inteira vira 422 tambem. Aceitar `3,7` num campo de meses
-    parecia tolerancia e era perda silenciosa: o banco guardava `3`, a tela
-    reabria mostrando `3`, e quem digitou nunca soube. Recusar devolve a decisao a
-    quem sabe se era 3, 4, ou o campo errado.
-    """
-    n = _numero(v)
-    if isinstance(n, str):
-        raise ValorInvalido(
-            f"O campo {campo!r} precisa ser um número no formato 1.234,5 — recebi {v!r}."
-        )
-    if n is not None and n < 0 and campo in _NAO_NEGATIVOS:
-        raise ValorInvalido(f"O campo {campo!r} não pode ser negativo — recebi {v!r}.")
-    if n is not None and campo in _INTEIROS and float(n) != int(n):
-        raise ValorInvalido(
-            f"O campo {campo!r} é um número inteiro — recebi {v!r}."
-        )
-    return n
+from app.dominio.campos import OBRAS_CTS, OBRAS_SUBBACIA
 
 
 def _i() -> str:
     return config().schema_input
-
-
-def _texto(v: Any) -> str | None:
-    """A trilha guarda TEXTO, e não o tipo original.
-
-    Um override é o registro do que foi digitado, não um valor a recalcular. Texto
-    sobrevive a mudança de tipo da coluna, guarda "0,5" como a pessoa escreveu, e
-    não obriga a trilha a ter uma coluna por tipo.
-    """
-    return None if v is None else str(v)
-
-
-class Alteracao(NamedTuple):
-    """Uma linha da trilha, antes de ir para o banco.
-
-    `antes`/`depois` já em TEXTO, e no formato que a tela mostra (pt-BR): a trilha
-    é lida por gente, meses depois, e `2497.7` numa reunião obriga quem lê a
-    traduzir de cabeça o que a tela sempre mostrou como `2.497,70`.
-
-    `None` tem significado nos dois lados, e são significados diferentes:
-    `antes=None` é "não existia" (foi criado), `depois=None` é "deixou de existir"
-    (foi removido). Ver `migracoes/007_trilha_do_cadastro.sql`.
-    """
-
-    campo: str
-    antes: str | None
-    depois: str | None
-    origem: str
-
-
-#: As duas origens. `databricks` é correção de número que veio de fora;
-#: `regional` é campo que a Regional preenche. Na tela viram verbos diferentes.
-DATABRICKS = "databricks"
-REGIONAL = "regional"
-
-
-def _origem_do_campo(nome: str) -> str:
-    """`fat` veio do Databricks; `preco` é da Regional. A régua é uma só.
-
-    `_DO_DATABRICKS` é a mesma lista que decide o que a tela trava e o que ela
-    deixa editar (`cadastro.py`) — se as duas divergissem, a trilha chamaria de
-    correção o que a tela nem oferece corrigir.
-    """
-    return DATABRICKS if nome in _DO_DATABRICKS else REGIONAL
-
-
-def _igual(a: Any, b: Any) -> bool:
-    """Os dois valores dizem a mesma coisa?
-
-    Número compara como NÚMERO: o banco devolve `float` e o corpo traz string
-    pt-BR, e `"244" != 244.0` como texto — comparar assim geraria uma linha de
-    trilha a cada salvamento, dizendo que 244 virou 244.
-
-    A tolerância é de ponto flutuante, e não de negócio: existe porque
-    `2472.6 != 2472.5999999999995` depois de uma ida e volta pelo driver.
-    """
-    if a is None or b is None:
-        return a is None and b is None
-    if isinstance(a, bool) or isinstance(b, bool):
-        return str(a) == str(b)
-    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
-        return abs(float(a) - float(b)) < 1e-9
-    return str(a) == str(b)
-
-
-def _texto_trilha(v: Any, campo: str = "") -> str | None:
-    """O valor como a tela o mostra. `None` continua `None` — ver `Alteracao`.
-
-    **ANO e CÓDIGO não levam separador de milhar**, e a régua é a mesma da
-    leitura (`cadastro.SEM_SEPARADOR`): `fim`, `ano`, `anoObrig`, `proibAte`. O
-    ano também é CHAVE de meta (`meta:2044:pct`), e uma chave formatada não
-    corresponde a registro nenhum.
-    """
-    if v is None:
-        return None
-    if isinstance(v, bool):
-        return "Sim" if v else "Nao"
-    if isinstance(v, (int, float)):
-        return (pt_br_ano if campo in SEM_SEPARADOR else pt_br)(v)
-    texto = str(v).strip()
-    return texto or None
-
-
-def diferencas(
-    antes: dict[str, Any],
-    depois: dict[str, Any],
-    *,
-    prefixo: str = "",
-    origem: Any = None,
-) -> list[Alteracao]:
-    """As chaves em que os dois dicionários discordam, na ordem em que aparecem.
-
-    Serve os quatro caminhos de gravação porque todos acabam na mesma pergunta:
-    o que estava lá, o que chegou, e em que eles diferem. Chave presente num só
-    dos lados também é diferença — é criação ou remoção.
-
-    `origem` aceita uma função (para decidir campo a campo, como na ficha de
-    coleta, que mistura Databricks e Regional na mesma linha) ou uma string
-    (quando a resposta é a mesma para o bloco inteiro, como nas obras).
-    """
-    de_origem = origem if callable(origem) else (lambda _c: origem or REGIONAL)
-    saida: list[Alteracao] = []
-    for chave in list(antes) + [k for k in depois if k not in antes]:
-        a, b = antes.get(chave), depois.get(chave)
-        if _igual(a, b):
-            continue
-        saida.append(
-            Alteracao(
-                campo=f"{prefixo}{chave}",
-                # A chave NUA decide o formato, e não o campo com prefixo:
-                # `obra:Rede coletora:anoObrig` continua sendo um `anoObrig`.
-                antes=_texto_trilha(a, chave),
-                depois=_texto_trilha(b, chave),
-                origem=de_origem(chave),
-            )
-        )
-    return saida
 
 
 async def _registrar(
@@ -341,22 +99,6 @@ async def _registrar(
     return len(mudancas)
 
 
-#: Componentes da ficha de obra -> colunas. `capex` NÃO entra: é calculado
-#: (`qtd × preco`) e o contrato diz que não viaja no payload. Recebê-lo seria
-#: aceitar uma segunda opinião sobre a mesma conta.
-_OBRA = {
-    "qtd": "quantidade",
-    "un": "unidade",
-    "preco": "preco_unitario",
-    "opex": "opex",
-    "tPred": "tempo_predecessoras",
-    "dur": "tempo_execucao",
-    "anoObrig": "obra_obrigatoria_ano",
-    "proibAte": "obra_proibida_ate",
-    "wacc": "wacc",
-}
-
-
 async def _obras_gravadas(
     con: Any, tabela: str, chave: str, ficha_id: str
 ) -> dict[str, dict[str, Any]]:
@@ -384,117 +126,9 @@ async def _obras_gravadas(
         if i is not None:
             atual[i] = {
                 "nome": l["componente"],
-                **{campo: l[col] for campo, col in _OBRA.items() if col in l},
+                **{campo: l[col] for campo, col in OBRA.items() if col in l},
             }
     return atual
-
-
-def _obras_da_ficha(
-    override: Any,
-    atual: dict[str, dict[str, Any]],
-    *,
-    esperadas: int,
-    rotulo: str,
-) -> list[dict[str, Any]]:
-    """O que vai para o banco: a linha GRAVADA, com o que o corpo mudou por cima.
-
-    **Não há mais base literal.** Havia duas — uma aqui e outra em
-    `src/cadastro/domain/` —, e elas eram a violação mais cara das regras R1 e R2:
-    um componente ausente no banco reaparecia com `qtd 0 | preco 900 | dur 15 |
-    wacc 0,067`, números plausíveis que ninguém digitou, indo direto para a
-    simulação. Corrupção silenciosa é pior que perda silenciosa, porque a
-    plausibilidade impede a desconfiança.
-
-    Sem a base, a materialização tem uma fonte só: `atual`, que é o que
-    `_obras_gravadas` leu de `componentes_*_capex`. O corpo só sobrepõe campo.
-
-    **Cardinalidade ausente é RECUSA, e não preenchimento.** Se a ficha tem menos
-    componentes que os `esperadas`, gravá-la exigiria inventar os que faltam — e
-    inventar é o que acabou de sair daqui. A régua é a mesma que a prontidão usa
-    (`pendencias.OBRAS_SUBBACIA`/`OBRAS_CTS`), então uma ficha que o `/prontidao`
-    denuncia como incompleta é exatamente a que este `PUT` recusa. Duas respostas
-    diferentes para o mesmo estado seriam um convite a acreditar na mais gentil.
-
-    A recusa por componente OMITIDO no corpo continua: a gravação substitui as
-    obras em bloco, a tela não oferece remover obra, logo a omissão não é intenção.
-    """
-    if isinstance(override, list):
-        return override  # forma antiga; os smokes locais ainda a usam
-    override = override or {}
-
-    if len(atual) != esperadas:
-        raise ValorInvalido(
-            f"A ficha de {rotulo} tem {len(atual)} componentes gravados e a "
-            f"simulação exige {esperadas}. Não dá para gravar: os que faltam não "
-            "existem no banco, e completá-los aqui seria inventar obra. Veja em "
-            "/prontidao qual componente falta e corrija o cadastro na origem."
-        )
-
-    faltando = sorted(set(atual) - set(override), key=int)
-    if faltando:
-        nomes = ", ".join(atual[i].get("nome") or f"índice {i}" for i in faltando)
-        raise ValorInvalido(
-            f"A ficha tem {len(atual)} componentes e o corpo trouxe {len(override)}. "
-            f"Faltou: {nomes}. A gravacao substitui as obras em bloco, "
-            "entao componente omitido seria APAGADO — e a tela nao oferece remover "
-            "obra, logo a omissao nao e intencao."
-        )
-
-    sobrando = sorted(set(override) - set(atual), key=int)
-    if sobrando:
-        raise ValorInvalido(
-            f"O corpo trouxe os índices {sobrando}, que não existem nesta ficha. "
-            "O índice é a POSIÇÃO do componente, e gravar um que o banco não tem "
-            "criaria obra a partir do payload — que é o que a base literal fazia."
-        )
-
-    return [
-        {**atual[i], **(override.get(i) or {})} for i in sorted(atual, key=int)
-    ]
-
-
-def _capex(o: dict[str, Any]) -> float | None:
-    """`quantidade × preco_unitario` — a única conta que existe para o CAPEX.
-
-    A REGRA não nasce aqui, e é por isso que ela é esta: o motor já a aplica. Em
-    `otimizador_capex_v62.py:1165` — *"CAPEX pode vir DECOMPOSTO em quantidade x
-    preco unitario; se vier, ELE MANDA"* — e a linha 1192 loga aviso quando a
-    coluna do banco discorda da multiplicação. Guardar no cadastro um `capex` que
-    a simulação ignora é manter dois números para uma pergunta só.
-
-    A tela nunca manda `capex` (não está em `_OBRA`, nem viaja no `GET`), e o
-    front não o calcula: quem materializa é este arquivo, e a constraint
-    `capex_e_derivado` (`migracoes/005_capex_derivado.sql`) recusa quem discordar
-    por mais de um centavo.
-
-    Sem `or 0`, que estava aqui e inventava valor: quantidade ausente não é
-    quantidade zero. Zero afirmaria "esta obra não custa nada" — um número que
-    ninguém digitou, gravado com cara de cadastro. Nulo diz o que é verdade, e a
-    falta do fator já é pendência (`pendencias.py:_OBRA`), que trava a unidade.
-
-    `_numerico` e nao `_numero`: o segundo devolvia a string crua quando nao
-    reconhecia o formato, e a multiplicacao estourava
-    `TypeError: can't multiply sequence by non-int` -> 500. Numero torto numa obra
-    e erro de quem chamou, e merece 422 dizendo o campo.
-    """
-    qtd = _numerico(o.get("qtd"), "obra.qtd")
-    preco = _numerico(o.get("preco"), "obra.preco")
-    if qtd is None or preco is None:
-        return None
-    return qtd * preco
-
-
-def _valor_de_obra(o: dict[str, Any], campo: str) -> Any:
-    """Um campo da obra, validado como os demais campos numéricos da ficha.
-
-    `un` é a unidade de medida (`m`, `un`, `ligacao`) e segue como texto. O resto
-    passa por `_numerico`, e não por `_numero`: só `qtd` e `preco` eram validados
-    — pelo caminho de `_capex` —, então `dur: "abc"` chegava ao driver e virava
-    500, e `dur: "3,7"` era arredondado em silêncio numa coluna inteira.
-    """
-    if campo == "un":
-        return o.get(campo)
-    return _numerico(o.get(campo), f"obra.{campo}")
 
 
 async def _gravar_obras(
@@ -508,7 +142,7 @@ async def _gravar_obras(
 ) -> list[Alteracao]:
     """As obras da ficha, substituídas em bloco.
 
-    `capex` não vem do corpo: é derivado (`_capex`) porque a tela não o manda e
+    `capex` não vem do corpo: é derivado (`capex`) porque a tela não o manda e
     porque o motor não o leria de qualquer forma. Calcular no servidor mantém uma
     conta só — se os dois lados calculassem, divergiriam por arredondamento e
     ninguém saberia qual está no plano.
@@ -531,7 +165,7 @@ async def _gravar_obras(
     não diria nada a quem consulta a auditoria seis meses depois.
     """
     novas = {
-        str(i): {"nome": o.get("nome"), **{k: _valor_de_obra(o, k) for k in _OBRA}}
+        str(i): {"nome": o.get("nome"), **{k: valor_de_obra(o, k) for k in OBRA}}
         for i, o in enumerate(obras)
     }
     mudancas: list[Alteracao] = []
@@ -540,8 +174,8 @@ async def _gravar_obras(
         nova = novas.get(indice) or {}
         nome = nova.get("nome") or antiga.get("nome") or f"índice {indice}"
         mudancas += diferencas(
-            {k: antiga.get(k) for k in _OBRA},
-            {k: nova.get(k) for k in _OBRA},
+            {k: antiga.get(k) for k in OBRA},
+            {k: nova.get(k) for k in OBRA},
             prefixo=f"obra:{nome}:",
             # Obra é cadastro da Regional inteiro: não há número de obra vindo do
             # Databricks para "corrigir".
@@ -552,10 +186,10 @@ async def _gravar_obras(
     if not obras:
         return mudancas
 
-    colunas = [chave, "componente", *_OBRA.values(), "capex"]
+    colunas = [chave, "componente", *OBRA.values(), "capex"]
     marc = ", ".join(f"${i + 1}" for i in range(len(colunas)))
     linhas = [
-        (ficha_id, o.get("nome"), *[_valor_de_obra(o, k) for k in _OBRA], _capex(o))
+        (ficha_id, o.get("nome"), *[valor_de_obra(o, k) for k in OBRA], capex(o))
         for o in obras
     ]
     await con.executemany(
@@ -585,7 +219,7 @@ async def _gravar_coleta(
     valor no instante da gravação.
     """
     juntos = {**bloco_db, **params}
-    frente_para_coluna = {v: k for k, v in _COLETA.items()}
+    frente_para_coluna = {v: k for k, v in COLETA.items()}
     colunas = [
         frente_para_coluna[k]
         for k in juntos
@@ -593,7 +227,7 @@ async def _gravar_coleta(
     ]
     if not colunas:
         return []
-    valores = [_numerico(juntos[_COLETA[c]], _COLETA[c]) for c in colunas]
+    valores = [numerico(juntos[COLETA[c]], COLETA[c]) for c in colunas]
 
     # O ANTES, pelas mesmas colunas que vão ser escritas. Ficha que ainda não
     # existe devolve linha nenhuma, e aí todo campo preenchido é criação — que é
@@ -602,7 +236,7 @@ async def _gravar_coleta(
         f"SELECT {', '.join(colunas)} FROM {_i()}.{tabela} WHERE {chave} = $1",
         ficha_id,
     )
-    antes = {_COLETA[c]: (linha[c] if linha else None) for c in colunas}
+    antes = {COLETA[c]: (linha[c] if linha else None) for c in colunas}
 
     marc = ", ".join(f"${i + 2}" for i in range(len(colunas)))
     sets = ", ".join(f"{c} = ${i + 2}" for i, c in enumerate(colunas))
@@ -613,7 +247,7 @@ async def _gravar_coleta(
     # alcançava o enviado, TODA gravação parecia mudança e a trilha crescia a cada
     # salvamento.
     #
-    # Com os dois lados vindo do banco, `_igual` compara iguais com iguais. Vale
+    # Com os dois lados vindo do banco, `igual` compara iguais com iguais. Vale
     # para qualquer coerção, inclusive as que ninguém mapeou — normalizar em
     # Python exigiria duplicar as regras do Postgres aqui, e esquecer uma faria a
     # trilha voltar a mentir.
@@ -625,8 +259,8 @@ async def _gravar_coleta(
         ficha_id,
         *valores,
     )
-    depois = {_COLETA[c]: gravada[c] for c in colunas}
-    return diferencas(antes, depois, origem=_origem_do_campo)
+    depois = {COLETA[c]: gravada[c] for c in colunas}
+    return diferencas(antes, depois, origem=origem_do_campo)
 
 
 # ---------------------------------------------------------------- pertencimento
@@ -705,28 +339,6 @@ async def exigir_dona(tipo: str, ficha_id: str, unidade_id: str) -> None:
         raise FichaDeOutraUnidade(f"{tipo} {ficha_id!r} nao pertence a unidade {unidade_id!r}")
 
 
-def _exigir_ficha_inteira(corpo: dict[str, Any]) -> None:
-    """`params` e `db` precisam vir COMPLETOS — e o que faz o PUT ser substituicao.
-
-    Bloco AUSENTE passa: um `PUT` que so mande `{"obrasOverride": {...}}` esta
-    corrigindo obra sem tocar em `params` nem `db`, e exigir os dois blocos ali
-    seria exigir que o cliente reenvie dado que nao esta mudando. Bloco PRESENTE,
-    porem, tem de estar inteiro.
-    """
-    faltando: list[str] = []
-    for bloco, esperados in (("params", CAMPOS_PARAMS), ("db", CAMPOS_DB)):
-        if bloco not in corpo:
-            continue
-        recebidos = set(corpo[bloco] or {})
-        faltando += [f"{bloco}.{c}" for c in esperados if c not in recebidos]
-    if faltando:
-        raise FichaIncompleta(
-            "O corpo precisa trazer a ficha inteira. Faltaram: "
-            + ", ".join(sorted(faltando))
-            + ". Campo vazio deve vir como string vazia, não ausente."
-        )
-
-
 async def _marcar_autoria(
     con: Any, *, tabela: str, chave: str, ficha_id: str, autor: str
 ) -> dict[str, str]:
@@ -782,7 +394,7 @@ async def salvar_coleta(
         # duas gravações simultâneas intercalam o `DELETE`+`INSERT` das obras e a
         # ficha termina com metade de cada uma. Ordenar não é o mesmo que barrar.
         await con.execute("SELECT pg_advisory_xact_lock(hashtext($1))", ficha_id)
-        _exigir_ficha_inteira(corpo)
+        exigir_ficha_inteira(corpo)
         mudancas = await _gravar_coleta(
             con,
             tabela=tabela,
@@ -800,7 +412,7 @@ async def salvar_coleta(
                 tabela=tab_obra,
                 chave=chave,
                 ficha_id=ficha_id,
-                obras=_obras_da_ficha(
+                obras=obras_da_ficha(
                     corpo.get("obrasOverride"),
                     gravadas,
                     esperadas=OBRAS_CTS if e_cts else OBRAS_SUBBACIA,
@@ -857,7 +469,7 @@ async def _diff_da_cidade(
             "cob": linha["unidade_cobertura"] if linha else None,
         },
         {
-            "fim": _numerico(cidade.get("fim"), "cidade.fim"),
+            "fim": numerico(cidade.get("fim"), "cidade.fim"),
             "cob": cidade.get("cob"),
         },
         origem=REGIONAL,
@@ -865,14 +477,14 @@ async def _diff_da_cidade(
 
     if "metas" in corpo:
         antes = {
-            _texto_trilha(l["ano"], "ano"): l["cobertura_pct"]
+            texto_trilha(l["ano"], "ano"): l["cobertura_pct"]
             for l in await con.fetch(
                 f"SELECT ano, cobertura_pct FROM {_i()}.metas_cobertura WHERE cidade_id = $1",
                 cidade_id,
             )
         }
         depois = {
-            _texto_trilha(_numerico(m.get("ano"), "meta.ano"), "ano"): _numerico(
+            texto_trilha(numerico(m.get("ano"), "meta.ano"), "ano"): numerico(
                 m.get("pct"), "meta.pct"
             )
             for m in corpo.get("metas") or []
@@ -884,14 +496,14 @@ async def _diff_da_cidade(
 
     if "fator" in corpo:
         antes = {
-            _texto_trilha(l["cobertura_pct"]): l["paridade"]
+            texto_trilha(l["cobertura_pct"]): l["paridade"]
             for l in await con.fetch(
                 f"SELECT cobertura_pct, paridade FROM {_i()}.fator_esgoto WHERE cidade_id = $1",
                 cidade_id,
             )
         }
         depois = {
-            _texto_trilha(_numerico(f.get("cob"), "fator.cob")): _numerico(
+            texto_trilha(numerico(f.get("cob"), "fator.cob")): numerico(
                 f.get("par"), "fator.par"
             )
             for f in corpo.get("fator") or []
@@ -926,7 +538,7 @@ async def salvar_contrato(
                   SET data_fim_concessao = EXCLUDED.data_fim_concessao,
                       unidade_cobertura  = EXCLUDED.unidade_cobertura""",
             cidade_id,
-            _numerico(cidade.get("fim"), "cidade.fim"),
+            numerico(cidade.get("fim"), "cidade.fim"),
             cidade.get("cob"),
         )
         if "metas" in corpo:
@@ -937,8 +549,8 @@ async def salvar_contrato(
                 f"""INSERT INTO {_i()}.metas_cobertura (cidade_id, ano, cobertura_pct)
                     VALUES ($1, $2, $3)""",
                 [
-                    (cidade_id, _numerico(m.get("ano"), "meta.ano"),
-                     _numerico(m.get("pct"), "meta.pct"))
+                    (cidade_id, numerico(m.get("ano"), "meta.ano"),
+                     numerico(m.get("pct"), "meta.pct"))
                     for m in corpo.get("metas") or []
                 ],
             )
@@ -954,8 +566,8 @@ async def salvar_contrato(
                     (
                         cidade_id,
                         cidade.get("nome"),
-                        _numerico(f.get("cob"), "fator.cob"),
-                        _numerico(f.get("par"), "fator.par"),
+                        numerico(f.get("cob"), "fator.cob"),
+                        numerico(f.get("par"), "fator.par"),
                     )
                     for f in corpo.get("fator") or []
                 ],
@@ -982,34 +594,7 @@ async def salvar_contrato(
     return {"id": cidade_id, "alteracoesGravadas": n, **auditoria}
 
 
-#: Nomes do tipo `Ete` do front -> colunas. Tem de casar com o que `cadastro.etes`
-#: devolve, senao a ficha lida nao pode ser salva de volta.
-_ETE = {
-    "capMod": "capacidade_por_modulo",
-    "capexMod": "capex_por_modulo",
-    "opexMod": "opex_por_modulo",
-    "tExec": "tempo_de_execucao",
-    "capNom": "capacidade_nominal_atual",
-    "vazOp": "vazao_de_operacao_atual",
-    "nova": "nova",
-    "terreno": "capex_terreno",
-    "modulos": "modulos",
-    "wacc": "wacc",
-    #: Prazo e janela da obra da ETE — ver o comentario gemeo na leitura
-    #: (`cadastro.py`, MAPA de `etes`). O motor le as tres; faltava a tela poder
-    #: escrever. `capacidade_ociosa` fica de fora por ser derivada.
-    "tPred": "tempo_predecessoras",
-    "anoObrig": "obra_obrigatoria_ano",
-    "proibAte": "obra_proibida_ate",
-}
-#: Colunas de ETE que sao numero — as demais (`nova`) sao texto.
-#: As tres novas sao INTEGER na tabela (ano e quantidade de anos), entao entram
-#: aqui: sem isso `_numerico` nao roda e o driver recebe string num campo `integer`.
-_ETE_NUM = {"capMod","capexMod","opexMod","tExec","capNom","vazOp","terreno","modulos","wacc",
-            "tPred","anoObrig","proibAte"}
-
-
-def _nova_para_texto(v: Any) -> Any:
+def _nova_paratexto(v: Any) -> Any:
     """`ete_capex.nova` e TEXT no cadastro, e o front manda booleano.
 
     O motor le assim (`otimizador_capex_v62.py:1222`):
@@ -1032,15 +617,15 @@ async def salvar_ete(
     await exigir_dona("ete", ete_id, unidade_id)
     ete = dict(corpo.get("ete") or {})
     if "nova" in ete:
-        ete["nova"] = _nova_para_texto(ete["nova"])
-    presentes = [k for k in _ETE if k in ete]
+        ete["nova"] = _nova_paratexto(ete["nova"])
+    presentes = [k for k in ETE if k in ete]
     async with db.transacao() as con:
         await con.execute("SELECT pg_advisory_xact_lock(hashtext($1))", ete_id)
         mudancas: list[Alteracao] = []
         if presentes:
-            colunas = [_ETE[k] for k in presentes]
+            colunas = [ETE[k] for k in presentes]
             valores = [
-                _numerico(ete[k], f"ete.{k}") if k in _ETE_NUM else ete[k]
+                numerico(ete[k], f"ete.{k}") if k in ETE_NUM else ete[k]
                 for k in presentes
             ]
             # O upsert toca SÓ os campos presentes, e o diff segue a mesma régua:
@@ -1051,7 +636,7 @@ async def salvar_ete(
                 ete_id,
             )
             mudancas = diferencas(
-                {k: (linha[_ETE[k]] if linha else None) for k in presentes},
+                {k: (linha[ETE[k]] if linha else None) for k in presentes},
                 dict(zip(presentes, valores, strict=True)),
                 origem=REGIONAL,
             )
@@ -1103,15 +688,6 @@ async def salvar_ete(
 # nao de gravacao.
 
 
-class TopologiaInvalida(ValueError):
-    """A ligacao pedida deixaria o cadastro incoerente — 422, com o motivo.
-
-    Separada de `ValorInvalido` porque nao fala de formato de numero: fala de
-    forma do grafo. A mensagem nomeia os componentes envolvidos, porque quem
-    monta um sistema de sete componentes precisa saber QUAL deles fechou o ciclo.
-    """
-
-
 #: Componente ja conhecido do cadastro? Um id que nao esta em lugar nenhum seria um
 #: no INVENTADO: o motor o trataria como no de demanda ZERO, sem ficha e sem obras,
 #: e ele entraria no caminho ate a ETE sem nunca aparecer numa tela. Foi assim que o
@@ -1147,51 +723,6 @@ async def _travar_sistemas(con: Any, *sistemas: str | None) -> None:
     """
     for sistema in sorted({s for s in sistemas if s}):
         await con.execute("SELECT pg_advisory_xact_lock(hashtext($1))", sistema)
-
-
-def _id_ou_nada(v: Any) -> str | None:
-    """Id em branco é AUSÊNCIA, e não um id chamado `""`.
-
-    `_texto` não serve aqui: ele existe para a trilha, onde o que importa é
-    preservar o que foi digitado, e devolve `""` para string vazia. Aqui vazio tem
-    significado — `jusante` em branco é caminho ainda não montado, `sisId` em
-    branco é componente fora de sistema —, e tratá-lo como valor faria a validação
-    procurar um componente de id vazio. É a mesma régua de `_numero`, que também
-    transforma campo em branco em `None`.
-    """
-    if v is None:
-        return None
-    s = str(v).strip()
-    return s or None
-
-
-def ciclo_ao_ligar(
-    escoa: dict[str, str | None], de: str, para: str | None
-) -> list[str]:
-    """Ligar `de → para` fecharia um ciclo? Devolve a volta, ou lista vazia.
-
-    `escoa` é o sistema como está no banco (componente → jusante); a ligação nova
-    é aplicada por cima, e o passeio começa do componente que está mudando. A
-    volta devolvida começa e termina no mesmo componente, porque é isso que se
-    mostra para quem monta: `A → B → C → A` diz qual ligação desfazer, e "ciclo
-    detectado" não diz.
-
-    É separado do banco de propósito: é a única regra aqui que é de GRAFO, e não
-    de pertencimento — e é a que erra em silêncio se estiver errada. O motor
-    percorre `jusante` com trava em 200 saltos, então um ciclo não trava nada: ele
-    repete o mesmo trecho até 200 vezes e infla os requisitos da sub-bacia.
-    """
-    if para is None:
-        return []
-    caminho = {**escoa, de: para}
-    visto = [de]
-    atual: str | None = para
-    while atual is not None:
-        if atual in visto:
-            return visto[visto.index(atual):] + [atual]
-        visto.append(atual)
-        atual = caminho.get(atual)
-    return []
 
 
 async def _unidade_do_sistema(con: Any, sistema_id: str) -> str | None:
@@ -1308,8 +839,8 @@ async def salvar_topologia(
     outras fichas: reenviar o mesmo corpo não acumula efeito. `sisId` vazio tira o
     componente do sistema sem apagar a linha; ver `remover_da_topologia`.
     """
-    sistema_id = _id_ou_nada(corpo.get("sisId"))
-    jusante = _id_ou_nada(corpo.get("jusante"))
+    sistema_id = id_ou_nada(corpo.get("sisId"))
+    jusante = id_ou_nada(corpo.get("jusante"))
     if sistema_id is None:
         return await remover_da_topologia(
             unidade_id=unidade_id, componente_id=componente_id, autor=autor
@@ -1569,3 +1100,338 @@ async def remover_da_topologia(
             mudancas=mudancas,
         )
     return {"id": componente_id, "alteracoesGravadas": n}
+
+async def _sistema_de_cada(con: Any, ids: list[str]) -> dict[str, str | None]:
+    """Onde cada componente está agora. Ausente do resultado = sem linha nenhuma."""
+    if not ids:
+        return {}
+    linhas = await con.fetch(
+        f"""SELECT componente_sistema_id AS id, sistema_id AS sis
+              FROM {_i()}.sistema_topologia
+             WHERE componente_sistema_id = ANY($1::text[])""",
+        ids,
+    )
+    return {l["id"]: l["sis"] for l in linhas}
+
+
+async def _quais_sao(con: Any, tabela: str, coluna: str, ids: list[str]) -> set[str]:
+    """Quais destes componentes são ETE (ou CTS). Conjunto, para o teste ser `in`."""
+    if not ids:
+        return set()
+    linhas = await con.fetch(
+        f"SELECT {coluna} AS id FROM {_i()}.{tabela} WHERE {coluna} = ANY($1::text[])",
+        ids,
+    )
+    return {l["id"] for l in linhas}
+
+
+async def _unidades_dos_sistemas(con: Any, ids: list[str]) -> dict[str, str]:
+    """De que unidade é cada um destes sistemas. Ausente = sistema inexistente.
+
+    PLURAL de propósito. A versão de um id por vez, chamada num laço, é uma ida
+    ao banco por sistema dentro de uma transação que já segura os advisory locks
+    de todos eles — e é o padrão N+1 que a régua de Postgres manda eliminar.
+    Segurar lock enquanto se conversa com o banco N vezes é o mesmo defeito visto
+    do lado do bloqueio.
+    """
+    if not ids:
+        return {}
+    linhas = await con.fetch(
+        f"""SELECT cs.sistema_id AS sis, s.unidade_id AS uni
+              FROM {_i()}.cidade_sistema cs
+              JOIN {_i()}.superintendencia_cidade c ON c.cidade_id = cs.cidade_id
+              JOIN {_i()}.regional_superintendencia s USING (superintendencia_id)
+             WHERE cs.sistema_id = ANY($1::text[])""",
+        ids,
+    )
+    return {l["sis"]: l["uni"] for l in linhas}
+
+
+async def _sistemas_de_cts(con: Any, ids: list[str]) -> set[str]:
+    """Quais destes sistemas declaram usar sistema de CTS."""
+    if not ids:
+        return set()
+    linhas = await con.fetch(
+        f"""SELECT sistema_id AS sis FROM {_i()}.cidade_sistema
+             WHERE sistema_id = ANY($1::text[]) AND usa_sistema_cts""",
+        ids,
+    )
+    return {l["sis"] for l in linhas}
+
+
+async def _quem_aponta_para_varios(con: Any, ids: list[str]) -> dict[str, list[str]]:
+    """Para cada componente, quem escoa para ele. Uma consulta, não uma por alvo.
+
+    `ix_topo_jusante` cobre o filtro; a agregação é em memória porque o resultado
+    é pequeno (no máximo um punhado de montantes por componente).
+    """
+    if not ids:
+        return {}
+    linhas = await con.fetch(
+        f"""SELECT componente_sistema_id AS id, componente_sistema_id_jusante AS jus
+              FROM {_i()}.sistema_topologia
+             WHERE componente_sistema_id_jusante = ANY($1::text[])
+             ORDER BY 1""",
+        ids,
+    )
+    saida: dict[str, list[str]] = {}
+    for l in linhas:
+        saida.setdefault(l["jus"], []).append(l["id"])
+    return saida
+
+
+async def _quais_existem(con: Any, ids: list[str]) -> set[str]:
+    """Quais destes componentes existem em alguma ficha do cadastro."""
+    if not ids:
+        return set()
+    linhas = await con.fetch(
+        f"""SELECT id FROM (
+                SELECT componente_sistema_id AS id FROM {_i()}.sistema_topologia
+                UNION SELECT sub_bacia FROM {_i()}.subbacia_operacional
+                UNION SELECT cts       FROM {_i()}.cts_operacional
+                UNION SELECT ete_id    FROM {_i()}.ete_capex
+            ) t WHERE id = ANY($1::text[])""",
+        ids,
+    )
+    return {l["id"] for l in linhas}
+
+
+async def _registrar_varios(
+    con: Any,
+    *,
+    tipo: str,
+    unidade_id: str,
+    autor: str,
+    por_ficha: list[tuple[str, list[Alteracao]]],
+) -> int:
+    """A trilha de VÁRIAS fichas num `executemany` só.
+
+    Mesma regra de `_registrar` — quem compara é o servidor, o autor vem do
+    token, e nada aqui apaga nada. A diferença é só o número de idas ao banco:
+    gravar o desenho de dez sistemas fazia dez `executemany`, um por componente
+    alterado, dentro da mesma transação.
+    """
+    linhas = [
+        (tipo, ficha_id, unidade_id, m.campo, m.antes, m.depois, autor, m.origem)
+        for ficha_id, mudancas in por_ficha
+        for m in mudancas
+    ]
+    if not linhas:
+        return 0
+    await con.executemany(
+        f"""INSERT INTO {_i()}.override
+                (tipo, ficha_id, unidade_id, campo, valor_antigo, valor_novo,
+                 autor, origem)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)""",
+        linhas,
+    )
+    return len(linhas)
+
+
+async def salvar_topologia_em_lote(
+    *, unidade_id: str, corpo: dict[str, Any], autor: str
+) -> dict[str, Any]:
+    """Grava o desenho de um ou mais sistemas INTEIROS, numa transação só.
+
+    Existe porque gravar componente a componente cobra do cliente uma ORDEM que
+    nem sempre existe. As regras de `salvar_topologia` são conferidas contra o
+    banco, então cada passo intermediário precisa estar de pé — e reorganizar um
+    sistema passa por estados que não estão:
+
+        tirar a CTS 'b' do sistema e reapontar 'a', que escoava para ela
+          tirar 'b' primeiro  → recusado, 'a' ainda escoa para 'b'
+          reapontar 'a' antes → o cliente teria de saber disso; o front ordenava
+                                pelo estado final da própria linha e mandava a
+                                saída de 'b' na frente. Era este o defeito.
+
+        mover a cadeia 'a → b' de um sistema para outro
+          mover 'b' → recusado, 'a' aponta para ele
+          mover 'a' → recusado, o jusante 'b' está noutro sistema
+          NENHUMA ordem funciona: o estado intermediário é que é impossível.
+
+    Aqui o estado intermediário não existe. A conferência é sobre o desenho que
+    chegou (`problemas_do_sistema`), e o banco só vê o antes e o depois.
+
+    NADA foi afrouxado: as regras são as mesmas, e as que dependem do mundo fora
+    dos sistemas enviados continuam valendo contra o banco — quem escoa para um
+    componente que está saindo, se não vier neste envio, ainda barra a gravação.
+    A saída, nesse caso, é mandar o sistema dele junto.
+
+    A trilha continua por COMPONENTE (`tipo="topologia"`, `ficha_id` = componente),
+    idêntica à das rotas de uma ficha: o lote é uma forma de gravar, e não uma
+    unidade de auditoria. Quem só olha `GET /alteracoes` não vê diferença.
+    """
+    pedido = pedido_do_corpo(corpo)
+    enviados = sorted({c for mapa in pedido.values() for c in mapa})
+
+    async with db.transacao() as con:
+        # ESPIADA sem lock, pela mesma razao de `salvar_topologia`: trazer um
+        # componente de outro sistema toca os DOIS, e o de origem so se sabe lendo.
+        # Os sistemas do corpo ja sao conhecidos e entram na trava direto.
+        espiada = await _sistema_de_cada(con, enviados)
+        await _travar_sistemas(con, *pedido, *espiada.values())
+        if await _sistema_de_cada(con, enviados) != espiada:
+            raise TopologiaInvalida(
+                "Outra gravação moveu componentes de sistema agora mesmo. "
+                "Recarregue a tela e refaça esta alteração."
+            )
+
+        # O ANTES completo: os componentes enviados MAIS os que hoje moram nos
+        # sistemas do corpo. Estes ultimos e que revelam quem esta saindo — sem
+        # eles, ausencia na lista nao teria como virar remocao.
+        linhas = await con.fetch(
+            f"""SELECT componente_sistema_id AS id, sistema_id AS sis,
+                       componente_sistema_id_jusante AS jus
+                  FROM {_i()}.sistema_topologia
+                 WHERE sistema_id = ANY($1::text[])
+                    OR componente_sistema_id = ANY($2::text[])""",
+            list(pedido),
+            enviados,
+        )
+        antes: dict[str, tuple[str | None, str | None]] = {
+            l["id"]: (l["sis"], l["jus"]) for l in linhas
+        }
+
+        # Quem NAO tem linha na topologia precisa existir em alguma ficha. Uma
+        # consulta para todos, e nao uma por componente: ver `_quais_existem`.
+        sem_linha = [c for c in enviados if c not in antes]
+        if faltam := sorted(set(sem_linha) - await _quais_existem(con, sem_linha)):
+            raise FichaDeOutraUnidade(
+                f"componente {faltam[0]!r} nao existe no cadastro"
+            )
+
+        # A UNIDADE dos sistemas do corpo E dos sistemas de ORIGEM, de uma vez.
+        # Trazer componente de um sistema que nao veio no corpo exige que o de
+        # origem tambem seja desta unidade: sem isto, trocar o id da URL movia
+        # componente de uma unidade para outra, e a trilha registrava a de
+        # destino como se sempre tivesse sido dela.
+        origens = {
+            antes.get(c, (None, None))[0]
+            for c in enviados
+            if antes.get(c, (None, None))[0] and antes.get(c, (None, None))[0] not in pedido
+        }
+        unidades = await _unidades_dos_sistemas(con, sorted(set(pedido) | origens))
+        for sistema_id in pedido:
+            if unidades.get(sistema_id) != unidade_id:
+                raise FichaDeOutraUnidade(
+                    f"sistema {sistema_id!r} nao pertence a unidade {unidade_id!r}"
+                )
+        for componente_id in enviados:
+            origem = antes.get(componente_id, (None, None))[0]
+            if origem and origem not in pedido and unidades.get(origem) != unidade_id:
+                raise FichaDeOutraUnidade(
+                    f"componente {componente_id!r} pertence a outra unidade"
+                )
+
+        depois: dict[str, tuple[str | None, str | None]] = {
+            componente_id: (sistema_id, jusante)
+            for sistema_id, mapa in pedido.items()
+            for componente_id, jusante in mapa.items()
+        }
+        # AUSENCIA E REMOCAO: quem mora num sistema do corpo e nao foi listado sai
+        # dele. Fica sem sistema, e a linha PERMANECE — apagar perderia
+        # `componente_sistema_nome`, que nao tem equivalente nas fichas.
+        for componente_id, (sistema_id, _jus) in antes.items():
+            if sistema_id in pedido and componente_id not in depois:
+                depois[componente_id] = (None, None)
+
+        # QUEM E ETE, QUEM E CTS e QUAIS SISTEMAS SAO DE CTS: tres consultas no
+        # total. Eram tres POR SISTEMA — e `_quais_sao` ja aceitava lista, entao
+        # o laco pagava N vezes por uma consulta que sempre soube responder de
+        # uma vez. Os conjuntos sao de todos os componentes enviados; a regra de
+        # cada sistema olha so a fronteira dele (`set(escoa)`).
+        etes = await _quais_sao(con, "ete_capex", "ete_id", enviados)
+        ctss = await _quais_sao(con, "cts_operacional", "cts", enviados)
+        de_cts = await _sistemas_de_cts(con, list(pedido))
+
+        problemas: list[str] = []
+        for sistema_id, mapa in pedido.items():
+            problemas += problemas_do_sistema(
+                mapa,
+                sistema_id=sistema_id,
+                etes=etes,
+                ctss=ctss,
+                usa_cts=sistema_id in de_cts,
+            )
+        if problemas:
+            raise TopologiaInvalida(" ".join(problemas))
+
+        # QUEM FICA PENDURADO FORA DO ENVIO. Dentro dos sistemas enviados isto ja
+        # foi conferido — `problemas_do_sistema` recusa jusante fora da fronteira.
+        # Aqui sobra o mundo de fora: um componente que sai leva junto quem escoava
+        # para ele, e reapontar por conta propria nao e papel do servidor.
+        saindo = [
+            c
+            for c, (sistema_novo, _jus) in sorted(depois.items())
+            if antes.get(c, (None, None))[0] is not None
+            and sistema_novo != antes.get(c, (None, None))[0]
+        ]
+        montantes = await _quem_aponta_para_varios(con, saindo)
+        for componente_id in saindo:
+            sistema_velho = antes[componente_id][0]
+            presos = [p for p in montantes.get(componente_id, []) if p not in depois]
+            if presos:
+                raise TopologiaInvalida(
+                    f"{componente_id!r} não pode sair do sistema {sistema_velho!r} "
+                    "enquanto "
+                    + ", ".join(repr(p) for p in presos)
+                    + " escoa(m) para ele. Reaponte esse(s) primeiro, ou mande o "
+                    f"sistema {sistema_velho!r} neste mesmo envio para as duas "
+                    "mudanças valerem juntas."
+                )
+
+        # A GRAVACAO EM TRES COMANDOS, e nao dois por componente alterado.
+        # Uma transacao que segura os advisory locks de N sistemas nao deve
+        # gastar 2N idas ao banco enquanto os segura — e o `executemany` diz a
+        # mesma coisa em uma.
+        tiram_do_sistema: list[tuple[str]] = []
+        entram: list[tuple[str, str, str | None]] = []
+        trilha: list[tuple[str, list[Alteracao]]] = []
+        for componente_id in sorted(depois):
+            sistema_novo, jusante = depois[componente_id]
+            sistema_velho, jusante_velho = antes.get(componente_id, (None, None))
+            if (sistema_novo, jusante) == (sistema_velho, jusante_velho):
+                continue
+            if sistema_novo is None:
+                tiram_do_sistema.append((componente_id,))
+            else:
+                entram.append((componente_id, sistema_novo, jusante))
+            trilha.append(
+                (
+                    componente_id,
+                    diferencas(
+                        {"sisId": sistema_velho, "jusante": jusante_velho},
+                        {"sisId": sistema_novo, "jusante": jusante},
+                        origem=REGIONAL,
+                    ),
+                )
+            )
+
+        if tiram_do_sistema:
+            # A linha PERMANECE, com o sistema nulo: apagar perderia
+            # `componente_sistema_nome`, que nao tem equivalente nas fichas.
+            await con.executemany(
+                f"""UPDATE {_i()}.sistema_topologia
+                       SET sistema_id = NULL, componente_sistema_id_jusante = NULL
+                     WHERE componente_sistema_id = $1""",
+                tiram_do_sistema,
+            )
+        if entram:
+            # `componente_sistema_nome` NAO e tocado: vem do Databricks e nao
+            # esta no corpo.
+            await con.executemany(
+                f"""INSERT INTO {_i()}.sistema_topologia
+                        (componente_sistema_id, sistema_id,
+                         componente_sistema_id_jusante)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (componente_sistema_id) DO UPDATE
+                      SET sistema_id                    = EXCLUDED.sistema_id,
+                          componente_sistema_id_jusante = EXCLUDED.componente_sistema_id_jusante""",
+                entram,
+            )
+        # A unidade da trilha e a do envio: quem sai de sistema fica sem
+        # unidade, e a coluna e NOT NULL com FK.
+        gravadas = await _registrar_varios(
+            con, tipo="topologia", unidade_id=unidade_id, autor=autor, por_ficha=trilha
+        )
+    return {"id": unidade_id, "alteracoesGravadas": gravadas}

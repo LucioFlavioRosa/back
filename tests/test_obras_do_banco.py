@@ -2,7 +2,7 @@
 
 Este arquivo protege quatro invariantes do desenho de obras:
 
-  1. a materialização tem uma fonte só — a linha gravada em `componentes_*_capex`;
+  1. a materialização tem uma fonte só — a linha gravada em `componentes_*capex`;
   2. componente ausente RECUSA a gravação, com a mesma régua do `/prontidao`;
   3. não há lista literal de obras em nenhum dos dois repositórios;
   4. o banco tem a cardinalidade que a régua afirma (5 por sub-bacia, 4 por CTS).
@@ -23,11 +23,12 @@ from pathlib import Path
 
 import pytest
 
-from app.infra.repositorios.cadastro_escrita import ValorInvalido, _obras_da_ficha
-from app.infra.repositorios.pendencias import OBRAS_CTS, OBRAS_SUBBACIA
+from app.dominio.campos import OBRAS_CTS, OBRAS_SUBBACIA
+from app.dominio.erros import ValorInvalido
+from app.dominio.ficha import obras_da_ficha
 
 #: Uma ficha de sub-bacia como o banco a devolve: cinco componentes, com o nome
-#: que o motor casa (`otimizador_capex_v62.py:1136`) e valores que são do BANCO —
+#: que o motor casa (`otimizadorcapex_v62.py:1136`) e valores que são do BANCO —
 #: não de um template. Os `preco` diferentes entre si existem para que um merge
 #: errado apareça como valor trocado, e não como coincidência.
 ATUAL = {
@@ -41,7 +42,7 @@ TODOS = {i: {} for i in ATUAL}
 
 
 def _ficha(override, atual=None, esperadas=OBRAS_SUBBACIA):
-    return _obras_da_ficha(override, atual or ATUAL, esperadas=esperadas, rotulo="sub-bacia")
+    return obras_da_ficha(override, atual or ATUAL, esperadas=esperadas, rotulo="sub-bacia")
 
 
 # ----------------------------------------------- 1. a fonte é a linha gravada
@@ -67,7 +68,7 @@ def test_o_nome_gravado_e_o_do_banco_e_nao_o_da_outra_tabela():
         "2": {"nome": "EEE"},
         "3": {"nome": "Linha de recalque"},
     }
-    obras = _obras_da_ficha(
+    obras = obras_da_ficha(
         {i: {} for i in cts}, cts, esperadas=OBRAS_CTS, rotulo="cts"
     )
     assert [o["nome"] for o in obras] == ["Coletor de tempo seco", "Tronco", "EEE", "Linha de recalque"]
@@ -152,8 +153,8 @@ def test_o_front_nao_tem_mais_base_literal_de_obra():
     não pode ficar vermelho por ausência do outro.
     """
     for arquivo, constante in (
-        ("src/cadastro/domain/subbacia.ts", "BASE_OBRAS"),
-        ("src/cadastro/domain/cts.ts", "BASE_OBRAS_CTS"),
+        ("src/cadastro/domain/subbacia.ts", "BASEOBRAS"),
+        ("src/cadastro/domain/cts.ts", "BASEOBRAS_CTS"),
     ):
         fonte = (FRONT / arquivo).read_text(encoding="utf-8")
         assert not re.search(rf"export const {constante}\b", fonte), (
@@ -166,14 +167,14 @@ def test_o_front_nao_tem_mais_base_literal_de_obra():
 #: Os nomes de cada tabela, como estão no banco carregado da planilha. Não são
 #: rótulo de tela: são a IDENTIDADE que o motor casa com o componente.
 NOMES = {
-    "componentes_subbacias_capex": {
+    "componentes_subbaciascapex": {
         "Ligacao de esgoto",
         "Rede coletora",
         "Coletor tronco",
         "Estacao elevatoria (EEE)",
         "Linha de recalque (LR)",
     },
-    "componentes_cts_capex": {
+    "componentes_ctscapex": {
         "Coletor de tempo seco",
         "Tronco",
         "EEE",
@@ -190,8 +191,8 @@ def _banco_disponivel() -> bool:
 @pytest.mark.parametrize(
     "tabela,chave,esperadas",
     [
-        ("componentes_subbacias_capex", "sub_bacia", OBRAS_SUBBACIA),
-        ("componentes_cts_capex", "cts", OBRAS_CTS),
+        ("componentes_subbaciascapex", "sub_bacia", OBRAS_SUBBACIA),
+        ("componentes_ctscapex", "cts", OBRAS_CTS),
     ],
 )
 def test_toda_ficha_do_banco_tem_a_cardinalidade_da_regua(tabela, chave, esperadas):

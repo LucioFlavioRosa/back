@@ -25,7 +25,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.dominio.parametros import ParametrosInvalidos
 from app.dominio.run_id import RunIdInvalido
 from app.infra.fila import FilaIndisponivel
-from app.infra.repositorios.cadastro_escrita import (
+from app.dominio.erros import (
     FichaDeOutraUnidade,
     FichaIncompleta,
     TopologiaInvalida,

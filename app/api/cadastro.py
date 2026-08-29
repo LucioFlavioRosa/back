@@ -3,8 +3,11 @@
 São dois lados com naturezas diferentes:
 
     LEITURA   8 endpoints, um por grupo de fichas.
-    ESCRITA   6 endpoints, uma ficha por vez — o corpo é a ficha inteira, não um
-              patch, e a trilha de override viaja junto na mesma transação.
+    ESCRITA   7 endpoints. Em seis o corpo é UMA ficha inteira — não um patch —, e
+              a trilha de override viaja junto na mesma transação. O sétimo é a
+              topologia em lote: o desenho de um ou mais sistemas inteiros, também
+              numa transação, porque validar o caminho passo a passo cobrava do
+              cliente uma ordem de envio que nem sempre existe.
 
 A ficha de coleta (sub-bacia e CTS, que são iguais) tem dois blocos de origem
 diferente, e isso atravessa todo o cadastro:
@@ -239,6 +242,45 @@ async def salvar_topologia(
     """
     return await cadastro_escrita.salvar_topologia(
         unidade_id=unidade_id, componente_id=componente_id, corpo=corpo, autor=usuario
+    )
+
+
+@router.put("/unidades/{unidade_id}/topologia", response_model=formas.Gravacao, response_model_exclude_unset=True)
+async def salvar_topologia_em_lote(
+    unidade_id: str, corpo: Corpo, usuario: Usuario
+) -> dict[str, Any]:
+    """Grupo 01 — o desenho de um ou mais sistemas INTEIROS, numa transação só.
+
+    ```json
+    {"sistemas": [
+        {"id": "d1s25", "componentes": [
+            {"id": "d1b25_1_1", "jusante": "d1e25"},
+            {"id": "d1e25",     "jusante": ""}
+        ]}
+    ]}
+    ```
+
+    `componentes` é a lista **completa** do sistema, e não as linhas que mudaram:
+    quem está no sistema hoje e não vem na lista **sai** dele — é assim que tirar
+    uma CTS se expressa aqui. Lista vazia esvazia o sistema.
+
+    **Prefira esta rota à de um componente por vez** quando o cliente tem o desenho
+    pronto na tela. A rota `PUT .../topologia/{componente_id}` valida cada mudança
+    contra o que está gravado, e por isso cobra uma ordem de envio que às vezes não
+    existe: tirar uma CTS e reapontar quem escoava para ela é recusado nas duas
+    ordens possíveis. Aqui a conferência é sobre o desenho final.
+
+    As regras são as MESMAS (sem ciclo, jusante dentro do sistema, uma ETE, a regra
+    de CTS) e a recusa continua sendo 422 com o motivo inteiro — agora com **todos**
+    os problemas de uma vez, e não o primeiro. As rotas de um componente por vez
+    continuam existindo e não mudaram.
+
+    Como a de um componente, **não devolve `atualizadoEm`/`atualizadoPor`**:
+    `sistema_topologia` não tem essas colunas. `alteracoesGravadas` soma as
+    diferenças de todos os componentes tocados, e a trilha continua por componente.
+    """
+    return await cadastro_escrita.salvar_topologia_em_lote(
+        unidade_id=unidade_id, corpo=corpo, autor=usuario
     )
 
 

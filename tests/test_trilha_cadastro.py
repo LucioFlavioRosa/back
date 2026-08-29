@@ -14,13 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from app.infra.repositorios.cadastro_escrita import (
-    DATABRICKS,
-    REGIONAL,
-    _igual,
-    _origem_do_campo,
-    diferencas,
-)
+from app.dominio.trilha import DATABRICKS, REGIONAL, diferencas, igual, origem_do_campo
 
 
 # ------------------------------------------------------- o que conta como mudança
@@ -30,14 +24,14 @@ def test_numero_compara_como_numero_e_nao_como_texto():
     Sem isto, `"244" != 244.0` como texto, e cada salvamento gravaria uma linha
     dizendo que 244 virou 244 — a trilha viraria ruído em uma semana.
     """
-    assert _igual(244.0, "244") is False  # `diferencas` compara valores já convertidos
-    assert _igual(244.0, 244) is True
-    assert _igual(2472.6, 2472.5999999999995) is True  # ida e volta pelo driver
+    assert igual(244.0, "244") is False  # `diferencas` compara valores já convertidos
+    assert igual(244.0, 244) is True
+    assert igual(2472.6, 2472.5999999999995) is True  # ida e volta pelo driver
 
 
 def test_ausencia_dos_dois_lados_nao_e_mudanca():
-    assert _igual(None, None) is True
-    assert _igual(None, 0) is False  # vazio e zero são coisas diferentes
+    assert igual(None, None) is True
+    assert igual(None, 0) is False  # vazio e zero são coisas diferentes
 
 
 def test_salvar_sem_mudar_nada_nao_gera_trilha():
@@ -115,10 +109,10 @@ def test_origem_separa_correcao_de_preenchimento():
     """Discordar de um número do Databricks e preencher um campo próprio são
     coisas diferentes para quem audita — e por isso viram verbos diferentes na
     tela ("corrigiu" contra "alterou")."""
-    assert _origem_do_campo("fat") == DATABRICKS
-    assert _origem_do_campo("ligA") == DATABRICKS
-    assert _origem_do_campo("preco") == REGIONAL
-    assert _origem_do_campo("vaz") == REGIONAL
+    assert origem_do_campo("fat") == DATABRICKS
+    assert origem_do_campo("ligA") == DATABRICKS
+    assert origem_do_campo("preco") == REGIONAL
+    assert origem_do_campo("vaz") == REGIONAL
 
 
 def test_a_origem_pode_ser_decidida_campo_a_campo():
@@ -126,7 +120,7 @@ def test_a_origem_pode_ser_decidida_campo_a_campo():
     m = diferencas(
         {"fat": 1.0, "preco": 1.0},
         {"fat": 2.0, "preco": 2.0},
-        origem=_origem_do_campo,
+        origem=origem_do_campo,
     )
     assert {a.campo: a.origem for a in m} == {"fat": DATABRICKS, "preco": REGIONAL}
 

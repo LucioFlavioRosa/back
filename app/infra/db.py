@@ -89,9 +89,18 @@ async def transacao() -> AsyncIterator[asyncpg.Connection]:
     O disparo de uma rodada e o caso: a `run_request` e o `run_status` PENDENTE
     entram juntos, senao existe um instante em que a rodada foi pedida e nao tem
     estado — e o front, que consulta o status logo depois do 201, veria 404.
+
+    `SET LOCAL statement_timeout` e o teto do SERVIDOR, e nao repeticao do
+    `command_timeout` do pool. Os dois cobrem coisas diferentes: o do cliente
+    cancela a espera de QUEM PEDIU; este aborta a transacao no banco e, com isso,
+    DEVOLVE OS LOCKS. A gravacao de topologia segura advisory lock de todos os
+    sistemas do envio, entao uma consulta presa aqui prende todo mundo que grava
+    naqueles sistemas — e a fila cresce enquanto ninguem ve erro nenhum. `LOCAL`
+    porque a conexao volta para o pool e o teto nao deve viajar com ela.
     """
     async with pool().acquire() as con:
         async with con.transaction():
+            await con.execute(f"SET LOCAL statement_timeout = {config().statement_timeout_ms}")
             yield con
 
 

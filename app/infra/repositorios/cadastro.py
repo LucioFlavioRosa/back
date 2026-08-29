@@ -23,6 +23,8 @@ from typing import Any
 from app.config import config
 from app.infra import db
 from app.infra.repositorios import pendencias
+from app.dominio.campos import COLETA, DO_DATABRICKS
+from app.dominio.formato import SEM_SEPARADOR, pt_br, pt_br_ano
 
 
 log = logging.getLogger(__name__)
@@ -39,43 +41,6 @@ _CIDADES_DA_UNIDADE = """
       JOIN {i}.regional_superintendencia s USING (superintendencia_id)
      WHERE s.unidade_id = $1
 """
-
-
-def pt_br(v: Any) -> str:
-    """Número do banco -> string pt-BR, que é como o contrato manda ele viajar.
-
-    Sem isto o `GET` devolvia `str(2497.7)` = `"2497.7"`, e a escrita — que exige
-    pt-BR estrito — não reconhecia o próprio formato que acabara de emitir. O
-    efeito era o pior possível: **ler uma ficha e salvá-la de volta dava 500**, que
-    é a operação mais comum do cadastro. Um teste de uso real pegou; nenhum dos
-    smokes pegava, porque todos montavam o corpo à mão em vez de reenviar o que
-    o `GET` devolveu.
-
-    `1234.5` -> `"1.234,5"`. Inteiro não ganha casa decimal: `244.0` -> `"244"`,
-    senão a tela mostraria "244,0" numa quantidade de ligações.
-    """
-    if v is None:
-        return ""
-    if isinstance(v, bool) or not isinstance(v, (int, float)):
-        return str(v)
-    if float(v).is_integer():
-        return f"{int(v):,}".replace(",", ".")
-    return f"{v:,.4f}".rstrip("0").rstrip(".").replace(",", "\x00").replace(".", ",").replace("\x00", ".")
-
-
-#: Campos que sao ANO ou CODIGO, e nao quantidade: vao sem separador de milhar.
-#: `pt_br(2049)` daria "2.049", e ano com ponto e erro de leitura na tela — alem de
-#: `obra_obrigatoria_ano` ser codigo (0 = nao obrigatoria, -1 = qualquer ano).
-SEM_SEPARADOR = {"fim", "ano", "anoObrig", "proibAte"}
-
-
-def pt_br_ano(v: Any) -> str:
-    """`2049` -> `"2049"`. Numero que nao e quantidade nao ganha separador."""
-    if v is None:
-        return ""
-    if isinstance(v, (int, float)) and float(v).is_integer():
-        return str(int(v))
-    return pt_br(v)
 
 
 def _auditoria(linha: dict[str, Any]) -> dict[str, Any]:
@@ -425,70 +390,6 @@ async def contrato(unidade_id: str) -> dict[str, Any]:
     return {"cidades": cidades, "metas": metas, "fator": fator}
 
 
-#: Colunas da ficha de coleta -> nomes do front. Sub-bacia e CTS são idênticas:
-#: a mesma ficha, duas tabelas. Um dicionário só evita as duas divergirem.
-_COLETA = {
-    "preco_por_ligacao": "preco",
-    "receita_faturada_media_mensal": "fat",
-    "receita_arrecadada_media_mensal": "arr",
-    "tempo_arrecadacao": "tarr",
-    "tempo_ramp_up": "ramp",
-    "vazao_contribuicao": "vaz",
-    "universo_ligacoes": "ligU",
-    "ligacoes_atuais": "ligA",
-    "ligacoes_novas_obras": "ligN",
-    "universo_economias": "ecoU",
-    "economias_atuais": "ecoA",
-    "economias_novas_obras": "ecoN",
-    "universo_populacao": "popU",
-    "populacao_atual": "popA",
-    "populacao_novas_obras": "popN",
-    "potencial_crescimento": "pot",
-    "universo_ligacoes_residencial": "ligURes",
-    "ligacoes_atuais_residencial": "ligARes",
-    "universo_economias_residencial": "ecoURes",
-    "economias_atuais_residencial": "ecoARes",
-}
-
-#: Quais campos vêm do Databricks (travados, corrigíveis só por override) e quais
-#: a Regional preenche. A divisão é a do `DEPLOY.md` §3.
-#:
-#: O RECORTE RESIDENCIAL (`ligURes`, `ligARes`, `ecoURes`, `ecoARes`) é medida do
-#: Databricks como as do topo — é a parcela residencial APURADA na base comercial, e
-#: não uma estimativa de quem cadastra. Cair em `params` faria a tela pedir como
-#: preenchimento o que é dado travado, e a Regional digitaria por cima sem gerar
-#: trilha de override.
-_DO_DATABRICKS = {
-    "fat",
-    "arr",
-    "ligU",
-    "ligA",
-    "ligN",
-    "ecoU",
-    "ecoA",
-    "ecoN",
-    "ligURes",
-    "ligARes",
-    "ecoURes",
-    "ecoARes",
-}
-
-#: O que a ficha de coleta DEVE trazer em cada bloco. É o contrato do front
-#: (`SubBaciaDb` / `SubBaciaParams`), e é o que torna o PUT uma substituição de
-#: ficha inteira em vez de um patch — ver `cadastro_escrita._exigir_ficha_inteira`.
-#: `ticket` fica de FORA: ele e derivado (receita/ligacoes), nao tem coluna, e o
-#: PUT nao o grava. Exigi-lo no corpo obrigaria o cliente a devolver uma conta que
-#: o servidor mesmo fez.
-CAMPOS_DB = sorted(_DO_DATABRICKS)
-CAMPOS_PARAMS = ["preco", "tarr", "ramp", "vaz", "pot", "popU", "popA"]
-
-#: `popN` (`populacao_novas_obras`) existe na tabela e NÃO é modelado pelo front:
-#: não está em `SubBaciaDb` nem em `SubBaciaParams`. Por isso a escrita nunca o
-#: toca — zerá-lo em nome de "ficha inteira" apagaria uma coluna que o cliente
-#: nem sabe que existe.
-NAO_MODELADOS = {"popN"}
-
-
 def _ticket(linha: dict[str, Any]) -> str:
     """Receita media mensal por ligacao — o `ticket` do bloco `db`.
 
@@ -511,11 +412,11 @@ def _ticket(linha: dict[str, Any]) -> str:
 def _ficha_coleta(linha: dict[str, Any], chave: str) -> dict[str, Any]:
     # Todo número sai em pt-BR — o mesmo formato que o `PUT` exige de volta. Ver
     # `pt_br`: a ficha lida tem de poder ser reenviada sem tradução no meio.
-    db_bloco = {v: pt_br(linha[k]) for k, v in _COLETA.items() if v in _DO_DATABRICKS}
-    params = {v: pt_br(linha[k]) for k, v in _COLETA.items() if v not in _DO_DATABRICKS}
+    db_bloco = {v: pt_br(linha[k]) for k, v in COLETA.items() if v in DO_DATABRICKS}
+    params = {v: pt_br(linha[k]) for k, v in COLETA.items() if v not in DO_DATABRICKS}
     db_bloco["ticket"] = _ticket(linha)
     # A auditoria fica FORA de `db` e de `params`: os dois blocos são o contrato do
-    # que o `PUT` devolve inteiro (`_exigir_ficha_inteira`), e quem gravou não é
+    # que o `PUT` devolve inteiro (`exigir_ficha_inteira`), e quem gravou não é
     # campo de ficha — é fato sobre a ficha. Dentro de um bloco, o cliente passaria
     # a ser obrigado a reenviá-la, e reenviar autoria é justamente o que não pode.
     return {"id": linha[chave], "db": db_bloco, "params": params, **_auditoria(linha)}
@@ -620,10 +521,10 @@ def _arvore(linhas: list[dict[str, Any]], com_ficha: set[str]) -> list[dict[str,
     ]
 
 
-#: Colunas de obra -> nomes do front. Inverso do `_OBRA` da escrita, mais o
+#: Colunas de obra -> nomes do front. Inverso do `OBRA` da escrita, mais o
 #: `componente`.
 #:
-#: `nome` NAO tem contrapartida em `_OBRA`, e a assimetria e proposital: o nome
+#: `nome` NAO tem contrapartida em `OBRA`, e a assimetria e proposital: o nome
 #: identifica a obra, nao e editavel na tela, e a escrita o grava a partir da
 #: linha que ja esta no banco. Aceita-lo de volta no corpo deixaria um cliente
 #: renomear componente — e o nome e justamente o que o motor casa com

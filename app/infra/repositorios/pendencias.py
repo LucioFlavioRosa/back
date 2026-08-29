@@ -20,7 +20,7 @@ e não uma releitura do que "faz sentido cobrar". As regras, como estão lá:
 
 `wacc` NUNCA conta, nem na ficha, nem na obra, nem na ETE: vazio ali significa
 "usa o WACC médio da unidade", que é uma resposta — não silêncio. Este parágrafo
-já estava aqui e a lista `_ETE` abaixo cobrava `wacc` mesmo assim: o arquivo se
+já estava aqui e a lista `ETE` abaixo cobrava `wacc` mesmo assim: o arquivo se
 contradizia, e quem ganhava era a lista. Eram 598 das 997 ETEs travando a
 simulação por um campo cujo default o motor usa em 2 de cada 3 obras
 (`SELECT wacc_origem, count(*) FROM otim_obra` → wacc_medio 11.099, proprio 7.289).
@@ -43,7 +43,7 @@ Duas sutilezas que vieram do outro lado e não são óbvias:
 
     (O texto antigo dizia que a tabela "só guarda o que difere da base". Não
     guarda: o `GET` devolve todos os campos da linha gravada, e é o banco que
-    completa o que o corpo omitir — ver `_obras_da_ficha`. A base literal só
+    completa o que o corpo omitir — ver `obras_da_ficha`. A base literal só
     alcança componente que nunca existiu.)
 """
 
@@ -51,6 +51,7 @@ from typing import Any
 
 from app.config import config
 from app.infra import db
+from app.dominio.campos import OBRAS_CTS, OBRAS_SUBBACIA
 
 #: Campos de `params` que a ficha de coleta cobra sempre.
 _PARAMS = [
@@ -63,12 +64,6 @@ _PARAMS = [
 #: Só quando a cidade mede a meta por população.
 _PARAMS_POP = ["universo_populacao", "populacao_atual"]
 
-#: Campos de obra que a simulação exige. `wacc` fora, de propósito.
-#: Quantas obras cada ficha TEM DE ter. E a base do cadastro (5 para sub-bacia,
-#: 4 para CTS), e o que permite contar a obra AUSENTE — que nao aparece em
-#: `componentes_*_capex` e por isso passava despercebida.
-OBRAS_SUBBACIA = 5
-OBRAS_CTS = 4
 
 _OBRA = [
     "quantidade",
