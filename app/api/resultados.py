@@ -208,6 +208,24 @@ async def desfavoritar(run_id: str, quem: Quem) -> None:
 # como se fossem dado.
 
 
+async def _exigir_run(run_id: str) -> None:
+    """Valida o formato E a existencia da rodada.
+
+    As rotas que devolvem AGREGADO — painel, ebitda, lista de cidades,
+    explicabilidade, lista de obras, cronograma — nao tem um registro unico para
+    achar ou nao achar, entao sem esta checagem elas respondiam 200 com zeros
+    para um `run_id` inventado. Zero de sub-bacia presa e zero de obra sao
+    respostas legitimas de uma rodada de verdade; devolve-las para uma rodada que
+    nao existe torna as duas coisas indistinguiveis.
+
+    As rotas de um recorte so (cidade, sistema, sub-bacia, obra) nao precisam
+    dele: `_ou_404` ja nao acha o registro quando a rodada nao existe.
+    """
+    rid.exigir_valido(run_id)
+    if not await niveis.existe(run_id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Rodada não encontrada.")
+
+
 async def _ou_404(valor, o_que: str):
     if valor is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"{o_que} não encontrado nesta rodada.")
@@ -222,19 +240,19 @@ async def painel(run_id: str) -> dict[str, Any]:
     `/subbacias/histograma` separados: sao quadros que aparecem sempre juntos, e o
     backend le as tabelas da mesma rodada de qualquer jeito.
     """
-    rid.exigir_valido(run_id)
+    await _exigir_run(run_id)
     return await niveis.painel(run_id)
 
 
 @router.get("/runs/{run_id}/ebitda")
 async def ebitda(run_id: str, cidade: str | None = Query(None)) -> dict[str, Any]:
-    rid.exigir_valido(run_id)
+    await _exigir_run(run_id)
     return await niveis.ebitda(run_id, cidade=cidade)
 
 
 @router.get("/runs/{run_id}/cidades")
 async def cidades(run_id: str) -> list[dict[str, Any]]:
-    rid.exigir_valido(run_id)
+    await _exigir_run(run_id)
     return await niveis.cidades(run_id)
 
 
@@ -254,6 +272,63 @@ async def topologia(run_id: str, sistema_id: str) -> dict[str, Any]:
 async def subbacia(run_id: str, sub_id: str) -> dict[str, Any]:
     rid.exigir_valido(run_id)
     return await _ou_404(await niveis.subbacia(run_id, sub_id), "Sub-bacia")
+
+
+@router.get("/runs/{run_id}/explicabilidade")
+async def explicabilidade(run_id: str) -> dict[str, Any]:
+    """Por que o plano nao conecta 100% — agregado por motivo, nivel global.
+
+    Sem `_ou_404`: uma rodada sem nenhuma sub-bacia presa e uma resposta legitima
+    (`naoFaturando: 0`), e a tela a trata como "nada a explicar". 404 aqui diria
+    que a rodada nao existe.
+    """
+    await _exigir_run(run_id)
+    return await niveis.explicabilidade(run_id)
+
+
+@router.get("/runs/{run_id}/cidades/{cidade_id}/explicabilidade")
+async def explicabilidade_da_cidade(run_id: str, cidade_id: str) -> dict[str, Any]:
+    """O mesmo recorte dentro de uma cidade.
+
+    Endpoint proprio, e nao `?cidade=` no de cima: a URL da cidade ja e
+    `/cidades/{id}`, e colar o recorte nela segue o padrao de `/cidades/{id}`.
+    Aqui o 404 vale — cidade que nao pertence a rodada nao tem explicacao nenhuma.
+    """
+    await _exigir_run(run_id)
+    return await _ou_404(await niveis.explicabilidade(run_id, cidade_id), "Cidade")
+
+
+# As duas rotas de obra abaixo vem ANTES de `/obras/{obra_id}`, e a ordem e o que
+# as faz existir: o FastAPI casa na ordem de declaracao, e `/obras/{obra_id}`
+# aceitaria "cronograma" como se fosse um id — resposta 404 "Obra nao encontrada"
+# para um endpoint que existe.
+@router.get("/runs/{run_id}/obras/cronograma")
+async def cronograma_de_obras(run_id: str) -> dict[str, Any]:
+    await _exigir_run(run_id)
+    return await niveis.cronograma_de_obras(run_id)
+
+
+@router.get("/runs/{run_id}/obras")
+async def obras(
+    run_id: str,
+    situacao: str | None = Query(None),
+    cidade: str | None = Query(None),
+    ano: int | None = Query(None),
+    pagina: int = Query(1, ge=1),
+    tamanho: int = Query(50, ge=1, le=500),
+    ordenar: str = Query("inicio"),
+) -> dict[str, Any]:
+    """A lista de obras do plano, paginada. `total` e o do resultado FILTRADO."""
+    await _exigir_run(run_id)
+    return await niveis.obras(
+        run_id,
+        situacao=situacao,
+        cidade=cidade,
+        ano=ano,
+        pagina=pagina,
+        tamanho=tamanho,
+        ordenar=ordenar,
+    )
 
 
 @router.get("/runs/{run_id}/obras/{obra_id}")
