@@ -27,8 +27,10 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 
 from app.api.deps import Usuario, Quem, guarda_de_rota
 from app.dominio import run_id as rid
+from app.dominio import teto as teto_dom
+from app.dominio.teto import DEGRAUS as DEGRAUS_DA_CURVA
 from app.api import formas_resultado as formas
-from app.infra.repositorios import niveis, resultado
+from app.infra.repositorios import controle, niveis, resultado
 
 #: PREFIXO E GUARDA MORAM NO ROTEADOR, e nao no `include_router`. Assim quem
 #: le este arquivo ve sob que caminho as rotas abaixo vivem e que elas ja
@@ -318,6 +320,102 @@ async def explicabilidade(run_id: RunPublicado) -> dict[str, Any]:
     que a rodada nao existe.
     """
     return await niveis.explicabilidade(run_id)
+
+
+@router.get("/runs/{run_id}/sensibilidade", response_model=formas.Sensibilidade)
+async def sensibilidade(run_id: RunPublicado) -> dict[str, Any]:
+    """A curva de "e se o CAPEX anual fosse maior?" — o teto e os pontos ja rodados.
+
+    UMA ROTA PARA AS DUAS METADES, porque a tela nao consegue usar uma sem a
+    outra. O teto responde na hora, sem solver nenhum, e serve para decidir se
+    vale disparar alguma coisa; os pontos sao as variacoes que ja rodaram.
+    Separar em duas rotas obrigaria a tela a decidir o que significa ter uma e
+    nao ter a outra — que e decisao de dominio, e ela nao pertence ao cliente.
+
+    A RODADA BASE VEM COMO `degrau: 0`, e nao fica por conta do cliente montar.
+    Ela e um ponto da curva como os outros — o de partida — e precisa das mesmas
+    grandezas, inclusive a contagem de obras por componente, que o `meta` nao
+    tem. Montar meio ponto no front a partir de `meta` e a outra metade aqui
+    criava duas definicoes do mesmo objeto, e a diferenca aparecia justamente na
+    comparacao "quanto muda em relacao a hoje".
+
+    OS PONTOS SAEM DA LINHAGEM (`run_request.base_run_id`), e nao do nome da
+    rodada. A primeira versao escrevia o degrau no rotulo e o lia de volta com
+    uma expressao regular; o rotulo e livre, entao renomear a rodada desmanchava
+    a curva calada, e uma variacao deduplicada sob outro nome nunca era
+    encontrada. Ver `migracoes/013_estimativa_de_sensibilidade.sql`.
+
+    `teto: null` quando a rodada nao publicou orcamento — nao ha o que escalar, e
+    zeros aqui seriam lidos como "nao ha nada a ganhar".
+    """
+    dados = await niveis.candidatas_do_teto(run_id)
+    variacoes = await controle.varredura(run_id)
+    base = await resultado.meta(run_id)
+
+    # TODAS as variacoes, e nao so as que tem `vpl`. Publicar e um passo com
+    # partes: uma rodada pode ter obras gravadas e o `vpl` ainda nulo, e filtrar
+    # por `vpl` fazia o ponto aparecer sem obras — a aba de obras ficava com uma
+    # coluna a menos sem nada dizer que ela existia.
+    ids = [run_id] + [v["run_id"] for v in variacoes]
+    obras = await niveis.obras_por_componente(ids)
+
+    pontos: list[dict[str, Any]] = []
+    if base and base.get("kpis"):
+        k = base["kpis"]
+        pontos.append(
+            {
+                "degrau": 0,
+                "runId": run_id,
+                "status": "SUCESSO",
+                "estimativa": False,
+                "vpl": k.get("vpl"),
+                "coberturaFimPct": k.get("coberturaFimPct"),
+                "metasAtingidas": k.get("metasAtingidas"),
+                "metasTotal": k.get("metasTotal"),
+                "capexTotal": k.get("capexTotal"),
+                "tempoS": None,
+                "obras": obras.get(run_id, []),
+            }
+        )
+
+    for p in variacoes:
+        if not p["variacao_fator"]:
+            continue
+        pontos.append(
+            {
+                # O degrau vem do FATOR gravado: 1.1 -> 10. `round` porque o
+                # fator e ponto flutuante e `(1.1 - 1) * 100` da
+                # 10.000000000000009.
+                "degrau": round((p["variacao_fator"] - 1) * 100),
+                "runId": p["run_id"],
+                "status": p["status"],
+                "estimativa": p["estimativa"],
+                "vpl": p["vpl"],
+                "coberturaFimPct": p["cobertura_final_pct"],
+                # `metas_nao_atingidas` e o que o motor grava; a tela conta as
+                # CUMPRIDAS. A subtracao mora aqui e nao la: e a mesma conversao
+                # que `resultado.meta` ja faz, e duplica-la no cliente criaria um
+                # segundo lugar para ela errar.
+                "metasAtingidas": (
+                    None
+                    if p["metas_total"] is None
+                    else p["metas_total"] - (p["metas_nao_atingidas"] or 0)
+                ),
+                "metasTotal": p["metas_total"],
+                "capexTotal": p["capex_total"],
+                "tempoS": p["tempo_s"],
+                "obras": obras.get(p["run_id"], []),
+            }
+        )
+
+    return {
+        "teto": (
+            teto_dom.teto(dados[0], dados[1], list(DEGRAUS_DA_CURVA), dados[2])
+            if dados
+            else None
+        ),
+        "pontos": pontos,
+    }
 
 
 @router.get("/runs/{run_id}/cidades/{cidade_id}/explicabilidade", response_model=formas.ExplicabilidadeGlobal)

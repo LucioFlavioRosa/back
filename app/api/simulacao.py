@@ -30,6 +30,7 @@ from app.api import formas_cadastro as formas
 from app.dominio import run_id as rid
 from app.dominio import status as st
 from app.dominio.parametros import montar_params
+from app.dominio import variacao as variacao_dom
 from app.infra import fila
 from app.infra.repositorios import controle, pendencias
 
@@ -268,6 +269,156 @@ async def status_da_rodada(run_id: str) -> dict[str, Any]:
 
     resposta["fila"] = fila
     return resposta
+
+
+@router.post(
+    "/runs/{run_id}/variacao",
+    status_code=status.HTTP_201_CREATED,
+    response_model=formas.VariacaoCriada,
+)
+async def variacao(
+    run_id: str,
+    quem: Quem,
+    corpo: Annotated[dict[str, Any], Body()],
+    resposta: Response,
+) -> dict[str, Any]:
+    """A MESMA simulação com o orçamento escalado — a análise de sensibilidade.
+
+    `{"fator": 1.1}` dispara a rodada desta aqui com 10% a mais de CAPEX **em
+    cada ano**, e tudo o mais idêntico. É o que faz a comparação ser
+    sensibilidade: mudando dois parâmetros, o que se mede é a diferença entre
+    duas simulações quaisquer, não o efeito do orçamento.
+
+    POR QUE CLONAR NO SERVIDOR, e não devolver os parâmetros para o front
+    remontar o pedido: `POST /runs` recebe o corpo do FRONT (`orcamento_por_ano`,
+    `base_receita`…) e `montar_params` o traduz para as chaves do job
+    (`ORCAMENTO`, `BASE_RECEITA`…). Reconstruir o corpo a partir dos parâmetros
+    gravados poria a tradução INVERSA no cliente — um segundo lugar que teria de
+    concordar com `montar_params` para sempre, e que erraria calado no dia em que
+    um parâmetro novo aparecesse. Aqui os parâmetros nunca deixam de ser
+    parâmetros.
+
+    O ORÇAMENTO É POR ANO (`{"2027": 60000000, "2028": 50000700}`), e o fator
+    multiplica cada ano. Rodada de valor anual único (o `ORCAMENTO` escalar do
+    outro ramo de `montar_params`) também funciona.
+
+    **Idempotente de graça**: `abrir_rodada` já devolve a rodada existente quando
+    o pedido é idêntico, então repetir a varredura não gasta cluster — a segunda
+    vez devolve as cinco que já rodaram. É o que torna a análise barata depois da
+    primeira.
+
+    ## `modo`: `"rapido"` (padrão) ou `"completo"`
+
+    O modo rápido põe `MAX_TIME_S = 60` no lugar dos 1000s de uma simulação
+    normal. A diferença não é de método — é a MESMA otimização, com os mesmos
+    dados e as mesmas restrições —, é de quanto tempo o solver tem para fechar a
+    prova de otimalidade. Numa curva de sensibilidade isso é o negócio certo:
+    quem olha a curva quer a INCLINAÇÃO, e a inclinação aparece muito antes da
+    terceira casa decimal. Cinco degraus em cinco minutos respondem a pergunta;
+    cinco degraus em oitenta minutos respondem a mesma pergunta depois que ela
+    deixou de importar.
+
+    O preço é dito: o resultado do modo rápido pode ser subótimo, e por isso ele
+    é marcado `estimativa` e **não entra no histórico** (`GET /runs`). Uma
+    estimativa listada ao lado de simulações, com o mesmo orçamento e um VPL
+    menor, seria lida como um plano pior — e não é um plano pior, é a mesma
+    pergunta respondida com menos tempo de relógio.
+
+    `"completo"` mantém o comportamento anterior: rodada normal, visível no
+    histórico, comparável com qualquer outra.
+    """
+    rid.exigir_valido(run_id)
+    dono = await controle.de_quem(run_id)
+    if not dono:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Rodada não encontrada.")
+    unidade_id = dono["unidade"]
+    exigir_unidade(quem, unidade_id)
+
+    # NAO SE VARIA UMA VARIACAO.
+    #
+    # A tela ja nao oferece a analise numa rodada que e ponto da curva de outra,
+    # mas esconder o botao nao e a mesma coisa que fechar a porta: esta rota
+    # existe fora da tela, e sem esta guarda um `curl` — ou um cliente futuro —
+    # grava variacao de variacao, com `base_run_id` apontando para o meio da
+    # curva de alguem. A partir dai a analise daquela rodada mostra pontos que
+    # nao sao dela, e nada na tela explica de onde vieram.
+    #
+    # 409, e nao 422: o pedido esta bem formado, e o que o recusa e o ESTADO da
+    # rodada de origem. A mensagem diz qual e a base certa, porque quem chegou
+    # aqui provavelmente queria variar aquela.
+    if dono.get("base_run_id"):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Esta rodada já é uma variação de orçamento — a análise de "
+            f"sensibilidade é da rodada de origem ({dono['base_run_id']}), e não "
+            "dela. Varie a origem.",
+        )
+
+    base = await controle.parametros(run_id)
+    if base is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Rodada não encontrada.")
+
+    # A MONTAGEM DOS PARAMETROS MORA NO DOMINIO (`dominio/variacao.py`), e nao
+    # aqui: e ela que decide o teto de solver de cada modo, a escala por ano e o
+    # arredondamento que mantem a dedupe funcionando. Sao regras que precisam de
+    # teste proprio e que nao dependem de HTTP nem de banco — aqui elas so eram
+    # exercitaveis subindo o servico inteiro.
+    fator = corpo.get("fator")
+    modo = corpo.get("modo", "rapido")
+    params = variacao_dom.params_da_variacao(
+        base,
+        unidade_id=unidade_id,
+        usuario=quem.login,
+        fator=fator,
+        modo=modo,
+    )
+
+    pedido = rid.novo()
+    aberta = await controle.abrir_rodada(
+        run_id=pedido,
+        unidade_id=unidade_id,
+        params=params,
+        usuario=quem.login,
+        rotulo=corpo.get("nome"),
+        base_run_id=run_id,
+        variacao_fator=float(fator),
+        estimativa=modo == "rapido",
+    )
+    if aberta["ja_existia"]:
+        # A RODADA JA EXISTIA, MAS PODE NAO ESTAR NA CURVA.
+        #
+        # A dedupe compara PARAMETROS e nao grava linha nova — logo, nao grava
+        # linhagem. Sem esta adocao o desfecho era o pior possivel: 200 na
+        # resposta, "deu certo" na tela, e o ponto faltando no grafico para
+        # sempre, sem nada explicando por que. Acontecia com quem tivesse rodado
+        # o mesmo orcamento a mao antes de existir a analise.
+        #
+        # `adotar_variacao` recusa quem ja pertence a outra base, e por isso o
+        # `naCurva` volta para o cliente: e a diferenca entre "pronto, olhe o
+        # grafico" e "essa simulacao existe, mas e ponto da curva de outra
+        # rodada" — e so a tela pode dizer isso a quem clicou.
+        na_curva = await controle.adotar_variacao(
+            aberta["run_id"], base_run_id=run_id, fator=float(fator)
+        )
+        resposta.status_code = status.HTTP_200_OK
+        return {
+            "runId": aberta["run_id"],
+            "status": aberta["status"],
+            "jaExistia": True,
+            "naCurva": na_curva,
+        }
+
+    try:
+        await fila.pedir_execucao(aberta["run_id"], unidade_id=unidade_id, usuario=quem.login)
+    except fila.FilaIndisponivel:
+        await controle.marcar(aberta["run_id"], st.Status.ERRO, erro="fila indisponível")
+        raise
+    return {
+        "runId": aberta["run_id"],
+        "status": aberta["status"],
+        "jaExistia": False,
+        "naCurva": True,
+    }
 
 
 @router.post("/runs/{run_id}/reexecutar", status_code=status.HTTP_202_ACCEPTED, response_model=formas.RodadaAceita)

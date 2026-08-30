@@ -44,6 +44,7 @@ FORMAS_DO_CONTRATO = {
     # fatura?"), respondida antes de escolher a sub-bacia. Duas rotas e nao uma
     # com `?cidade=`: a URL da cidade ja e `/cidades/{}`, e o recorte cola nela.
     "GET /runs/{}/explicabilidade",
+    "GET /runs/{}/sensibilidade",
     "GET /runs/{}/cidades/{}/explicabilidade",
     # A LISTA e o CRONOGRAMA vem antes de `/obras/{}` na declaracao, e a ordem e
     # parte do contrato: o FastAPI casa por ordem, e `/obras/{}` engoliria
@@ -58,6 +59,13 @@ FORMAS_DO_CONTRATO = {
     "POST /runs",
     "GET /runs/{}/status",
     "POST /runs/{}/cancelar",
+    # A MESMA SIMULACAO COM O ORCAMENTO ESCALADO — a analise de sensibilidade.
+    # `{"fator": 1.1}` = +10% de CAPEX em cada ano, tudo o mais identico. Clona no
+    # SERVIDOR de proposito: `POST /runs` recebe o corpo do front e o traduz para
+    # as chaves do job, e reconstruir esse corpo a partir dos parametros gravados
+    # poria a traducao inversa no cliente. Idempotente pelo `abrir_rodada`, entao
+    # repetir a varredura nao gasta cluster.
+    "POST /runs/{}/variacao",
     "POST /runs/{}/reexecutar",
     # DEPLOY.md §3 — cadastro. `input.override` ja existe e os PUT estao listados
     # abaixo. NAO ha POST nem DELETE de CTS: colocar e tirar CTS e mudanca de
@@ -143,7 +151,7 @@ def test_nenhum_endpoint_a_mais():
 def test_a_lista_nao_esta_vazia():
     # Guarda contra o teste passar por não encontrar rota nenhuma — se `_expostas`
     # quebrar com uma mudança do FastAPI, os dois testes acima passariam vazios.
-    assert len(_expostas()) == len(FORMAS_DO_CONTRATO) == 40
+    assert len(_expostas()) == len(FORMAS_DO_CONTRATO) == 42
 
 
 @pytest.mark.parametrize("run_id", ["r1' OR 1=1", "../etc", "com espaco", ""])

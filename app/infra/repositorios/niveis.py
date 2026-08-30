@@ -26,6 +26,7 @@ mesmo texto. Está explícito aqui porque parece descuido e não é.
 from typing import Any
 
 from app.config import config
+from app.dominio import teto as teto_dom
 from app.infra import db
 
 #: `otim_obra.componente` guarda o CÓDIGO (`lig`, `rede`, `tro`...), e o contrato
@@ -1233,3 +1234,124 @@ async def obra(run_id: str, obra_id: str) -> dict[str, Any] | None:
             for d in deps
         ],
     }
+
+
+async def candidatas_do_teto(
+    run_id: str,
+) -> tuple[list[teto_dom.Candidata], float, int] | None:
+    """As sub-bacias fora do plano com o que custa trazer cada uma, e o orcamento.
+
+    O CUSTO E NOMINAL (`otim_obra.capex`), e nao valor presente. O teto compara
+    com o ORCAMENTO, que e nominal por ano — misturar as duas reguas daria um
+    numero que parece dinheiro e nao e comparavel com o que a tela chama de
+    orcamento. `pot_vp_capex_solo` existe na tabela e seria a escolha errada aqui
+    exatamente por isso.
+
+    So obras NAO CONSTRUIDAS do proprio no entram: as construidas ja foram pagas
+    pelo plano atual, e cobra-las de novo inflaria o custo — o unico erro que
+    deixaria o teto BAIXO demais, que e o unico que o tornaria mentiroso.
+
+    `None` quando a rodada nao publicou orcamento — sem ele nao ha o que escalar.
+    """
+    meta = await db.buscar_um(
+        f"""SELECT orcamento_total,
+                   -- QUANTOS ANOS O ORCAMENTO COBRE. A tela precisa dele para
+                   -- dizer "R$ 11,0 Mi somados os 2 anos do plano" — sem o
+                   -- numero, "+10% ao ano" ao lado de um valor que e a soma da
+                   -- janela e ambiguo, e a leitura errada erra por um fator
+                   -- igual ao numero de anos.
+                   --
+                   -- Anos com orcamento ZERO nao contam: `orcamento_por_ano`
+                   -- traz o ano-base com 0.0, e chama-lo de ano do plano faria a
+                   -- frase prometer um ano de investimento que nao existe.
+                   -- `jsonb_each` + `jsonb_typeof`, e nao `jsonb_each_text` com
+                   -- cast: `''::numeric` levanta, e um unico ano com valor vazio
+                   -- derrubaria a rota inteira com 500 — o teto sumiria da tela
+                   -- por causa de um campo mal preenchido. Perguntar pelo TIPO
+                   -- antes de converter e a unica forma de o cast nunca falhar.
+                   (SELECT COUNT(*) FROM jsonb_each(
+                              CASE jsonb_typeof(orcamento_por_ano::jsonb)
+                                   WHEN 'object' THEN orcamento_por_ano::jsonb
+                                   ELSE '{{}}'::jsonb END) AS a(ano, valor)
+                     WHERE jsonb_typeof(a.valor) = 'number'
+                       AND (a.valor #>> '{{}}')::numeric > 0) AS anos
+              FROM {_p()}.otim_meta WHERE run_id = $1""",
+        run_id,
+    )
+    if not meta or not meta["orcamento_total"]:
+        return None
+
+    linhas = await db.buscar(
+        f"""SELECT s.sub_bacia,
+                   COALESCE(s.vazao_marginal, 0) AS vazao,
+                   COALESCE((SELECT SUM(o.capex)
+                               FROM {_p()}.otim_obra o
+                              WHERE o.run_id = s.run_id
+                                AND o.no = s.sub_bacia
+                                AND NOT o.construida), 0) AS capex
+              FROM {_p()}.otim_subbacia s
+             WHERE s.run_id = $1 AND NOT s.faturando""",
+        run_id,
+    )
+    candidatas = [
+        teto_dom.Candidata(l["sub_bacia"], float(l["capex"]), float(l["vazao"])) for l in linhas
+    ]
+    return candidatas, float(meta["orcamento_total"]), int(meta["anos"] or 0)
+
+
+async def obras_por_componente(run_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+    """Quantas obras CADA rodada construiu, por componente.
+
+    Uma consulta para todas as rodadas da curva, e nao uma por rodada: sao ate
+    seis (a base e cinco degraus), e seis idas ao banco para somar contagens
+    seria seis vezes o custo pela mesma resposta.
+
+    A regra de "construida" e a MESMA do resto do produto — `construida`,
+    `status <> 'N/A'` e sem responsavel `terceiro%` —, e isso importa mais do que
+    parece: a contagem daqui tem de fechar com `obras_construidas` do cabecalho
+    da rodada. Se as duas divergissem, a tela mostraria "77 obras priorizadas" em
+    cima e uma soma diferente logo abaixo, e nenhuma das duas ganharia a
+    discussao.
+
+    A coluna `obras_construidas` e gravada pelo MOTOR, cujo codigo nao vive neste
+    repositorio — entao a igualdade e verificada, e nao deduzida: conferi as 12
+    rodadas publicadas do banco de desenvolvimento e as tres contagens (com
+    terceiro, sem terceiro, e a do motor) batem em todas. Se um dia divergirem, e
+    aqui que a regra se ajusta.
+
+    Obra de TERCEIRO nao entra, e a razao e de produto antes de ser de
+    consistencia: a pergunta deste quadro e o que o dinheiro A MAIS compra, e
+    obra que outro paga nao responde a ela.
+
+    Componentes com zero obras saem da lista, nao vem com zero: "ETE: 0" ao lado
+    de "ETE (modulo): 23" leria como se ETE fosse um tipo que o plano recusou,
+    quando na verdade e como o motor representa ETE existente contra ETE nova.
+    """
+    if not run_ids:
+        return {}
+    linhas = await db.buscar(
+        f"""SELECT o.run_id, o.componente, COUNT(*) AS construidas
+              FROM {_p()}.otim_obra o
+             WHERE o.run_id = ANY($1::text[])
+               AND o.construida
+               AND {_SO_OBRA}
+               AND LOWER(COALESCE(o.responsavel, '')) NOT LIKE 'terceiro%'
+             GROUP BY 1, 2""",
+        run_ids,
+    )
+    por_run: dict[str, list[dict[str, Any]]] = {r: [] for r in run_ids}
+    for l in linhas:
+        por_run[l["run_id"]].append(
+            {
+                "componente": l["componente"],
+                "nome": NOME_DO_COMPONENTE.get(l["componente"], l["componente"]),
+                "construidas": l["construidas"],
+            }
+        )
+    # ORDEM CANONICA, de montante para jusante — a mesma de `ORDEM_COMPONENTES`.
+    # Ordenar por contagem faria as linhas trocarem de lugar entre um degrau e
+    # outro, e a leitura "o que mudou" viraria "onde foi parar".
+    posicao = {nome: i for i, nome in enumerate(ORDEM_COMPONENTES)}
+    for lista in por_run.values():
+        lista.sort(key=lambda c: (posicao.get(c["nome"], len(posicao)), c["nome"]))
+    return por_run

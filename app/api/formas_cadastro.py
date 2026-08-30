@@ -289,6 +289,19 @@ class RodadaCriada(BaseModel):
     jaExistia: bool
 
 
+class VariacaoCriada(RodadaCriada):
+    """A resposta de `POST /runs/{id}/variacao`.
+
+    Modelo proprio, e nao `RodadaCriada` com um campo a mais: `naCurva` so faz
+    sentido para uma variacao, e po-lo em `POST /runs` obrigaria aquela rota a
+    responder algo verdadeiro sobre uma curva que ela nao conhece.
+    """
+
+    #: `False` quando a rodada devolvida ja e ponto da curva de OUTRA base — ela
+    #: existe e o resultado e valido, mas nao vai aparecer neste grafico.
+    naCurva: bool
+
+
 class RodadaAceita(BaseModel):
     runId: str
     status: str

@@ -160,9 +160,23 @@ class KpisDaRodada(BaseModel):
     subbaciasTotal: int
 
 
+class VariacaoDe(BaseModel):
+    """De qual rodada esta aqui e uma variacao de orcamento."""
+
+    runId: str
+    #: O rotulo da BASE. O rotulo desta rodada diz "+10%" e nao diz de que.
+    nome: str | None
+    degrau: int
+    estimativa: bool
+
+
 class RunMeta(BaseModel):
     runId: str
     nome: str | None
+    #: AUSENTE quando a rodada nao e variacao de ninguem — a maioria. Presente,
+    #: ela e ponto da curva de sensibilidade de outra: a tela nao oferece analisar
+    #: a sensibilidade DELA, e diz de onde ela veio.
+    variacaoDe: VariacaoDe | None = None
     unidadeId: str
     unidadeNome: str
     dataHora: str | None
@@ -337,6 +351,58 @@ class ExplicabilidadeGlobal(BaseModel):
     totalSubbacias: int
     categorias: list[CategoriaDaExplicabilidade]
     elos: list[EloQueTrava]
+
+
+# ===========================================================================
+#  Sensibilidade — a curva e o teto
+# ===========================================================================
+class DegrauDoTeto(BaseModel):
+    degrau: int
+    folga: float
+    subbaciasNoMaximo: int
+    vazaoNoMaximo: float
+
+
+class TetoDeSensibilidade(BaseModel):
+    #: A SOMA DOS ANOS, e nao o valor anual — ver `dominio/teto.py`.
+    orcamentoTotal: float
+    #: Quantos anos tem orcamento maior que zero. A tela usa para dizer sobre
+    #: quantos anos o acrescimo em reais esta somado.
+    anosDoPlano: int
+    subbaciasFora: int
+    subbaciasSemCapexProprio: int
+    capexParaTodas: float
+    vazaoTotalPresa: float
+    degraus: list[DegrauDoTeto]
+
+
+class ObrasDoComponente(BaseModel):
+    componente: str
+    nome: str
+    construidas: int
+
+
+class PontoDaCurva(BaseModel):
+    degrau: int
+    runId: str
+    status: str
+    #: `True` para a estimativa rapida (solver de 60s). A tela DEVE dizer isto:
+    #: e a diferenca entre um numero para orientar e um numero para decidir.
+    estimativa: bool
+    vpl: float | None = None
+    coberturaFimPct: float | None = None
+    metasAtingidas: int | None = None
+    metasTotal: int | None = None
+    capexTotal: float | None = None
+    tempoS: float | None = None
+    #: Vazia enquanto a rodada nao publicou — nao ha plano ainda, e uma lista de
+    #: zeros seria lida como "nao construiu nada".
+    obras: list[ObrasDoComponente] = []
+
+
+class Sensibilidade(BaseModel):
+    teto: TetoDeSensibilidade | None
+    pontos: list[PontoDaCurva]
 
 
 # ===========================================================================

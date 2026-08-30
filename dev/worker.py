@@ -42,6 +42,7 @@ import threading
 import traceback
 import uuid
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, ".")
@@ -136,6 +137,47 @@ def marcar(run_id: str, status: str, erro: str | None = None, progresso: int | N
 #: Preenchido em `main`: um processo por rodada em voo. Global porque o
 #: `run_in_executor` precisa alcançá-lo de dentro de `processar`.
 POOL: concurrent.futures.ProcessPoolExecutor | None = None
+
+#: Quantos processos o pool tem. Guardado porque `_renovar_pool` precisa
+#: reconstruí-lo com o mesmo tamanho que `main` escolheu.
+POOL_TAMANHO = 1
+
+#: Serializa a troca do pool: duas rodadas que quebram juntas trocariam duas
+#: vezes, e a segunda jogaria fora um pool novo e são.
+_TROCA_DE_POOL = asyncio.Lock()
+
+
+async def _renovar_pool(quebrado: concurrent.futures.ProcessPoolExecutor) -> None:
+    """Um `ProcessPoolExecutor` QUEBRADO NÃO SE RECUPERA — troque-o.
+
+    Esta é a diferença entre "uma rodada falhou" e "o executor parou de servir",
+    e ela não aparece em teste nenhum: quando um processo filho morre de morte
+    nativa, o pool inteiro entra em estado quebrado PERMANENTE, e todo
+    `submit` seguinte levanta `BrokenProcessPool` na hora, sem tentar rodar nada.
+
+    O efeito observado foi exatamente esse. Um segfault antigo quebrou o pool, e
+    a partir dali TODA rodada nova morria em um segundo com "o processo desta
+    rodada morreu" — enquanto a batida continuava anunciando o executor vivo e
+    com vaga, porque o executor de fato estava de pé. Quem olhava a tela via
+    rodadas enfileirando e falhando sem explicação, e a conclusão razoável foi
+    que estava tudo travado.
+
+    Trocar o pool devolve o isolamento à sua promessa: um segfault mata AQUELA
+    rodada, e a próxima começa num pool novo. Sem isto, o isolamento só adiava a
+    queda do executor de um crash para zero rodadas úteis depois dele.
+
+    `shutdown(wait=False)` FORA do lock, e depois de já ter publicado o pool
+    novo: o pool quebrado ainda pode ter contabilidade interna a encerrar, e
+    esperar por ela aqui seguraria a próxima rodada por um trabalho que não
+    interessa a ninguém.
+    """
+    global POOL
+    async with _TROCA_DE_POOL:
+        # Outra rodada que quebrou junto já trocou: o pool atual é o novo.
+        if POOL is not quebrado:
+            return
+        POOL = concurrent.futures.ProcessPoolExecutor(max_workers=POOL_TAMANHO)
+    quebrado.shutdown(wait=False)
 
 
 def _carimbar_data_hora(run_id: str) -> None:
@@ -407,6 +449,21 @@ GAP_RELATIVO = 0.02
 GAP_RETORNO = 0.05
 
 
+def _parametros_aceitos(funcao) -> frozenset[str]:
+    """Os nomes que ESTA funcao do motor aceita — `frozenset()` se nao der para ver.
+
+    Conjunto vazio significa "nao sei", e todo chamador trata isso como "nao
+    aceita": e o lado seguro, porque passar a mais mata a rodada na hora e passar
+    a menos cai no default do motor, que e o comportamento anterior.
+    """
+    import inspect
+
+    try:
+        return frozenset(inspect.signature(funcao).parameters)
+    except (TypeError, ValueError):  # builtin/C, sem assinatura introspectavel
+        return frozenset()
+
+
 def _parametros_do_motor(CP) -> frozenset[str]:
     """Que parametros o motor carregado aceita.
 
@@ -418,12 +475,7 @@ def _parametros_do_motor(CP) -> frozenset[str]:
     contrario deixa o remendo por fora ativo sobre um motor que ja faz certo — e
     esse erro e silencioso, que e o pior dos dois.
     """
-    import inspect
-
-    try:
-        return frozenset(inspect.signature(CP.resolver_por_sistema).parameters)
-    except (TypeError, ValueError):  # builtin/C, sem assinatura introspectavel
-        return frozenset()
+    return _parametros_aceitos(CP.resolver_por_sistema)
 
 
 @contextlib.contextmanager
@@ -519,13 +571,42 @@ def executar(run_id: str, tempo: int) -> None:
 
     P.set_engine(M, D)
 
+    # RECORTE RESIDENCIAL: SO PASSA SE O MOTOR CARREGADO ACEITAR.
+    #
+    # Mesma historia das folgas logo acima, e o mesmo remedio: as geracoes do
+    # pacote nao sobem juntas, e passar uma chave que a assinatura nao tem da
+    # `TypeError` que MATA A RODADA. Foi o que aconteceu — toda rodada nova
+    # morria em "unexpected keyword argument 'cobertura_so_residencial'", com um
+    # pacote local anterior a esse parametro.
+    #
+    # A decisao quando o motor nao aceita depende do que foi pedido, e as duas
+    # metades importam:
+    #
+    #   pedido False  omitir. E exatamente o default do motor antigo, entao o
+    #                 resultado e o mesmo e nao ha nada a avisar.
+    #   pedido True   FALHAR, e com a frase inteira. Omitir aqui devolveria um
+    #                 plano calculado sobre a cobertura total dizendo que e so
+    #                 residencial — numero plausivel e errado numa tela de
+    #                 decisao de CAPEX, que e pior do que rodada nenhuma.
+    so_residencial = bool(p.get("COBERTURA_SO_RESIDENCIAL", False))
+    extras: dict[str, Any] = {}
+    if "cobertura_so_residencial" in _parametros_aceitos(M.ler_banco):
+        extras["cobertura_so_residencial"] = so_residencial
+    elif so_residencial:
+        raise RuntimeError(
+            "esta rodada pede cobertura so residencial, e o pacote do otimizador "
+            "carregado nesta maquina nao tem esse parametro (`ler_banco` sem "
+            "`cobertura_so_residencial`). Atualize o pacote ou refaca a rodada sem "
+            "o recorte."
+        )
+
     cen = M.ler_banco(
         R.BANCO,
         unidade=unidade,
         orcamento=orc,
         base_receita=p.get("BASE_RECEITA", "arrecadada"),
         usar_cts=bool(p.get("USAR_CTS", True)),
-        cobertura_so_residencial=bool(p.get("COBERTURA_SO_RESIDENCIAL", False)),
+        **extras,
         curva_adocao=p.get("CURVA_ADOCAO", "scurve"),
         foco_cobertura=float(p.get("FOCO_COBERTURA", 1.0)),
         penalidade_cobertura=p.get("PENALIDADE_COBERTURA", "meta+cobertura"),
@@ -819,7 +900,11 @@ async def processar(msg, tempo: int) -> None:
         # O preço é o custo de subir o processo (no Windows, `spawn`: reimporta o
         # módulo), que some diante de uma rodada de minutos.
         laco = asyncio.get_running_loop()
-        await laco.run_in_executor(POOL, executar, run_id, tempo)
+        # A referência é presa AQUI, e não lida de novo no `except`: entre o
+        # submit e a falha o pool pode já ter sido trocado por uma rodada irmã,
+        # e trocar de novo descartaria um pool são.
+        pool = POOL
+        await laco.run_in_executor(pool, executar, run_id, tempo)
         marcar(run_id, "SUCESSO", progresso=PRONTO)
         _carimbar_data_hora(run_id)
         log(run_id, "SUCESSO")
@@ -829,6 +914,11 @@ async def processar(msg, tempo: int) -> None:
         marcar(run_id, "ERRO", "O processo desta rodada morreu (falha nativa no "
                                "solver ou na materialização).")
         log(run_id, f"ERRO: processo da rodada morreu ({type(e).__name__})")
+        # E o pool inteiro foi junto: sem esta troca, TODA rodada seguinte
+        # falharia na hora com esta mesma mensagem. Ver `_renovar_pool`.
+        if pool is not None:
+            await _renovar_pool(pool)
+            log(run_id, "pool de processos trocado — a próxima rodada começa limpa")
     except Cancelada as c:
         # NAO marca nada: quem escreveu o status novo — a API no cancelamento, o
         # vigia no lease vencido — ja disse o que aconteceu, e sobrescrever aqui
@@ -892,6 +982,8 @@ async def main() -> None:
         print(f"  {presas} rodada(s) presas em RODANDO de um worker anterior -> ERRO")
     print("Ctrl+C encerra.\n")
 
+    global POOL_TAMANHO
+    POOL_TAMANHO = a.paralelo
     POOL = concurrent.futures.ProcessPoolExecutor(max_workers=a.paralelo)
     limite = asyncio.Semaphore(a.paralelo)
     vivos: set[asyncio.Task] = set()
@@ -921,9 +1013,48 @@ async def main() -> None:
                 async with cli.get_queue_receiver(FILA, max_wait_time=5) as rx:
                     espera = 1  # conectou: zera o recuo
                     while True:
-                        for msg in await rx.receive_messages(
-                            max_message_count=10, max_wait_time=5
-                        ):
+                        # A VAGA VEM ANTES DA MENSAGEM.
+                        #
+                        # Este `acquire` é o que faz o worker pegar da fila
+                        # exatamente o que ele consegue começar, e nem uma
+                        # mensagem a mais. Sem ele o laço puxava a cada volta e
+                        # criava tarefas paradas no semáforo: com `--paralelo 1`
+                        # e uma rodada de vinte minutos, o worker acumulava
+                        # mensagens que ele não ia processar tão cedo — com o
+                        # lock de cada uma segurado por um renovador só para
+                        # ficarem esperando.
+                        #
+                        # O estrago não é perder rodada: é ESCONDÊ-LA. Mensagem
+                        # com lock de outro worker não é entregue a mais ninguém,
+                        # então um segundo executor subindo ao lado encontraria a
+                        # fila vazia enquanto este segura o trabalho parado. A
+                        # fila deixa de ser o lugar onde a espera está visível.
+                        #
+                        # Duas versões anteriores erraram por perto: `10` fixo
+                        # (nove esperando com o lock vencendo, e o Service Bus
+                        # reentregando o que nunca começou) e `a.paralelo` sem
+                        # olhar as vagas já ocupadas — que corrigia a primeira
+                        # leva e não a segunda.
+                        await limite.acquire()
+                        try:
+                            recebidas = await rx.receive_messages(
+                                max_message_count=1, max_wait_time=5
+                            )
+                        except BaseException:
+                            # A VAGA NAO PODE VAZAR NUMA QUEDA DE CONEXAO. Com
+                            # `--paralelo 1`, uma vaga perdida e o worker mudo
+                            # para sempre: ele reconecta, volta ao laco, e fica
+                            # esperando um `release` que nunca vem.
+                            limite.release()
+                            raise
+                        if not recebidas:
+                            # Nada na fila: a vaga volta na hora, senão o worker
+                            # se estrangularia sozinho em fila vazia.
+                            limite.release()
+                            await asyncio.sleep(0.5)
+                            continue
+
+                        for msg in recebidas:
                             # COMPLETA NO FIM, e nao no comeco. Enquanto processa,
                             # um renovador segura o lock.
                             #
@@ -943,26 +1074,37 @@ async def main() -> None:
                             # troca nao e mover a linha: e renovar o lock, e so
                             # entao completar.
                             async def tarefa(m=msg):
-                                async with limite:
-                                    renovador = asyncio.create_task(_renovar(rx, m))
-                                    try:
-                                        await processar(m, a.tempo)
-                                    finally:
-                                        renovador.cancel()
-                                    # `processar` NUNCA levanta: ele grava SUCESSO
-                                    # ou ERRO no banco. Chegar aqui significa que a
-                                    # rodada tem desfecho, e completar e correto.
-                                    # Morrer antes daqui deixa o lock expirar, e o
-                                    # Service Bus reentrega (`MaxDeliveryCount: 3`,
-                                    # depois dead-letter).
-                                    try:
-                                        await rx.complete_message(m)
-                                    except Exception as e:  # noqa: BLE001
-                                        # O receptor pode ter sido reciclado por
-                                        # uma queda de conexao. A rodada ja tem
-                                        # desfecho gravado; o guarda em `processar`
-                                        # cuida de uma eventual reentrega.
-                                        log("", f"nao consegui completar a mensagem: {e}")
+                                # A VAGA JA E DESTA TAREFA (o `acquire` do laco
+                                # acima), e por isso aqui e `release` no fim e nao
+                                # `async with`: quem espera pela vaga e o laco que
+                                # RECEBE, e nao a tarefa que ja recebeu. E o que
+                                # garante que nao existe mensagem em maos sem
+                                # execucao correspondente.
+                                #
+                                # O renovador comeca antes de tudo: o lock precisa
+                                # ser segurado desde o instante em que a mensagem
+                                # e recebida, e nao desde o instante em que ela
+                                # comeca a ser processada.
+                                renovador = asyncio.create_task(_renovar(rx, m))
+                                try:
+                                    await processar(m, a.tempo)
+                                finally:
+                                    renovador.cancel()
+                                    limite.release()
+                                # `processar` NUNCA levanta: ele grava SUCESSO
+                                # ou ERRO no banco. Chegar aqui significa que a
+                                # rodada tem desfecho, e completar e correto.
+                                # Morrer antes daqui deixa o lock expirar, e o
+                                # Service Bus reentrega (`MaxDeliveryCount: 3`,
+                                # depois dead-letter).
+                                try:
+                                    await rx.complete_message(m)
+                                except Exception as e:  # noqa: BLE001
+                                    # O receptor pode ter sido reciclado por
+                                    # uma queda de conexao. A rodada ja tem
+                                    # desfecho gravado; o guarda em `processar`
+                                    # cuida de uma eventual reentrega.
+                                    log("", f"nao consegui completar a mensagem: {e}")
 
                             tk = asyncio.create_task(tarefa())
                             vivos.add(tk)

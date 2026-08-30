@@ -127,6 +127,11 @@ _EXIGIDO = [
     # nesta tabela em toda listagem, para trazer a anotacao junto da rodada. Sem
     # ela, a lista inteira responde 500 — nao e o comentario que some, e a tela.
     ("controle", "run_comentario", None, "010_run_comentario.sql"),
+    # `GET /runs` filtra por `estimativa` em TODA listagem — a coluna e o que
+    # mantem a estimativa rapida fora do historico. Sem ela a lista responde 500,
+    # e com um WHERE removido "por seguranca" ela responderia coisa pior: as
+    # estimativas apareceriam como se fossem simulacoes.
+    ("controle", "run_request", "estimativa", "013_estimativa_de_sensibilidade.sql"),
     # As quatro fichas de cadastro, uma linha cada: a migracao acrescenta as duas
     # colunas nas quatro tabelas, e aplicar em tres e o engano provavel. Basta
     # conferir `atualizado_por` — as duas entram no mesmo ALTER, entao uma sem a
