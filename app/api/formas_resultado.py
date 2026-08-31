@@ -271,8 +271,6 @@ class CidadeLinha(BaseModel):
     metasAtingidas: int
     metasTotal: int
     sistemas: int
-    cobertura: list[PontoDeCobertura]
-    metas: list[MetaDeCobertura]
 
 
 class FaixaDeParidade(BaseModel):

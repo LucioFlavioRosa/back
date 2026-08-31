@@ -224,6 +224,19 @@ async def ebitda(run_id: str, cidade: str | None = None) -> dict[str, Any]:
 
 
 async def cidades(run_id: str) -> list[dict[str, Any]]:
+    """A lista de cidades da rodada — uma linha por cidade, sem series.
+
+    SEM `cobertura` e `metas`, e a diferenca e grande: elas vinham em duas
+    consultas a mais e eram 89% do payload (39 KB de 44 KB numa unidade de 27
+    cidades). Existiam para o cartao-grafico do nivel 1 desenhar o par cobertura
+    x meta de cada cidade sem abrir N requisicoes — e aquela grade de cartoes
+    saiu da tela.
+
+    Continuar mandando-as seria pagar duas consultas e 39 KB, em TODA abertura de
+    qualquer nivel do resultado (a arvore de escopo tambem chama esta lista),
+    para dado que ninguem le. Quem precisa da serie de uma cidade e o nivel 2, e
+    ele a busca no proprio payload de detalhe.
+    """
     linhas = await db.buscar(
         f"""SELECT c.cidade, c.vpl, c.capex_total, c.cobertura_final_pct,
                    c.metas_atingidas, c.metas_total,
@@ -233,31 +246,6 @@ async def cidades(run_id: str) -> list[dict[str, Any]]:
              WHERE c.run_id = $1 ORDER BY c.vpl DESC""",
         run_id,
     )
-
-    # A SERIE DE COBERTURA E AS METAS VEM JUNTO, em duas consultas para a lista
-    # inteira. O cartao-grafico do nivel 1 desenha o par cobertura x meta de cada
-    # cidade; buscar por cidade seria N+1 — 141 idas ao banco numa unidade grande,
-    # e o front teria de abrir 141 requisicoes para montar uma grade de cartoes.
-    cobertura = await db.buscar(
-        f"""SELECT cidade, ano, cobertura_pct FROM {casc.esquema()}.otim_cobertura
-             WHERE run_id = $1 ORDER BY cidade, ano""",
-        run_id,
-    )
-    metas = await db.buscar(
-        f"""SELECT cidade, ano, pct_alvo, cobertura_ligacoes, alvo_ligacoes,
-                   atingida, dentro_janela_capex
-              FROM {casc.esquema()}.otim_meta_cobertura
-             WHERE run_id = $1 ORDER BY cidade, ano""",
-        run_id,
-    )
-    por_cidade_cobertura: dict[str, list[dict[str, Any]]] = {}
-    for c in cobertura:
-        por_cidade_cobertura.setdefault(c["cidade"], []).append(
-            {"ano": c["ano"], "coberturaPct": c["cobertura_pct"]}
-        )
-    por_cidade_metas: dict[str, list[dict[str, Any]]] = {}
-    for m in metas:
-        por_cidade_metas.setdefault(m["cidade"], []).append(casc.meta_de_cobertura(m))
 
     return [
         {
@@ -269,10 +257,6 @@ async def cidades(run_id: str) -> list[dict[str, Any]]:
             "metasAtingidas": l["metas_atingidas"],
             "metasTotal": l["metas_total"],
             "sistemas": l["sistemas"],
-            # Lista vazia, e nao ausencia: a cidade sem serie publicada existe, e o
-            # front distingue "nao tem curva" de "campo que nao veio".
-            "cobertura": por_cidade_cobertura.get(l["cidade"], []),
-            "metas": por_cidade_metas.get(l["cidade"], []),
         }
         for l in linhas
     ]
