@@ -6,6 +6,15 @@ caminho termina na ETE". Quem os traduz em status HTTP é `app/api/erros.py`;
 quem os levanta é a escrita; quem decide que existem é o domínio.
 """
 
+#: A INTERFACE PÚBLICA deste módulo. Tudo o que não está aqui é implementação,
+#: e pode mudar sem aviso — a lista é o contrato com quem importa.
+__all__ = [
+    "FichaIncompleta",
+    "ValorInvalido",
+    "FichaDeOutraUnidade",
+    "TopologiaInvalida",
+]
+
 class FichaIncompleta(ValueError):
     """O corpo nao trouxe a ficha inteira — 422, com os campos que faltaram.
 

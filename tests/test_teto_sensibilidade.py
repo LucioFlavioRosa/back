@@ -8,7 +8,14 @@ roda a simulação para descobrir que o aviso estava errado.
 
 import pytest
 
-from app.dominio.teto import Candidata, DEGRAUS, teto
+from app.dominio.teto import (
+    Candidata,
+    DEGRAUS,
+    FaixaInvalida,
+    MAIOR_DEGRAU,
+    pontos_da_faixa,
+    teto,
+)
 
 
 def c(nome: str, capex: float, vazao: float) -> Candidata:
@@ -104,3 +111,70 @@ def test_folga_e_o_dinheiro_a_mais_e_nao_o_orcamento_novo():
     # comprar o plano inteiro de novo.
     r = teto([c("a", 1, 1)], ORCAMENTO, [10, 50])
     assert [d["folga"] for d in r["degraus"]] == [100.0, 500.0]
+
+
+class TestOsPontosDaFaixa:
+    """A faixa é de quem analisa — "quanto a mais é plausível" é pergunta de
+    negócio, e muda por unidade: uma concessão em fim de ciclo discute +5% a
+    +15%, e não +10% a +50%.
+    """
+
+    def test_as_duas_pontas_sempre_entram(self):
+        # São elas que a pessoa escolheu; os intermediários existem para mostrar
+        # o que acontece no meio. Uma varredura que não passasse pelos extremos
+        # responderia outra pergunta.
+        for quantos in range(2, 6):
+            p = pontos_da_faixa(10, 50, quantos)
+            assert p[0] == 10 and p[-1] == 50
+
+    def test_dois_pontos_sao_so_as_pontas(self):
+        assert pontos_da_faixa(10, 50, 2) == [10, 50]
+
+    def test_os_intermediarios_sao_igualmente_espacados(self):
+        assert pontos_da_faixa(10, 50, 5) == [10, 20, 30, 40, 50]
+        assert pontos_da_faixa(10, 50, 3) == [10, 30, 50]
+        assert pontos_da_faixa(5, 20, 4) == [5, 10, 15, 20]
+
+    def test_faixa_estreita_rende_menos_pontos_que_os_pedidos(self):
+        # De 10 a 12 em cinco daria 10, 10.5, 11, 11.5, 12 — sobram três
+        # inteiros. Rodar duas vezes o mesmo orçamento gastaria cluster para
+        # desenhar o mesmo ponto duas vezes.
+        assert pontos_da_faixa(10, 12, 5) == [10, 11, 12]
+
+    def test_o_meio_exato_arredonda_para_cima_como_no_javascript(self):
+        # De 1 a 100 em cinco pontos cai em 50.5. O `round` do Python arredonda
+        # para o PAR (50) e o `Math.round` do JavaScript para CIMA (51) — e uma
+        # divergência de um ponto entre servidor e tela faria o teto falar de um
+        # degrau que ninguém vai rodar.
+        assert pontos_da_faixa(1, 100, 5) == [1, 26, 51, 75, 100]
+
+    def test_sai_sempre_em_ordem_crescente(self):
+        # A ordem é a da leitura da curva.
+        for a, b, n in [(10, 50, 5), (1, 100, 5), (7, 9, 4)]:
+            p = pontos_da_faixa(a, b, n)
+            assert p == sorted(p)
+
+    @pytest.mark.parametrize("quantos", [0, 1, 6, 10])
+    def test_recusa_menos_de_dois_e_mais_de_cinco(self, quantos):
+        # Dois é o mínimo que desenha uma reta; cinco é onde o custo deixa de se
+        # pagar em leitura.
+        with pytest.raises(FaixaInvalida):
+            pontos_da_faixa(10, 50, quantos)
+
+    def test_recusa_faixa_que_nao_sobe(self):
+        with pytest.raises(FaixaInvalida):
+            pontos_da_faixa(50, 50, 3)
+        with pytest.raises(FaixaInvalida):
+            pontos_da_faixa(50, 10, 3)
+
+    def test_recusa_degrau_nao_positivo(self):
+        # Zero é a rodada base, e não um degrau. Negativo seria outra pergunta —
+        # "e se eu investir menos" —, que esta análise não responde.
+        with pytest.raises(FaixaInvalida):
+            pontos_da_faixa(0, 50, 3)
+        with pytest.raises(FaixaInvalida):
+            pontos_da_faixa(-10, 50, 3)
+
+    def test_recusa_acima_do_maior_degrau(self):
+        with pytest.raises(FaixaInvalida):
+            pontos_da_faixa(10, MAIOR_DEGRAU + 1, 3)

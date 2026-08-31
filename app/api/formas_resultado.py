@@ -30,7 +30,8 @@ lista de chave e valor.
 
 ## `| None` é parte do contrato, não descuido
 
-A regra do serviço é que `null` significa "não existe", nunca 0 (`niveis.py`).
+A regra do serviço é que `null` significa "não existe", nunca 0
+(`infra/repositorios/cascata.py`).
 Um campo opcional aqui é afirmação: ocupação de ETE com capacidade zero é `null`
 porque a conta não existe, e um `0.0` afirmaria ETE vazia.
 """
@@ -395,6 +396,9 @@ class PontoDaCurva(BaseModel):
     metasTotal: int | None = None
     capexTotal: float | None = None
     tempoS: float | None = None
+    #: O motivo da falha, quando `status` e ERRO. A tela mostra a frase inteira:
+    #: ela costuma dizer o que fazer ("tente com MAX_TIME_S maior").
+    erro: str | None = None
     #: Vazia enquanto a rodada nao publicou — nao ha plano ainda, e uma lista de
     #: zeros seria lida como "nao construiu nada".
     obras: list[ObrasDoComponente] = []

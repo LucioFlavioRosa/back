@@ -11,8 +11,11 @@ A rodada que a pessoa manda rodar é uma simulação normal: `montar_params` fix
 
 A ANÁLISE dela é outra coisa. São cinco variações de +10% a +50% cujo trabalho é
 mostrar a INCLINAÇÃO da curva, e a inclinação aparece muito antes da prova de
-otimalidade. Por isso o modo `rapido` põe `MAX_TIME_S = 60`: mesma otimização,
+otimalidade. Por isso o modo `rapido` corta o tempo de solver: mesma otimização,
 mesmos dados, mesmas restrições, menos relógio.
+
+QUANTO MENOS DEPENDE DO TAMANHO DO MODELO, e a primeira versão errou nisso —
+dava 60s a todas as unidades. Ver `segundos_da_estimativa`.
 
 `MAX_TIME_S` entra nos `params`, e não numa coluna à parte — de propósito. O
 digest da deduplicação é sobre `params`, então a estimativa de 60s e a simulação
@@ -27,16 +30,82 @@ formas de chegar ao mesmo orçamento deixariam de deduplicar entre si — a mesm
 análise pedida duas vezes gastaria cluster duas vezes.
 """
 
+#: A INTERFACE PÚBLICA deste módulo. Tudo o que não está aqui é implementação,
+#: e pode mudar sem aviso — a lista é o contrato com quem importa.
+__all__ = [
+    "SEGUNDOS_MINIMOS_DA_ESTIMATIVA",
+    "SEGUNDOS_MAXIMOS_DA_ESTIMATIVA",
+    "COLUNAS_POR_SEGUNDO",
+    "segundos_da_estimativa",
+    "Modo",
+    "MODOS",
+    "params_da_variacao",
+]
+
 from typing import Any, Literal
 
 from app.dominio.parametros import ParametrosInvalidos
 
-#: O teto de solver da ESTIMATIVA, em segundos, contra os 1000s de uma simulação
-#: (ver `dominio/parametros.py`). Não é um número afinado: é a ordem de grandeza
-#: que separa "responde enquanto a pessoa olha a tela" de "responde depois que
-#: ela foi fazer outra coisa". O executor local ainda o limita pelo `--tempo`
-#: dele, então 60 é um teto, não uma promessa de gastar 60.
-SEGUNDOS_DA_ESTIMATIVA = 60
+#: O piso do teto de solver da estimativa, em segundos.
+#:
+#: Abaixo disto não vale chamar de execução: o motor reparte `max_time_s * 1.35`
+#: entre três fases e pula a última quando sobram menos de 5s.
+SEGUNDOS_MINIMOS_DA_ESTIMATIVA = 60
+
+#: O TETO DA ESTIMATIVA, em segundos. Uma simulação normal usa 1000s
+#: (`montar_params`); a estimativa para em 500 por duas razões medidas na uA3, a
+#: maior unidade:
+#:
+#:   - 500s BASTA. Rodou ÓTIMO, obrig 126/126, em 11m57s no total.
+#:   - abaixo disso não fica mais rápido. Medido: com 180s a MESMA rodada levou
+#:     16m14s — quatro minutos A MAIS. `MAX_TIME_S` não é o relógio da rodada, é
+#:     um teto POR SOLVE, aplicado em frações (0.35×, 0.4×, 0.6×, 1.0×) a vários
+#:     solvers dentro de `resolver_por_sistema`, mais 5s por sistema na geração
+#:     de colunas. Cada um para antes do teto quando prova o ótimo, então o total
+#:     é a soma de muitos solves: cortar o teto de cada um muda o caminho de
+#:     busca, e não encurta a soma.
+#:
+#: Acima de 500 a estimativa deixaria de se distinguir da simulação sem ganhar
+#: nada — e o resto do tempo da uA3 (3m23s) é materialização, que nenhum ajuste
+#: de solver toca.
+SEGUNDOS_MAXIMOS_DA_ESTIMATIVA = 500
+
+#: COLUNAS DE MODELO POR SEGUNDO DE SOLVER. É a constante que transforma o
+#: tamanho do problema em tempo, e cada dígito dela veio de medição:
+#:
+#:   unidade  obras × anos   teto    desfecho
+#:   uB2        4.037 × 3 =  12.111   60s   ok (5 estimativas seguidas)
+#:   uA2        2.518 × 10 = 25.180   60s   ok
+#:   uA3        8.079 × 9 =  72.711   60s   FALHOU DUAS VEZES
+#:   uA3                              500s  ok — 11m57s no total (medido 30/08)
+#:   uA3                              180s  ok — 16m14s, QUATRO MINUTOS A MAIS
+#:
+#: 60s FIXO ERA O DEFEITO. Dar o mesmo orçamento de relógio a um modelo seis
+#: vezes maior não é "rápido", é insuficiente — e insuficiente no motor não
+#: devolve um plano pior, MATA a rodada: uma vez com `KeyError` no reparo do teto
+#: anual (a seleção sai incompleta), outra com falha nativa do processo. As duas
+#: aconteceram na uA3 a 60s, nesta ordem, no mesmo dia.
+#:
+#: 145 é o que faz a maior unidade medida receber os ~500s que se SABE que
+#: bastam. É calibração sobre a ponta difícil, não uma lei — e é justamente por
+#: isso que a tela mantém a saída de escalar para a simulação completa quando
+#: mesmo assim falhar.
+COLUNAS_POR_SEGUNDO = 145
+
+
+def segundos_da_estimativa(colunas: int | None) -> int:
+    """Quanto tempo de solver a estimativa deste modelo recebe.
+
+    `colunas` é `obras_total × anos_capex` da rodada base — a medida mais direta
+    do tamanho do MILP que o front já tem no cabeçalho da rodada. `None` (rodada
+    que não publicou esses números) cai no piso, que é o comportamento anterior.
+    """
+    if not colunas or colunas <= 0:
+        return SEGUNDOS_MINIMOS_DA_ESTIMATIVA
+    proporcional = round(colunas / COLUNAS_POR_SEGUNDO)
+    return max(
+        SEGUNDOS_MINIMOS_DA_ESTIMATIVA, min(SEGUNDOS_MAXIMOS_DA_ESTIMATIVA, proporcional)
+    )
 
 Modo = Literal["rapido", "completo"]
 
@@ -50,6 +119,7 @@ def params_da_variacao(
     usuario: str,
     fator: float,
     modo: Modo,
+    colunas: int | None = None,
 ) -> dict[str, Any]:
     """Os parâmetros da variação, a partir dos da rodada de origem.
 
@@ -72,7 +142,7 @@ def params_da_variacao(
 
     params = {**base, "UNIDADE": unidade_id, "USUARIO": usuario}
     if modo == "rapido":
-        params["MAX_TIME_S"] = SEGUNDOS_DA_ESTIMATIVA
+        params["MAX_TIME_S"] = segundos_da_estimativa(colunas)
 
     orcamento = params.get("ORCAMENTO")
     if isinstance(orcamento, dict):

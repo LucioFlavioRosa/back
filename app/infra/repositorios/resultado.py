@@ -324,6 +324,25 @@ def _pct(parte: float | None, total: float | None) -> float | None:
     return round(parte / total * 100, 1)
 
 
+async def tamanho_do_modelo(run_id: str) -> int | None:
+    """`obras_total × anos_capex` da rodada — o tamanho do MILP, em colunas.
+
+    E a medida que decide quanto tempo de solver uma ESTIMATIVA daquela rodada
+    precisa. Uma consulta minima e propria, e nao `meta()`: quem pergunta isto
+    esta abrindo uma variacao, e nao precisa dos trinta campos do cabecalho.
+
+    `None` para rodada sem os dois numeros publicados — e o chamador cai no piso,
+    que e o comportamento de antes.
+    """
+    linha = await db.buscar_um(
+        f"""SELECT obras_total, anos_capex FROM {_p()}.otim_meta WHERE run_id = $1""",
+        run_id,
+    )
+    if not linha or not linha["obras_total"] or not linha["anos_capex"]:
+        return None
+    return int(linha["obras_total"]) * int(linha["anos_capex"])
+
+
 async def meta(run_id: str) -> dict[str, Any] | None:
     linha = await db.buscar_um(
         f"""SELECT m.*, u.unidade_id,

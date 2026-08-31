@@ -37,6 +37,16 @@ como chave desconhecida — e a rodada iria a ERRO com uma mensagem sobre `param
 sem relacao visivel com o botao que o usuario apertou.
 """
 
+#: A INTERFACE PÚBLICA deste módulo. Tudo o que não está aqui é implementação,
+#: e pode mudar sem aviso — a lista é o contrato com quem importa.
+__all__ = [
+    "CHAVES_DO_JOB",
+    "CHAVES_ACEITAS",
+    "ParametrosInvalidos",
+    "montar_params",
+    "mes_ano",
+]
+
 from typing import Any
 
 #: DE EXECUCAO, e nao do pedido — nao vao para o `ler_banco`, ficam com o job.

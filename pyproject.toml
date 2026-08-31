@@ -1,0 +1,57 @@
+# Metadados e configuração do projeto, num lugar só.
+#
+# Antes havia `requirements.txt` e `pytest.ini` e mais nada: o projeto rodava
+# porque o processo começa na raiz e o diretório corrente entra no `sys.path`.
+# Funciona, e esconde a estrutura de quem chega — não havia arquivo nenhum
+# dizendo o que é o pacote, o que ele depende e como se testa.
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "otimizador-backend"
+version = "0.1.0"
+description = "Serviço do Otimizador de CAPEX — cadastro, simulação e resultados"
+requires-python = ">=3.12"
+
+# AS DEPENDÊNCIAS SÃO LIDAS DE `requirements.txt`, e não copiadas para cá.
+#
+# `dynamic` em vez de uma lista literal porque o `Dockerfile` instala a partir
+# daquele arquivo, numa camada própria que só se refaz quando ele muda. Duas
+# listas divergiriam, e a que a imagem usa é a dele — a divergência apareceria
+# em produção, não aqui.
+#
+# A primeira versão disto tinha `dependencies = []`, e era pior que não ter o
+# arquivo: `pip install -e .` num ambiente limpo instalava o pacote SEM fastapi,
+# uvicorn ou asyncpg, e o erro só apareceria no primeiro import.
+dynamic = ["dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+[tool.setuptools]
+# Só `app`. `dev/` são ferramentas de desenvolvimento e `testes_de_integracao/`
+# exige serviço de pé — nenhum dos dois é o serviço.
+packages = ["app", "app.api", "app.dominio", "app.infra", "app.infra.repositorios"]
+
+# `pip install -e .` é OPCIONAL e não muda como nada roda hoje.
+#
+# Ele torna `import app.*` possível de qualquer diretório, o que hoje depende de
+# começar na raiz. O `Dockerfile` não precisa dele (`WORKDIR /app` + `COPY app`
+# já resolvem) e o executor local (`dev/worker.py`) segue com o `sys.path` que
+# ele mesmo monta — de propósito: ele também precisa achar o pacote do motor,
+# que NÃO é instalável e não é nosso, então a linha continuaria lá de qualquer
+# forma. Trocar o jeito de o worker achar o `app` por um passo de instalação
+# acrescentaria uma pré-condição a um processo que já quebrou por ambiente duas
+# vezes hoje, sem eliminar a manipulação de caminho que o motivou.
+
+[tool.pytest.ini_options]
+# Veio do `pytest.ini`, que deixou de existir.
+#
+# `testpaths = tests` é o que mantém `testes_de_integracao/` FORA do `pytest`.
+# Aqueles arquivos também começam com `test_`, e sem este recorte um
+# `python -m pytest` sem banco tentaria rodá-los e falharia por conexão — um
+# vermelho que não é regressão nenhuma.
+testpaths = ["tests"]
+addopts = "-ra -q"

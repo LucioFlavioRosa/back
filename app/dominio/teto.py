@@ -50,16 +50,98 @@ Ela continua reportada à parte, em `subbaciasSemCapexProprio`, porque a leitura
 precisa mexer em precedência ou capacidade, não no orçamento.
 """
 
+#: A INTERFACE PÚBLICA deste módulo. Tudo o que não está aqui é implementação,
+#: e pode mudar sem aviso — a lista é o contrato com quem importa.
+__all__ = [
+    "DEGRAUS",
+    "MINIMO_DE_PONTOS",
+    "MAXIMO_DE_PONTOS",
+    "MAIOR_DEGRAU",
+    "FaixaInvalida",
+    "pontos_da_faixa",
+    "Candidata",
+    "teto",
+]
+
+import math
 from typing import Any
 
-#: Os degraus da curva, em % A MAIS de CAPEX por ano.
+#: A faixa PADRAO da curva, em % A MAIS de CAPEX por ano — usada quando quem
+#: pergunta nao escolhe outra.
 #:
-#: Cinco, e nao uma escala continua, porque cada ponto pedido custa uma execucao
-#: do solver — a granularidade fina nao seria mais informacao, seria mais espera.
-#: Param aos 50% porque acima disso a pergunta deixa de ser sensibilidade e vira
-#: outro plano: o orcamento nao e um dial que a operacao gira, e uma curva que
-#: sugere +200% convida a uma leitura que a realidade nao autoriza.
+#: Nao e mais a unica: a faixa e os pontos sao de quem analisa, porque "quanto a
+#: mais e plausivel" e pergunta de negocio e muda por unidade — uma concessao em
+#: fim de ciclo discute +5% a +15%, e nao +10% a +50%.
+#:
+#: O que continua fixo e o LIMITE de pontos, e a razao e o custo: cada ponto e
+#: uma execucao de solver, e granularidade fina nao seria mais informacao, seria
+#: mais espera. Ver `pontos_da_faixa`.
 DEGRAUS = (10, 20, 30, 40, 50)
+
+#: Quantos pontos uma varredura pode ter. Dois e o minimo que desenha uma reta;
+#: cinco e onde o custo (cinco execucoes) deixa de se pagar em leitura.
+MINIMO_DE_PONTOS = 2
+MAXIMO_DE_PONTOS = 5
+
+#: O maior degrau aceito. Acima disso a pergunta deixa de ser sensibilidade e
+#: vira outro plano: o orcamento nao e um dial que a operacao gira, e uma curva
+#: que sugere +500% convida a uma leitura que a realidade nao autoriza.
+MAIOR_DEGRAU = 200
+
+
+class FaixaInvalida(ValueError):
+    """A faixa pedida nao descreve uma varredura — vira 422 com a mensagem."""
+
+
+def pontos_da_faixa(inicio: int, fim: int, quantos: int) -> list[int]:
+    """Os degraus de uma varredura: `quantos` pontos de `inicio` a `fim`.
+
+    As duas pontas SEMPRE entram — sao elas que a pessoa escolheu, e os
+    intermediarios existem para mostrar o que acontece no meio. Uma varredura que
+    nao passasse pelos extremos responderia outra pergunta.
+
+    ## Inteiros, e o descarte de repetidos
+
+    O degrau e a IDENTIDADE do ponto na curva: e por ele que a tela casa a rodada
+    que voltou com a coluna do grafico. Fracionario, essa identidade passaria a
+    depender de dois arredondamentos concordarem — o do servidor ao ler o fator
+    gravado, e o do cliente ao planejar o ponto —, e um centesimo de diferenca
+    faria o ponto sumir do grafico com a rodada pronta no banco.
+
+    O preco e faixa estreita render menos pontos que os pedidos: de 10 a 12 em
+    cinco daria 10, 10.5, 11, 11.5, 12, e sobram tres inteiros. Devolver tres e
+    o certo — rodar duas vezes o mesmo orcamento gastaria cluster para desenhar o
+    mesmo ponto duas vezes. Quem chama diz na tela quantos vao rodar de verdade.
+    """
+    if quantos < MINIMO_DE_PONTOS or quantos > MAXIMO_DE_PONTOS:
+        raise FaixaInvalida(
+            f"A análise tem de ter entre {MINIMO_DE_PONTOS} e {MAXIMO_DE_PONTOS} pontos."
+        )
+    if inicio < 1 or fim < 1:
+        raise FaixaInvalida("Os degraus são acréscimos de CAPEX: precisam ser maiores que zero.")
+    if fim <= inicio:
+        raise FaixaInvalida("O fim da faixa precisa ser maior que o início.")
+    if fim > MAIOR_DEGRAU:
+        raise FaixaInvalida(f"O maior acréscimo aceito é {MAIOR_DEGRAU}%.")
+
+    # `floor(x + 0.5)`, E NAO `round`. Os dois so discordam no meio exato — e o
+    # meio exato acontece: de 1 a 100 em cinco pontos cai em 50.5. Ali o `round`
+    # do Python arredonda PARA O PAR (50) e o `Math.round` do JavaScript
+    # arredonda PARA CIMA (51).
+    #
+    # Uma divergencia de um ponto entre servidor e tela nao e cosmetica: o degrau
+    # e a IDENTIDADE do ponto na curva. O teto viria calculado para +50% e a tela
+    # dispararia +51%, e o quadro de teto passaria a falar de um degrau que
+    # ninguem vai rodar — com os dois numeros plausiveis e nada denunciando.
+    #
+    # Meio-para-cima e a regra dos dois lados, porque e a que o JavaScript nao
+    # deixa escolher. Ver `pontosDaFaixa` no front, e o teste que compara as
+    # duas nos mesmos casos.
+    passo = (fim - inicio) / (quantos - 1)
+    brutos = [math.floor(inicio + passo * i + 0.5) for i in range(quantos)]
+    # `dict.fromkeys` em vez de `set`: preserva a ordem crescente que o `round`
+    # já produziu, e a ordem é a da leitura da curva.
+    return list(dict.fromkeys(brutos))
 
 
 class Candidata:

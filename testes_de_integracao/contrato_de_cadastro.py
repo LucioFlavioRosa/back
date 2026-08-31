@@ -1,6 +1,6 @@
 """Os payloads do CADASTRO contra os tipos do front, campo a campo.
 
-`dev/formas.py` fazia isso só para os endpoints de RESULTADO. Foi essa lacuna que
+`contrato_de_resultado.py` fazia isso só para os endpoints de RESULTADO. Foi essa lacuna que
 deixou passar dois defeitos que derrubam a tela inteira, os dois achados por gente
 usando o produto e não por teste:
 
@@ -157,4 +157,13 @@ async def main():
                all({"tipo", "id", "detalhe"} <= set(x) for x in d.get("inconsistencias", [])),
                "falta tipo/id/detalhe")
     print("\nFALHAS:", f or "nenhuma"); raise SystemExit(1 if f else 0)
-asyncio.run(main())
+
+
+# RODA COMO SCRIPT, e só como script.
+#
+# Sem este guarda, importar o arquivo — o que o pytest faz ao COLETAR —
+# dispara a bateria inteira contra a API e termina o processo num
+# `SystemExit`. Eles não são testes de pytest: são programas que falam com
+# um serviço de pé.
+if __name__ == "__main__":
+    asyncio.run(main())

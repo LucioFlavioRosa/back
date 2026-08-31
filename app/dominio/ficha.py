@@ -9,6 +9,18 @@ honraria o contrato apagando dado por causa de bug de cliente).
 gravado discorda da conta. Deriva aqui, e não no SQL, porque é regra.
 """
 
+#: A INTERFACE PÚBLICA deste módulo. Tudo o que não está aqui é implementação,
+#: e pode mudar sem aviso — a lista é o contrato com quem importa.
+__all__ = [
+    "OBRA",
+    "ETE",
+    "ETE_NUM",
+    "capex",
+    "valor_de_obra",
+    "obras_da_ficha",
+    "exigir_ficha_inteira",
+]
+
 from typing import Any
 
 from app.dominio.campos import CAMPOS_DB, CAMPOS_PARAMS

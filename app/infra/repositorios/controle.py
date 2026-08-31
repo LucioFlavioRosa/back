@@ -406,6 +406,14 @@ async def varredura(run_id: str) -> list[dict[str, Any]]:
     linhas = await db.buscar(
         f"""SELECT r.run_id, r.variacao_fator, r.estimativa, r.rotulo,
                    s.status, s.progresso,
+                   -- O MOTIVO DA FALHA VIAJA COM O PONTO.
+                   --
+                   -- Sem ele o degrau aparecia como "erro" e mais nada, e quem
+                   -- olhava não tinha como saber se valia tentar de novo, mudar
+                   -- de modo ou desistir. A resposta estava gravada e a tela não
+                   -- a pedia — o que transforma uma explicação em pergunta para
+                   -- outra pessoa.
+                   s.erro,
                    m.vpl, m.cobertura_final_pct, m.metas_total, m.metas_nao_atingidas,
                    m.capex_total, m.orcamento_total, m.tempo_s, m.milp_status
               FROM {_c()}.run_request r

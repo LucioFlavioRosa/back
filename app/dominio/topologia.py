@@ -21,6 +21,16 @@ trecho até 200 vezes e infla os requisitos. Nada disso aparece no resultado com
 defeito, e é por isso que a recusa é na gravação.
 """
 
+#: A INTERFACE PÚBLICA deste módulo. Tudo o que não está aqui é implementação,
+#: e pode mudar sem aviso — a lista é o contrato com quem importa.
+__all__ = [
+    "id_ou_nada",
+    "ciclo_ao_ligar",
+    "voltas_do_sistema",
+    "problemas_do_sistema",
+    "pedido_do_corpo",
+]
+
 from typing import Any
 
 from app.dominio.erros import FichaIncompleta, TopologiaInvalida

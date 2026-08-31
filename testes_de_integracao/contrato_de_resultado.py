@@ -5,7 +5,7 @@ A rodada e os ids são DESCOBERTOS pela própria API, e não fixados: `run_teste
 `dev/rodar_simulacao_real.py` este teste quebrava com KeyError — parecendo
 regressão do serviço quando era o teste olhando para dado que não está mais lá.
 
-O par de `dev/formas_cadastro.py`, que faz o mesmo do lado do cadastro.
+O par de `contrato_de_cadastro.py`, que faz o mesmo do lado do cadastro.
 """
 
 import asyncio
@@ -133,4 +133,10 @@ async def main() -> None:
     raise SystemExit(1 if falhas else 0)
 
 
-asyncio.run(main())
+# RODA COMO SCRIPT, e só como script.
+#
+# Sem este guarda, importar o arquivo — o que o pytest faz ao COLETAR — dispara
+# a bateria inteira contra a API e termina o processo num `SystemExit`. Eles não
+# são testes de pytest: são programas que falam com um serviço de pé.
+if __name__ == "__main__":
+    asyncio.run(main())

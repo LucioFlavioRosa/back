@@ -18,7 +18,12 @@ O que erraria em silêncio, e é por isso que cada um destes existe:
 import pytest
 
 from app.dominio.parametros import ParametrosInvalidos, montar_params
-from app.dominio.variacao import SEGUNDOS_DA_ESTIMATIVA, params_da_variacao
+from app.dominio.variacao import (
+    SEGUNDOS_MAXIMOS_DA_ESTIMATIVA,
+    SEGUNDOS_MINIMOS_DA_ESTIMATIVA,
+    params_da_variacao,
+    segundos_da_estimativa,
+)
 
 BASE = {
     "ORCAMENTO": {"2027": 60_000_000.0, "2028": 50_000_700.0},
@@ -27,13 +32,14 @@ BASE = {
 }
 
 
-def variar(fator=1.1, modo="rapido", base=None):
+def variar(fator=1.1, modo="rapido", base=None, colunas=None):
     return params_da_variacao(
         base if base is not None else BASE,
         unidade_id="uB2",
         usuario="lucio",
         fator=fator,
         modo=modo,
+        colunas=colunas,
     )
 
 
@@ -49,8 +55,8 @@ class TestOsDoisModos:
         # E a estimativa é MENOR que ela — a ordem entre as duas é o contrato.
         assert variar(modo="rapido")["MAX_TIME_S"] < padrao["MAX_TIME_S"]
 
-    def test_a_estimativa_corta_o_solver_para_60s(self):
-        assert variar(modo="rapido")["MAX_TIME_S"] == SEGUNDOS_DA_ESTIMATIVA == 60
+    def test_a_estimativa_corta_o_solver(self):
+        assert variar(modo="rapido")["MAX_TIME_S"] == SEGUNDOS_MINIMOS_DA_ESTIMATIVA == 60
 
     def test_a_variacao_completa_nao_impoe_teto_proprio(self):
         # Sem a chave, ela cai no default do consumidor — que para o job é o
@@ -126,3 +132,48 @@ class TestOQueNaoMuda:
         copia = {"ORCAMENTO": dict(antes["ORCAMENTO"])}
         variar(base=antes)
         assert antes == copia
+
+
+class TestOTempoDaEstimativa:
+    """60s FIXO ERA O DEFEITO, e ele custou duas rodadas mortas na maior unidade.
+
+    Dar o mesmo orçamento de relógio a um modelo seis vezes maior não é "rápido",
+    é insuficiente — e insuficiente no motor não devolve um plano pior: MATA a
+    rodada, uma vez com `KeyError` no reparo do teto anual e outra com falha
+    nativa do processo.
+    """
+
+    def test_cresce_com_o_tamanho_do_modelo(self):
+        pequeno = segundos_da_estimativa(12_111)   # uB2
+        medio = segundos_da_estimativa(25_180)     # uA2
+        grande = segundos_da_estimativa(72_711)    # uA3
+        assert pequeno < medio < grande
+
+    def test_a_maior_unidade_medida_recebe_o_que_se_sabe_que_basta(self):
+        # A uA3 falhou duas vezes com 60s e concluiu com 500s (medição de 13/08,
+        # registrada em `dominio/parametros.py`). A constante é calibrada por ela.
+        assert segundos_da_estimativa(72_711) == 500
+
+    def test_nunca_abaixo_do_piso(self):
+        # Abaixo de 60s o motor pula a terceira fase, e a "estimativa" deixa de
+        # ser a mesma otimização com menos relógio.
+        assert segundos_da_estimativa(1) == SEGUNDOS_MINIMOS_DA_ESTIMATIVA
+        assert segundos_da_estimativa(0) == SEGUNDOS_MINIMOS_DA_ESTIMATIVA
+        assert segundos_da_estimativa(None) == SEGUNDOS_MINIMOS_DA_ESTIMATIVA
+
+    def test_para_em_500s(self):
+        # Medido na maior unidade: 500s basta (11m57s no total) e abaixo disso
+        # não fica mais rápido — 180s levou 16m14s na MESMA rodada, porque
+        # `MAX_TIME_S` é teto POR SOLVE e não relógio da rodada.
+        assert segundos_da_estimativa(10_000_000) == SEGUNDOS_MAXIMOS_DA_ESTIMATIVA == 500
+        assert segundos_da_estimativa(72_711) == 500
+
+    def test_o_modo_completo_ignora_o_tamanho(self):
+        # Ele não impõe teto nenhum: cai no default do consumidor, que é o mesmo
+        # 1000s da rodada normal.
+        assert "MAX_TIME_S" not in variar(modo="completo", colunas=72_711)
+
+    def test_sem_tamanho_conhecido_cai_no_piso(self):
+        # Rodada que não publicou obras/anos. Comportamento de antes, e não um
+        # erro: o piso é seguro para as unidades em que ele foi observado.
+        assert variar(modo="rapido", colunas=None)["MAX_TIME_S"] == 60

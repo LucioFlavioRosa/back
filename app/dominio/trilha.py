@@ -9,6 +9,17 @@ transação da ficha, é do repositório. Era tudo um arquivo só, e `test_trilh
 denunciava o encaixe importando `igual` e `origem_do_campo`, privados da infra.
 """
 
+#: A INTERFACE PÚBLICA deste módulo. Tudo o que não está aqui é implementação,
+#: e pode mudar sem aviso — a lista é o contrato com quem importa.
+__all__ = [
+    "Alteracao",
+    "DATABRICKS",
+    "REGIONAL",
+    "origem_do_campo",
+    "igual",
+    "diferencas",
+]
+
 from typing import Any, NamedTuple
 
 from app.dominio.campos import DO_DATABRICKS

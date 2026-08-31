@@ -32,7 +32,7 @@ from app.dominio import status as st
 from app.dominio.parametros import montar_params
 from app.dominio import variacao as variacao_dom
 from app.infra import fila
-from app.infra.repositorios import controle, pendencias
+from app.infra.repositorios import controle, pendencias, resultado
 
 #: PREFIXO E GUARDA MORAM NO ROTEADOR, e nao no `include_router`. Assim quem
 #: le este arquivo ve sob que caminho as rotas abaixo vivem e que elas ja
@@ -371,6 +371,10 @@ async def variacao(
         usuario=quem.login,
         fator=fator,
         modo=modo,
+        # O TAMANHO DO MODELO DECIDE O TEMPO DA ESTIMATIVA. Sem ele, todas as
+        # unidades recebiam os mesmos 60s — e na maior isso nao produzia um plano
+        # pior, matava a rodada. Ver `dominio/variacao.segundos_da_estimativa`.
+        colunas=await resultado.tamanho_do_modelo(run_id),
     )
 
     pedido = rid.novo()

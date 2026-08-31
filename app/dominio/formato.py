@@ -11,6 +11,21 @@ Estava metade em `infra/repositorios/cadastro.py` (a saída) e metade em
 divergirem sem ninguém ver. Aqui as duas metades se olham.
 """
 
+#: A INTERFACE PÚBLICA deste módulo. Tudo o que não está aqui é implementação,
+#: e pode mudar sem aviso — a lista é o contrato com quem importa.
+__all__ = [
+    "pt_br",
+    "SEM_SEPARADOR",
+    "pt_br_ano",
+    "PT_BR",
+    "numero",
+    "NAO_NEGATIVOS",
+    "INTEIROS",
+    "numerico",
+    "texto",
+    "texto_trilha",
+]
+
 import re
 from typing import Any
 

@@ -12,6 +12,18 @@ duas cópias dela fariam a tela dizer que a ficha está incompleta e o `PUT`
 aceitá-la — ou o contrário, que é pior.
 """
 
+#: A INTERFACE PÚBLICA deste módulo. Tudo o que não está aqui é implementação,
+#: e pode mudar sem aviso — a lista é o contrato com quem importa.
+__all__ = [
+    "DO_DATABRICKS",
+    "CAMPOS_DB",
+    "CAMPOS_PARAMS",
+    "NAO_MODELADOS",
+    "OBRAS_SUBBACIA",
+    "OBRAS_CTS",
+    "COLETA",
+]
+
 
 #: Quais campos vêm do Databricks (travados, corrigíveis só por override) e quais
 #: a Regional preenche. A divisão é a do `DEPLOY.md` §3.
