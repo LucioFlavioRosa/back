@@ -421,7 +421,13 @@ class ObraLinha(BaseModel):
     capex: float | None
     quantidade: float | None
     unidade: str | None
+    #: POR QUE a obra está no plano: `terceiro` | `obrigatoria` | `escolhida`.
+    #: A mesma partição do cronograma, e disjunta pela mesma razão.
+    recorte: str
     anoInicio: int | None
+    #: Ano de CONCLUSÃO, 'AAAA-MM'. Para obra de terceiro é a única data que o
+    #: motor calcula — e é por ela que a lista de um ano a inclui.
+    dataPronta: str | None
     prazoMeses: int | None
 
 
@@ -437,12 +443,31 @@ class ComponenteDoCronograma(BaseModel):
     capex: float
 
 
-class AnoDeObras(BaseModel):
-    ano: int
+class RecorteDoAno(BaseModel):
+    """Um dos três recortes de um ano — as parcelas que somadas dão "todas"."""
+
     obras: int
     capex: float
-    obrasTerceiro: int
     porComponente: list[ComponenteDoCronograma]
+
+
+class AnoDeObras(BaseModel):
+    """Um ano do cronograma, particionado por POR QUE a obra está no plano.
+
+    Os três recortes são disjuntos e exaustivos por construção (ver
+    `RECORTE_SQL` em `nivel_global`), então "todas as obras" é a soma deles — e
+    o cliente a calcula, em vez de recebê-la pronta e poder divergir das
+    parcelas sem nada acusar.
+
+    O ANO NÃO SIGNIFICA O MESMO PARA TODO RECORTE: obra da Aegea entra pelo ano
+    em que COMEÇA, obra de terceiro pelo ano em que fica PRONTA — que é a única
+    data que o motor calcula para ela. Ver `ANO_SQL` em `nivel_global`.
+    """
+
+    ano: int
+    terceiro: RecorteDoAno
+    obrigatoria: RecorteDoAno
+    escolhida: RecorteDoAno
 
 
 class CronogramaDeObras(BaseModel):

@@ -238,12 +238,23 @@ async def cidades(run_id: str) -> list[dict[str, Any]]:
     ele a busca no proprio payload de detalhe.
     """
     linhas = await db.buscar(
-        f"""SELECT c.cidade, c.vpl, c.capex_total, c.cobertura_final_pct,
+        f"""SELECT c.cidade, c.capex_total, c.cobertura_final_pct,
                    c.metas_atingidas, c.metas_total,
+                   -- O VPL SEM O EFEITO-BASE. `otim_cidade` nao tem a coluna do
+                   -- efeito, entao ele vem somado das sub-bacias da cidade — a
+                   -- mesma origem de que `otim_cidade.vpl` foi feito.
+                   c.vpl - COALESCE((SELECT SUM(sb.vp_efeito_base)
+                                       FROM {casc.esquema()}.otim_subbacia sb
+                                      WHERE sb.run_id = c.run_id
+                                        AND sb.cidade = c.cidade), 0) AS vpl,
                    (SELECT COUNT(*) FROM {casc.esquema()}.otim_sistema s
                      WHERE s.run_id = c.run_id AND s.cidade = c.cidade) AS sistemas
               FROM {casc.esquema()}.otim_cidade c
-             WHERE c.run_id = $1 ORDER BY c.vpl DESC""",
+             -- ORDENA PELO ALIAS, e nao por `c.vpl`: a coluna crua ainda tem o
+             -- efeito-base dentro, e ordenar por ela deixaria a lista numa ordem
+             -- que nao corresponde ao numero exibido ao lado de cada cidade —
+             -- duas cidades proximas apareceriam trocadas, sem nada acusar.
+             WHERE c.run_id = $1 ORDER BY vpl DESC""",
         run_id,
     )
 
@@ -262,37 +273,45 @@ async def cidades(run_id: str) -> list[dict[str, Any]]:
     ]
 
 async def cronograma_de_obras(run_id: str) -> dict[str, Any]:
-    """Quantas obras de cada componente começam em cada ano, e quanto custam.
+    """Quantas obras de cada componente entram em cada ano, e quanto custam.
 
-    Só o que ENTRA no plano: `data_inicio` só existe para obra que a rodada
-    agendou. Obra fora do plano não tem ano de execução, e empurrá-la para um ano
-    qualquer inventaria cronograma.
+    Devolve os TRÊS recortes de uma vez, e não o recorte que a tela pediu. São
+    poucos bytes, e o ganho é o eixo: com tudo na mão o front mantém os mesmos
+    anos ao trocar de botão, então as barras ficam comparáveis entre recortes.
+    Buscar por recorte encolheria o eixo a cada clique — 2026 só existe para
+    terceiro — e a troca viraria um salto.
     """
     linhas = await db.buscar(
-        f"""SELECT LEFT(o.data_inicio, 4)::int AS ano,
+        f"""SELECT {casc.ANO_SQL} AS ano,
+                   {casc.RECORTE_SQL} AS recorte,
                    o.componente,
                    COUNT(*) AS obras,
-                   COALESCE(SUM(o.capex), 0) AS capex,
-                   COUNT(*) FILTER (
-                       WHERE LOWER(COALESCE(o.responsavel, '')) LIKE 'terceiro%'
-                   ) AS terceiro
+                   COALESCE(SUM(o.capex), 0) AS capex
               FROM {casc.esquema()}.otim_obra o
-             WHERE o.run_id = $1 AND o.data_inicio IS NOT NULL AND {casc.SO_OBRA}
-             GROUP BY 1, 2
-             ORDER BY 1, 2""",
+             WHERE o.run_id = $1 AND {casc.SO_OBRA} AND {casc.TEM_ANO}
+             GROUP BY 1, 2, 3
+             ORDER BY 1, 2, 3""",
         run_id,
     )
 
+    def vazio() -> dict[str, Any]:
+        return {"obras": 0, "capex": 0.0, "porComponente": []}
+
     anos: dict[int, dict[str, Any]] = {}
     for l in linhas:
-        a = anos.setdefault(
+        ano = anos.setdefault(
             l["ano"],
-            {"ano": l["ano"], "obras": 0, "capex": 0.0, "obrasTerceiro": 0, "porComponente": []},
+            {
+                "ano": l["ano"],
+                "terceiro": vazio(),
+                "obrigatoria": vazio(),
+                "escolhida": vazio(),
+            },
         )
-        a["obras"] += l["obras"]
-        a["capex"] += l["capex"]
-        a["obrasTerceiro"] += l["terceiro"]
-        a["porComponente"].append(
+        r = ano[l["recorte"]]
+        r["obras"] += l["obras"]
+        r["capex"] += l["capex"]
+        r["porComponente"].append(
             {
                 "componente": casc.nome_componente(l["componente"]),
                 "obras": l["obras"],

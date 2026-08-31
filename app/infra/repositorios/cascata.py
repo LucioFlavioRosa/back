@@ -25,10 +25,15 @@ from app.infra import db
 # renome em lote —, e exportá-los seria prometer estabilidade a duas contas que
 # ninguém de fora chama.
 __all__ = [
+    "SEM_EFEITO_BASE",
     "NOME_DO_COMPONENTE",
     "ORDEM_COMPONENTES",
     "ORDENS",
+    "EH_TERCEIRO",
     "SITUACAO_SQL",
+    "RECORTE_SQL",
+    "ANO_SQL",
+    "TEM_ANO",
     "SO_OBRA",
     "TAMANHO_MAX",
     "cascata_do_fluxo",
@@ -41,6 +46,7 @@ __all__ = [
     "obras_do_plano_por_ano",
     "pct",
     "situacao",
+    "vpl_do_produto",
 ]
 
 #: `otim_obra.componente` guarda o CÓDIGO (`lig`, `rede`, `tro`...), e o contrato
@@ -80,6 +86,35 @@ def nome_componente(codigo: str | None) -> str:
     """Código -> nome de tela. Código desconhecido passa como veio: é melhor a tela
     mostrar `xyz` do que um vazio que parece dado faltando."""
     return NOME_DO_COMPONENTE.get(codigo or "", codigo or "")
+
+
+#: O EFEITO-BASE PARIDADE NAO ENTRA NO VPL QUE O PRODUTO MOSTRA.
+#:
+#: Ele e o reajuste da equivalencia esgoto/agua sobre as ligacoes que JA
+#: existiam — receita que aparece sem que o plano construa nada para ela. Contado
+#: como valor do plano, ele credita ao investimento um ganho que viria de
+#: qualquer forma, e numa unidade ele sozinho respondia por 22,1 Mi de um VPL de
+#: 156,9 Mi: 14% do numero que decide onde investir.
+#:
+#: A SUBTRACAO E DE RELATORIO, e o limite disso precisa ficar dito. O motor SOMA
+#: o efeito ao VPL dentro de `avaliar` (`otimizador_capex_v62.py`, linha 486:
+#: `_vbase=_pv_efeito_base(cen,_fatc); vpl+=_vbase`) e e esse valor que vira
+#: `vpl_obj`, que o CP-SAT MAXIMIZA. Ou seja: o plano continua sendo escolhido
+#: contando o efeito; o que muda aqui e o numero que o produto apresenta.
+#:
+#: Tirar o efeito da DECISAO e mudanca no pacote do otimizador, que nao e
+#: versionado aqui — e ela invalidaria o plano de toda rodada ja publicada.
+SEM_EFEITO_BASE = "(COALESCE(vpl, 0) - COALESCE(vp_efeito_base, 0))"
+
+
+def vpl_do_produto(vpl: float | None, efeito_base: float | None) -> float:
+    """O VPL sem o efeito-base — ver `SEM_EFEITO_BASE`.
+
+    Existe em Python alem do SQL porque nem toda leitura passa por uma consulta
+    que possa subtrair na hora: o historico e a curva de sensibilidade leem
+    colunas ja materializadas.
+    """
+    return (vpl or 0.0) - (efeito_base or 0.0)
 
 
 def esquema() -> str:
@@ -178,13 +213,19 @@ async def cascata_do_fluxo(run_id: str, cidade: str | None = None, sub_bacia: st
     )
     if not linha:
         return []
+    # SEM A PARCELA DO EFEITO-BASE, e o total desce junto. Tirar so a barra
+    # deixaria a cascata sem fechar: as parcelas somariam 134,8 sob um total de
+    # 156,9, e uma cascata que nao fecha e pior que uma parcela a mais.
     return [
         {"rotulo": "Receita direta", "valor": linha["direta"], "tipo": "entra"},
         {"rotulo": "Receita indireta", "valor": linha["indireta"], "tipo": "entra"},
-        {"rotulo": "Efeito-base paridade", "valor": linha["efeito"], "tipo": "entra"},
         {"rotulo": "CAPEX", "valor": -abs(linha["capex"]), "tipo": "sai"},
         {"rotulo": "OPEX", "valor": -abs(linha["opex"]), "tipo": "sai"},
-        {"rotulo": "VPL", "valor": linha["vpl"], "tipo": "total"},
+        {
+            "rotulo": "VPL",
+            "valor": vpl_do_produto(linha["vpl"], linha["efeito"]),
+            "tipo": "total",
+        },
     ]
 
 
@@ -283,14 +324,62 @@ def elementos_por_ano(linhas: list[dict[str, Any]]) -> list[dict[str, Any]]:
 #: do plano de execução.
 SO_OBRA = "o.status <> 'N/A'"
 
+#: QUEM EXECUTA, em SQL. A obra de terceiro nao tem CAPEX e nao e decidida pelo
+#: otimizador: ela entra na cadeia como pre-requisito e leva prazo. Tres consultas
+#: precisavam da mesma pergunta e cada uma repetia o `LIKE` — e a divergencia
+#: entre copias de um predicado e silenciosa, porque cada uma continua rodando.
+
 #: `situacao()` (Python) e este CASE dizem a MESMA coisa, na mesma ordem — obra de
 #: terceiro que já existe é `terceiro`, e não `construida`, porque quem paga muda a
 #: leitura do plano. A duplicação é consciente: a lista é paginada, e filtrar por
 #: situação depois de trazer a página daria um `total` que não bate com o filtro.
+EH_TERCEIRO = "LOWER(COALESCE(o.responsavel, '')) LIKE 'terceiro%'"
+
 SITUACAO_SQL = (
-    "CASE WHEN LOWER(COALESCE(o.responsavel, '')) LIKE 'terceiro%' THEN 'terceiro'"
+    f"CASE WHEN {EH_TERCEIRO} THEN 'terceiro'"
     "     WHEN o.construida THEN 'construida'"
     "     ELSE 'nao-construida' END"
+)
+
+#: Os quatro botões do cronograma são "todas" mais uma PARTIÇÃO em três, e a
+#: ordem do `CASE` é o que garante que seja partição: cada obra cai em um
+#: recorte e só um. A precedência não é arbitrária —
+#:
+#:   terceiro    vem primeiro porque responde "não é nossa para escolher nem
+#:               para sermos obrigados a fazer". Obra de terceiro marcada como
+#:               obrigatória (não existe hoje) continuaria em `terceiro`.
+#:   obrigatoria vem antes de `escolhida` porque obra imposta por contrato não
+#:               foi escolhida por ninguém — contá-la como escolha do otimizador
+#:               inflaria o mérito do plano.
+#:   escolhida   é o resto: a Aegea decidiu fazer, e podia não ter feito.
+#:
+#: "Todas" é a soma dos três, e o front a calcula em vez de recebê-la pronta —
+#: um total vindo do servidor poderia divergir das parcelas sem nada acusar.
+RECORTE_SQL = (
+    f"CASE WHEN {EH_TERCEIRO} THEN 'terceiro'"
+    "      WHEN o.obrigatoria THEN 'obrigatoria'"
+    "      ELSE 'escolhida' END"
+)
+
+#: O ANO DE UMA OBRA DEPENDE DE QUEM A EXECUTA.
+#:
+#: Obra da Aegea pertence ao ano em que COMEÇA: ela é decidida pelo otimizador, e
+#: é o início que consome orçamento. Obra de terceiro não tem início — o motor
+#: não a sequencia, `_ready` devolve o prazo dela direto
+#: (`otimizador_capex_v62.py:186`) e `persistencia.py` grava `mes_inicio` a partir
+#: do mapa de decisão do CP-SAT, que só contém obra da Aegea. Sobra a conclusão,
+#: que é a única data que o motor calcula para ela — e é a que importa, porque a
+#: sub-bacia só fatura quando toda a cadeia está pronta, terceiro incluído.
+ANO_SQL = (
+    f"CASE WHEN {EH_TERCEIRO} THEN LEFT(o.data_pronta, 4)::int"
+    "      ELSE LEFT(o.data_inicio, 4)::int END"
+)
+
+#: Só obra que TEM ano. Obra fora do plano não tem data de execução, e empurrá-la
+#: para um ano qualquer inventaria cronograma.
+TEM_ANO = (
+    f"(({EH_TERCEIRO} AND o.data_pronta IS NOT NULL)"
+    f" OR (NOT {EH_TERCEIRO} AND o.data_inicio IS NOT NULL))"
 )
 
 #: Whitelist — o `ordenar` da querystring escolhe uma ENTRADA, nunca compõe SQL.
@@ -300,7 +389,9 @@ ORDENS = {
     "cidade": "o.cidade, o.data_inicio NULLS LAST, o.obra_id",
 }
 
-#: Teto de página. O front pede 200 ao abrir um ano do cronograma. Pela rota o
+#: Teto de página. O front pede ESTE teto ao abrir um ano do cronograma, porque
+#: dali sai a exportação para Excel e o botão promete "as obras do ano" — o que
+#: a tela tem é o que o arquivo leva. Pela rota o
 #: valor já chega validado (`Query(le=500)`, que recusa o excesso com 422 em vez
 #: de fingir que atendeu); este `min` é o teto para quem chamar a função direto —
 #: um script de conferência, um teste —, onde nada mais impede pedir as 8 mil

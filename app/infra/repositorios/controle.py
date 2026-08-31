@@ -414,7 +414,7 @@ async def varredura(run_id: str) -> list[dict[str, Any]]:
                    -- a pedia — o que transforma uma explicação em pergunta para
                    -- outra pessoa.
                    s.erro,
-                   m.vpl, m.cobertura_final_pct, m.metas_total, m.metas_nao_atingidas,
+                   m.vpl, m.vp_efeito_base, m.cobertura_final_pct, m.metas_total, m.metas_nao_atingidas,
                    m.capex_total, m.orcamento_total, m.tempo_s, m.milp_status
               FROM {_c()}.run_request r
               JOIN {_c()}.run_status  s USING (run_id)

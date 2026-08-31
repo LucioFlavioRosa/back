@@ -15,6 +15,7 @@ from typing import Any
 
 from app.config import config
 from app.infra import db
+from app.infra.repositorios import cascata
 
 
 def _p() -> str:
@@ -61,6 +62,7 @@ async def historico(
         f"""SELECT h.run_id, h.rotulo, h.usuario, h.data_hora, h.milp_status,
                    h.anos_capex, h.orcamento_total, h.vpl, h.capex_total,
                    h.obras_construidas, h.obras_total, h.cobertura_final_pct,
+                   h.vp_efeito_base,
                    h.metas_total, h.metas_nao_atingidas, h.tempo_s,
                    m.receita_total, m.opex_total,
                    m.regional, m.unidade_id, m.base_receita_param, m.usar_cts,
@@ -284,7 +286,7 @@ def _resumo(l: dict[str, Any], favoritas: set[str]) -> dict[str, Any]:
     if not inviavel:
         atingidas = (l.get("metas_total") or 0) - (l.get("metas_nao_atingidas") or 0)
         resumo["metricas"] = {
-            "vpl": l.get("vpl"),
+            "vpl": cascata.vpl_do_produto(l.get("vpl"), l.get("vp_efeito_base")),
             "capex": l.get("capex_total"),
             "usoOrcamentoPct": _pct(l.get("capex_total"), l.get("orcamento_total")),
             "obrasConstruidas": l.get("obras_construidas"),
@@ -400,7 +402,8 @@ async def meta(run_id: str) -> dict[str, Any] | None:
         # `kpis` alimenta a faixa de numeros do nivel global. O contrato exige o
         # bloco inteiro; faltando um campo, a tela mostra "—" onde ha dado.
         "kpis": {
-            "vpl": linha.get("vpl"),
+            # SEM O EFEITO-BASE — ver `cascata.SEM_EFEITO_BASE`.
+            "vpl": cascata.vpl_do_produto(linha.get("vpl"), linha.get("vp_efeito_base")),
             "capexTotal": linha.get("capex_total"),
             "opexTotal": linha.get("opex_total"),
             "receitaTotal": linha.get("receita_total"),

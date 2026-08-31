@@ -18,6 +18,7 @@ async def obras(
     situacao: str | None = None,
     cidade: str | None = None,
     ano: int | None = None,
+    recorte: str | None = None,
     pagina: int = 1,
     tamanho: int = 50,
     ordenar: str = "inicio",
@@ -38,10 +39,35 @@ async def obras(
         args.append(cidade)
         onde.append(f"o.cidade = ${len(args)}")
     if ano:
-        # `data_inicio` e texto 'AAAA-MM': comparar o prefixo dispensa converter a
-        # coluna, e o ano sem obra nenhuma devolve pagina vazia, nao erro.
+        # O ANO DE UMA OBRA DEPENDE DE QUEM A EXECUTA, e este filtro diz a MESMA
+        # coisa que as barras do cronograma — de proposito, porque e clicando numa
+        # barra que se chega aqui. Obra da Aegea pertence ao ano em que COMECA;
+        # obra de terceiro, ao ano em que fica PRONTA, que e a unica data que o
+        # motor calcula para ela (ver `nivel_global.cronograma_de_obras`).
+        #
+        # Sem isto, clicar num ano que so tem conclusao de terceiro abriria um
+        # modal vazio sobre uma barra cheia.
+        #
+        # `data_inicio`/`data_pronta` sao texto 'AAAA-MM': comparar o prefixo
+        # dispensa converter a coluna, e o ano sem obra nenhuma devolve pagina
+        # vazia, nao erro.
         args.append(str(ano))
-        onde.append(f"LEFT(o.data_inicio, 4) = ${len(args)}")
+        onde.append(
+            f"((NOT {casc.EH_TERCEIRO} AND LEFT(o.data_inicio, 4) = ${len(args)})"
+            f" OR ({casc.EH_TERCEIRO} AND LEFT(o.data_pronta, 4) = ${len(args)}))"
+        )
+
+    if recorte and recorte != "todas":
+        # O MESMO RECORTE DAS BARRAS, para o modal nao contradizer o grafico de
+        # onde ele foi aberto: com o filtro em "obras de terceiro", a barra conta
+        # 91 e a lista tem de trazer 91 — nao as 163 do ano inteiro.
+        #
+        # Recorte desconhecido nao vira filtro nenhum, e a lista sai completa. E
+        # o mesmo criterio de `situacao`/`ordenar`: a querystring escolhe entre
+        # valores previstos, nunca compoe SQL.
+        if recorte in ("terceiro", "obrigatoria", "escolhida"):
+            args.append(recorte)
+            onde.append(f"{casc.RECORTE_SQL} = ${len(args)}")
 
     tamanho = max(1, min(tamanho, casc.TAMANHO_MAX))
     pagina = max(1, pagina)
@@ -65,7 +91,11 @@ async def obras(
     linhas = await db.buscar(
         f"""SELECT o.obra_id, o.componente, o.responsavel, o.construida,
                    o.cidade, o.no, o.capex, o.quantidade, o.unidade,
-                   o.data_inicio, o.prazo_meses,
+                   o.data_inicio, o.data_pronta, o.prazo_meses,
+                   -- O MESMO `CASE` que particiona o cronograma. Vem na linha
+                   -- para a lista e a planilha poderem dizer POR QUE cada obra
+                   -- esta no plano sem refazer a regra do lado do cliente.
+                   {casc.RECORTE_SQL} AS recorte,
                    -- Ver a nota da consulta dos elos: `otim_obra.sistema` so vem
                    -- preenchido em parte das obras, e quem sabe o sistema das
                    -- demais e a sub-bacia em que elas estao.
@@ -91,6 +121,8 @@ async def obras(
                 # `null` para ETE e modulo de ETE: eles nao tem sub-bacia propria.
                 "subBaciaId": l["no"],
                 "capex": l["capex"],
+                "recorte": l["recorte"],
+                "dataPronta": l["data_pronta"],
                 "quantidade": l["quantidade"],
                 "unidade": l["unidade"],
                 "anoInicio": int(str(l["data_inicio"])[:4]) if l["data_inicio"] else None,
@@ -152,7 +184,9 @@ async def cidade(run_id: str, cidade_id: str) -> dict[str, Any] | None:
         "fimConcessao": (horizonte or {}).get("fim"),
         "fimCapex": await casc.fim_capex(run_id),
         "capexTotal": base["capex_total"],
-        "vpl": base["vpl"],
+        # SEM O EFEITO-BASE — ver `cascata.SEM_EFEITO_BASE`. O `efeito` já foi
+        # somado acima para o bloco de paridade; aqui ele sai do VPL.
+        "vpl": casc.vpl_do_produto(base["vpl"], efeito),
         "ligacoesNovas": base["ligacoes_novas"],
         "coberturaBasePct": base["cobertura_base_pct"],
         "coberturaFinalPct": base["cobertura_final_pct"],
@@ -176,6 +210,9 @@ async def cidade(run_id: str, cidade_id: str) -> dict[str, Any] | None:
             "paridadeFinal": base["paridade_final"],
             "houveDegrau": (base["paridade_final"] or 0) > (base["paridade_inicial"] or 0),
             "vpEfeitoBase": efeito,
+            # CONTRA O VPL COM O EFEITO, e não contra o que a tela mostra: a
+            # pergunta é "quanto do valor bruto vinha daqui", e dividir por um
+            # VPL de onde ele já foi tirado daria uma fração de outra coisa.
             "pctDoVplDaCidade": casc.pct(efeito, base["vpl"]),
         },
         "sistemas": [
@@ -345,7 +382,10 @@ async def subbacia(run_id: str, sub_id: str) -> dict[str, Any] | None:
         "sistemaNome": base["sistema"],
         "fatura": base["faturando"],
         "vazao": base["vazao_marginal"],
-        "vpl": base["vpl"],
+        # SEM O EFEITO-BASE, como em todo lugar. A linha vem de `SELECT *`, então
+        # `vp_efeito_base` já está aqui — e a cascata logo abaixo faz a mesma
+        # subtração, pelo mesmo motivo: as duas têm de fechar.
+        "vpl": casc.vpl_do_produto(base["vpl"], base["vp_efeito_base"]),
         "cascata": await casc.cascata_do_fluxo(run_id, sub_bacia=sub_id),
         "elementosPorAno": casc.elementos_por_ano(
             await casc.obras_do_plano_por_ano(run_id, sub_bacia=sub_id)

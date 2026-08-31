@@ -31,6 +31,7 @@ from app.dominio import teto as teto_dom
 from app.dominio.teto import DEGRAUS as DEGRAUS_DA_CURVA
 from app.api import formas_resultado as formas
 from app.infra.repositorios import (
+    cascata,
     controle,
     explicabilidade as explic,
     nivel_detalhe,
@@ -415,7 +416,12 @@ async def sensibilidade(
                 "runId": p["run_id"],
                 "status": p["status"],
                 "estimativa": p["estimativa"],
-                "vpl": p["vpl"],
+                # SEM O EFEITO-BASE, como todo VPL do produto.
+                "vpl": (
+                    None
+                    if p["vpl"] is None
+                    else cascata.vpl_do_produto(p["vpl"], p["vp_efeito_base"])
+                ),
                 "coberturaFimPct": p["cobertura_final_pct"],
                 # `metas_nao_atingidas` e o que o motor grava; a tela conta as
                 # CUMPRIDAS. A subtracao mora aqui e nao la: e a mesma conversao
@@ -468,6 +474,7 @@ async def obras(
     situacao: Annotated[str | None, Query()] = None,
     cidade: Annotated[str | None, Query()] = None,
     ano: Annotated[int | None, Query()] = None,
+    recorte: Annotated[str | None, Query()] = None,
     pagina: Annotated[int, Query(ge=1)] = 1,
     tamanho: Annotated[int, Query(ge=1, le=500)] = 50,
     ordenar: Annotated[str, Query()] = "inicio",
@@ -478,6 +485,7 @@ async def obras(
         situacao=situacao,
         cidade=cidade,
         ano=ano,
+        recorte=recorte,
         pagina=pagina,
         tamanho=tamanho,
         ordenar=ordenar,
