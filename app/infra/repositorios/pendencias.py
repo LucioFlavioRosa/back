@@ -9,7 +9,12 @@ Por isso ela é uma tradução linha a linha de `derive()` em
 `src/cadastro/state/cadastroReducer.ts` e das funções de `src/cadastro/domain/`,
 e não uma releitura do que "faz sentido cobrar". As regras, como estão lá:
 
-  grupo 2 · cidade      `data_fim_concessao` e `unidade_cobertura`
+  grupo 2 · empresa     `data_fim_concessao` — a concessão é da
+                        EMPRESA, e não do município: quem assina o contrato é a
+                        operadora, e o ano desce dela para as cidades. Cobrar por
+                        município pediria 141 preenchimentos para o que se
+                        resolve em 48.
+            cidade      `unidade_cobertura`
             meta        `ano` e `cobertura_pct`
             faixa       `cobertura_pct` e `paridade`
   grupo 3 · sub-bacia   5 params (preço, tarr, ramp, vazão, potencial)
@@ -114,12 +119,18 @@ async def contar(unidade_id: str) -> dict[str, Any]:
     cidades = f"""
         SELECT c.cidade_id,
                COALESCE(o.unidade_cobertura, '') = 'populacao' AS por_pop,
-               (o.data_fim_concessao IS NULL)::int
-             + (o.unidade_cobertura  IS NULL)::int AS pend
-          FROM {_i()}.superintendencia_cidade c
-          JOIN {_i()}.regional_superintendencia s USING (superintendencia_id)
+               -- SÓ a régua de cobertura. O fim da concessão saiu daqui e virou
+               -- a CTE `empresas` abaixo: ele é da operadora.
+               (o.unidade_cobertura IS NULL)::int AS pend
+          FROM {_i()}.cidade_empresa c
+          JOIN {_i()}.empresa s USING (emp_codigo)
           LEFT JOIN {_i()}.cidade_operacional o USING (cidade_id)
          WHERE s.unidade_id = $1
+    """
+    empresas = f"""
+        SELECT (e.data_fim_concessao IS NULL)::int AS pend
+          FROM {_i()}.empresa e
+         WHERE e.unidade_id = $1
     """
     # A sub-bacia herda a régua da cidade do seu sistema — é por isso que a conta
     # dela não sai só da própria tabela.
@@ -133,6 +144,7 @@ async def contar(unidade_id: str) -> dict[str, Any]:
     linha = await db.buscar_um(
         f"""
         WITH cidades AS ({cidades}),
+             empresas AS ({empresas}),
              comps AS ({subs}),
              sb AS (
                 SELECT c.id, c.por_pop,
@@ -193,7 +205,8 @@ async def contar(unidade_id: str) -> dict[str, Any]:
                   FROM {_i()}.fator_esgoto f JOIN cidades c USING (cidade_id)
              )
         SELECT
-          (SELECT COALESCE(SUM(pend), 0) FROM cidades)
+          (SELECT COALESCE(SUM(pend), 0) FROM empresas)
+            + (SELECT COALESCE(SUM(pend), 0) FROM cidades)
             + (SELECT COALESCE(SUM(pend), 0) FROM mt)
             + (SELECT COALESCE(SUM(pend), 0) FROM fx)                       AS g2,
           (SELECT COALESCE(SUM(pend_params + pend_pop), 0) FROM sb)
@@ -202,7 +215,9 @@ async def contar(unidade_id: str) -> dict[str, Any]:
              FROM et)                                                       AS g4,
           (SELECT COALESCE(SUM(pend_params + pend_pop), 0) FROM ct)
             + (SELECT COALESCE(SUM(pend), 0) FROM ct_obras)                 AS g5,
-          (SELECT count(*) * 2 FROM cidades)
+          -- A cidade tem UM campo cobrado (a régua); a empresa tem o outro.
+          (SELECT count(*) FROM empresas)
+            + (SELECT count(*) FROM cidades)
             + (SELECT count(*) * {_CAMPOS_META} FROM mt)
             + (SELECT count(*) * {_CAMPOS_FAIXA} FROM fx)                   AS t2,
           (SELECT COALESCE(SUM({len(_PARAMS)} + CASE WHEN por_pop THEN {len(_PARAMS_POP)}
@@ -292,8 +307,8 @@ async def _caminho_ate_a_ete(unidade_id: str) -> list[dict[str, Any]]:
         f"""
         WITH RECURSIVE cidades AS (
             SELECT c.cidade_id
-              FROM {_i()}.superintendencia_cidade c
-              JOIN {_i()}.regional_superintendencia s USING (superintendencia_id)
+              FROM {_i()}.cidade_empresa c
+              JOIN {_i()}.empresa s USING (emp_codigo)
              WHERE s.unidade_id = $1
         ),
         comps AS (
@@ -343,8 +358,8 @@ async def _quantos_precisam_de_caminho(unidade_id: str) -> int:
         f"""SELECT count(*) AS n
               FROM {_i()}.sistema_topologia t
               JOIN {_i()}.cidade_sistema cs USING (sistema_id)
-              JOIN {_i()}.superintendencia_cidade c ON c.cidade_id = cs.cidade_id
-              JOIN {_i()}.regional_superintendencia s USING (superintendencia_id)
+              JOIN {_i()}.cidade_empresa c ON c.cidade_id = cs.cidade_id
+              JOIN {_i()}.empresa s USING (emp_codigo)
              WHERE s.unidade_id = $1
                AND NOT EXISTS (SELECT 1 FROM {_i()}.ete_capex e
                                 WHERE e.ete_id = t.componente_sistema_id)""",
@@ -393,8 +408,8 @@ async def componentes_faltando(unidade_id: str) -> list[dict[str, Any]]:
         f"""
         WITH cidades AS (
             SELECT c.cidade_id
-              FROM {_i()}.superintendencia_cidade c
-              JOIN {_i()}.regional_superintendencia s USING (superintendencia_id)
+              FROM {_i()}.cidade_empresa c
+              JOIN {_i()}.empresa s USING (emp_codigo)
              WHERE s.unidade_id = $1
         ),
         comps AS (

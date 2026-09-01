@@ -27,8 +27,8 @@ ESPERADO = {
     "db":      ["fat","arr","ligU","ligA","ligN","ligUInd","ligAInd","fatInd","arrInd",
                 "ecoU","ecoA","ecoN","ticket"],
     "unidReg": ["rid","rnome","uid","unome","waccMedio"],
-    "supH":    ["id","nome"],
-    "cidadeH": ["id","nome","supId"],
+    "empH":    ["id","nome"],
+    "cidadeH": ["id","nome","empId"],
     "sistemaH":["id","nome","cidId"],
     "topo":    ["sis","id","nome","jus"],
     # `atualizadoEm`/`atualizadoPor` estao nas QUATRO fichas: e a auditoria que
@@ -93,7 +93,7 @@ async def main():
             h = (await c.get(f"/api/unidades/{U}/hierarquia")).json()
             falta = [k for k in ESPERADO["unidReg"] if k not in h["unidReg"]]
             ck("unidReg tem os campos do front", falta==[], f"faltam {falta} — tem {sorted(h['unidReg'])}")
-            for rot, chave in (("supH","superintendencias"),("cidadeH","cidades"),
+            for rot, chave in (("empH","empresas"),("cidadeH","cidades"),
                                ("sistemaH","sistemas"),("topo","topo")):
                 if not h[chave]:
                     ck(f"{chave}: ha ao menos um", False, "vazio"); continue

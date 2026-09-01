@@ -2,11 +2,13 @@
 
 ## Por que estes modelos existem
 
-Até 29/08/2026 toda rota deste serviço devolvia `dict[str, Any]`. Funciona, e
-esconde uma classe inteira de defeito: o front declara `elementosPorAno` como
-campo OBRIGATÓRIO em quatro interfaces, o backend não mandava em nenhuma, e as
-quatro telas quebravam com `undefined.map`. Nada acusou — `test_contrato.py`
-confere QUAIS rotas existem, não o que elas devolvem.
+Um `dict[str, Any]` de retorno funciona e esconde uma classe inteira de defeito:
+um campo que o front declara OBRIGATÓRIO e o backend não manda só aparece como
+`undefined.map` na tela do usuário. Nada acusa antes — `test_contrato.py` confere
+QUAIS rotas existem, não o que elas devolvem.
+
+Declarar a forma faz o próprio FastAPI validar a resposta contra o modelo: o
+campo que faltar quebra o teste da rota, e não o navegador.
 
 Com um modelo por payload, o mesmo erro vira erro de servidor no primeiro pedido
 em vez de tela branca semanas depois, o `/api/openapi.json` passa a descrever o

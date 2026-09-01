@@ -269,17 +269,21 @@ async def _gravar_coleta(
 #: gravada — dava para escrever na sub-bacia de outra unidade so trocando o id da
 #: URL, e a trilha ainda registrava a unidade errada como dona.
 _DONO = {
+    # A empresa e o primeiro nivel abaixo da unidade: ela carrega `unidade_id`
+    # na propria linha, sem precisar subir por ninguem.
+    "empresa": """
+        SELECT e.unidade_id FROM {i}.empresa e WHERE e.emp_codigo = $1""",
     "sub-bacia": """
         SELECT s.unidade_id
           FROM {i}.sistema_topologia t
           JOIN {i}.cidade_sistema cs USING (sistema_id)
-          JOIN {i}.superintendencia_cidade c ON c.cidade_id = cs.cidade_id
-          JOIN {i}.regional_superintendencia s USING (superintendencia_id)
+          JOIN {i}.cidade_empresa c ON c.cidade_id = cs.cidade_id
+          JOIN {i}.empresa s USING (emp_codigo)
          WHERE t.componente_sistema_id = $1""",
     "cidade": """
         SELECT s.unidade_id
-          FROM {i}.superintendencia_cidade c
-          JOIN {i}.regional_superintendencia s USING (superintendencia_id)
+          FROM {i}.cidade_empresa c
+          JOIN {i}.empresa s USING (emp_codigo)
          WHERE c.cidade_id = $1""",
     # A CTS percorre o MESMO caminho da sub-bacia: quem diz de que unidade ela e
     # e o SISTEMA em que ela foi colocada. Antes o caminho passava por
@@ -296,8 +300,8 @@ _DONO = {
           FROM {i}.sistema_topologia t
           JOIN {i}.cts_operacional o ON o.cts = t.componente_sistema_id
           JOIN {i}.cidade_sistema cs USING (sistema_id)
-          JOIN {i}.superintendencia_cidade c ON c.cidade_id = cs.cidade_id
-          JOIN {i}.regional_superintendencia s USING (superintendencia_id)
+          JOIN {i}.cidade_empresa c ON c.cidade_id = cs.cidade_id
+          JOIN {i}.empresa s USING (emp_codigo)
          WHERE t.componente_sistema_id = $1""",
     # A ETE percorre o MESMO caminho da sub-bacia, e nao um caminho proprio: em
     # `sistema_topologia` ela e um componente do sistema como qualquer outro. O que
@@ -306,17 +310,16 @@ _DONO = {
     #
     #     if comp in ete_ids: ete_do_sis[d["sistema_id"]] = comp
     #
-    # Eu tinha escrito no README que o vinculo era "por convencao de nome" e que o
-    # esquema nao tinha caminho ate a unidade. Estava errado: o caminho sempre
-    # existiu, e era o mesmo. O `JOIN` com `ete_capex` no fim so garante que o id
+    # A ETE chega a unidade pelo MESMO caminho da sub-bacia: ela e um componente
+    # de `sistema_topologia`. O `JOIN` com `ete_capex` no fim garante que o id
     # pedido e mesmo uma ETE, e nao uma sub-bacia entrando pela rota errada.
     "ete": """
         SELECT s.unidade_id
           FROM {i}.sistema_topologia t
           JOIN {i}.ete_capex e ON e.ete_id = t.componente_sistema_id
           JOIN {i}.cidade_sistema cs USING (sistema_id)
-          JOIN {i}.superintendencia_cidade c ON c.cidade_id = cs.cidade_id
-          JOIN {i}.regional_superintendencia s USING (superintendencia_id)
+          JOIN {i}.cidade_empresa c ON c.cidade_id = cs.cidade_id
+          JOIN {i}.empresa s USING (emp_codigo)
          WHERE t.componente_sistema_id = $1""",
 }
 
@@ -389,10 +392,9 @@ async def salvar_coleta(
     await exigir_dona(tipo, ficha_id, unidade_id)
 
     async with db.transacao() as con:
-        # O lock SERIALIZA os PUTs da mesma ficha. Ele nunca detectou conflito —
-        # quem fazia isso era o 409, que saiu —, mas continua necessário: sem ele
-        # duas gravações simultâneas intercalam o `DELETE`+`INSERT` das obras e a
-        # ficha termina com metade de cada uma. Ordenar não é o mesmo que barrar.
+        # O lock SERIALIZA os PUTs da mesma ficha — ele ordena, nao recusa.
+        # Sem ele, duas gravacoes simultaneas intercalam o `DELETE`+`INSERT` das
+        # obras e a ficha termina com metade de cada uma.
         await con.execute("SELECT pg_advisory_xact_lock(hashtext($1))", ficha_id)
         exigir_ficha_inteira(corpo)
         mudancas = await _gravar_coleta(
@@ -458,20 +460,20 @@ async def _diff_da_cidade(
     mudancas: list[Alteracao] = []
     cidade = corpo.get("cidade") or {}
 
+    # A CONCESSAO NAO ENTRA NESTE DIFF, e a ausencia e o ponto: ela e da empresa,
+    # e quem registra a mudanca dela e `salvar_empresa`. Compara-la aqui, contra
+    # um corpo que nao manda mais `fim`, escreveria na trilha uma remocao
+    # (`2045 -> NULL`) a cada gravacao de cidade — enquanto o upsert abaixo
+    # preserva o valor. Trilha que afirma o que nao aconteceu e pior que trilha
+    # que nao afirma nada.
     linha = await con.fetchrow(
-        f"""SELECT data_fim_concessao, unidade_cobertura
+        f"""SELECT unidade_cobertura
               FROM {_i()}.cidade_operacional WHERE cidade_id = $1""",
         cidade_id,
     )
     mudancas += diferencas(
-        {
-            "fim": linha["data_fim_concessao"] if linha else None,
-            "cob": linha["unidade_cobertura"] if linha else None,
-        },
-        {
-            "fim": numerico(cidade.get("fim"), "cidade.fim"),
-            "cob": cidade.get("cob"),
-        },
+        {"cob": linha["unidade_cobertura"] if linha else None},
+        {"cob": cidade.get("cob")},
         origem=REGIONAL,
     )
 
@@ -530,15 +532,24 @@ async def salvar_contrato(
     async with db.transacao() as con:
         await con.execute("SELECT pg_advisory_xact_lock(hashtext($1))", cidade_id)
         mudancas = await _diff_da_cidade(con, cidade_id, corpo)
+
+        # A CONCESSAO E ESCRITA NA EMPRESA (`PUT /empresas/{emp_codigo}`), nunca
+        # aqui: e a empresa que assina o contrato, e o gatilho
+        # `empresa_propaga_concessao` desce o ano para os municipios dela.
+        #
+        # Por isso o upsert abaixo PRESERVA o valor que a cidade ja tem, em vez
+        # de reescreve-lo com o que veio no corpo.
         await con.execute(
             f"""INSERT INTO {_i()}.cidade_operacional
                     (cidade_id, data_fim_concessao, unidade_cobertura)
                 VALUES ($1, $2, $3)
                 ON CONFLICT (cidade_id) DO UPDATE
-                  SET data_fim_concessao = EXCLUDED.data_fim_concessao,
+                  SET data_fim_concessao =
+                        COALESCE({_i()}.cidade_operacional.data_fim_concessao,
+                                 EXCLUDED.data_fim_concessao),
                       unidade_cobertura  = EXCLUDED.unidade_cobertura""",
             cidade_id,
-            numerico(cidade.get("fim"), "cidade.fim"),
+            None,
             cidade.get("cob"),
         )
         if "metas" in corpo:
@@ -663,13 +674,62 @@ async def salvar_ete(
     return {"id": ete_id, "alteracoesGravadas": n, **auditoria}
 
 
+# ----------------------------------------------------------------- EMPRESA
+async def salvar_empresa(
+    *, unidade_id: str, emp_codigo: str, corpo: dict[str, Any], autor: str
+) -> dict[str, Any]:
+    """PUT da ficha de empresa: hoje, o fim da concessao.
+
+    A CONCESSAO E DA EMPRESA, e este e o unico lugar que a escreve.
+    E O UNICO CAMINHO DE ESCRITA do campo. A aba de municipio mostra o ano, mas
+    nao o grava: dois caminhos para o mesmo dado divergem no dia em que um deles
+    muda.
+
+    Quem espalha o valor para os municipios da empresa e o BANCO, pelo gatilho
+    `empresa_propaga_concessao` (migracao 015) — nao este codigo. A carga do
+    Databricks tambem escreve nesta tabela, e propagar aqui deixaria a cidade
+    com o prazo antigo sempre que a empresa chegasse por fora da aplicacao.
+    """
+    await exigir_dona("empresa", emp_codigo, unidade_id)
+    empresa = corpo.get("empresa") or {}
+    if "fim" not in empresa:
+        return {"id": emp_codigo, "alteracoesGravadas": 0}
+
+    fim = numerico(empresa.get("fim"), "empresa.fim")
+    async with db.transacao() as con:
+        await con.execute("SELECT pg_advisory_xact_lock(hashtext($1))", emp_codigo)
+        linha = await con.fetchrow(
+            f"SELECT data_fim_concessao FROM {_i()}.empresa WHERE emp_codigo = $1",
+            emp_codigo,
+        )
+        mudancas = diferencas(
+            {"fim": linha["data_fim_concessao"] if linha else None},
+            {"fim": fim},
+            origem=REGIONAL,
+        )
+        await con.execute(
+            f"""UPDATE {_i()}.empresa SET data_fim_concessao = $2
+                 WHERE emp_codigo = $1""",
+            emp_codigo,
+            fim,
+        )
+        n = await _registrar(
+            con,
+            tipo="empresa",
+            ficha_id=emp_codigo,
+            unidade_id=unidade_id,
+            autor=autor,
+            mudancas=mudancas,
+        )
+    return {"id": emp_codigo, "alteracoesGravadas": n}
+
+
 # ---------------------------------------------------------------- TOPOLOGIA
 # O caminho ate a ETE, e em que sistema cada componente entra.
 #
-# Isto NAO vem do Databricks, e essa era a premissa errada que deixou a tabela mais
-# critica da base sem escrita nenhuma: de fora vem quais sub-bacias e qual ETE
-# pertencem ao sistema, e todas as CTS cadastradas. Quem monta o sistema — quem
-# liga cada componente ao seguinte ate a ETE, e em que sistema cada CTS entra — e a
+# ISTO NAO VEM DO DATABRICKS. De fora vem quais sub-bacias e qual ETE pertencem
+# ao sistema, e todas as CTS cadastradas. Quem monta o sistema — quem liga cada
+# componente ao seguinte ate a ETE, e em que sistema cada CTS entra — e a
 # Regional. Ate aqui a tela do Grupo 01 editava contra o `sessionStorage` do
 # navegador e avisava, em letras, que nada daquilo chegava ao cadastro.
 #
@@ -729,8 +789,8 @@ async def _unidade_do_sistema(con: Any, sistema_id: str) -> str | None:
     linha = await con.fetchrow(
         f"""SELECT s.unidade_id
               FROM {_i()}.cidade_sistema cs
-              JOIN {_i()}.superintendencia_cidade c ON c.cidade_id = cs.cidade_id
-              JOIN {_i()}.regional_superintendencia s USING (superintendencia_id)
+              JOIN {_i()}.cidade_empresa c ON c.cidade_id = cs.cidade_id
+              JOIN {_i()}.empresa s USING (emp_codigo)
              WHERE cs.sistema_id = $1""",
         sistema_id,
     )
@@ -1139,8 +1199,8 @@ async def _unidades_dos_sistemas(con: Any, ids: list[str]) -> dict[str, str]:
     linhas = await con.fetch(
         f"""SELECT cs.sistema_id AS sis, s.unidade_id AS uni
               FROM {_i()}.cidade_sistema cs
-              JOIN {_i()}.superintendencia_cidade c ON c.cidade_id = cs.cidade_id
-              JOIN {_i()}.regional_superintendencia s USING (superintendencia_id)
+              JOIN {_i()}.cidade_empresa c ON c.cidade_id = cs.cidade_id
+              JOIN {_i()}.empresa s USING (emp_codigo)
              WHERE cs.sistema_id = ANY($1::text[])""",
         ids,
     )

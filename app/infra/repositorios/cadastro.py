@@ -2,7 +2,7 @@
 
 O recorte é sempre a UNIDADE, e ele desce pela hierarquia:
 
-    unidade_regional → regional_superintendencia → superintendencia_cidade
+    unidade_regional → empresa → cidade_empresa → cidade
                      → cidade_sistema → sistema_topologia
                      → subbacia_operacional / cts_operacional / ete_capex
 
@@ -35,11 +35,17 @@ def _i() -> str:
 
 
 #: As cidades de uma unidade — o recorte de tudo. `$1` é o `unidade_id`.
+#:
+#: TRÊS TABELAS ONDE ANTES ERAM DUAS (modelo de dados v8): o município deixou de
+#: existir só como linha de vínculo e ganhou tabela própria, então o caminho
+#: passa por `cidade_empresa` (o vínculo) até `cidade` (o município). A
+#: superintendência virou `empresa`, campo a campo.
 _CIDADES_DA_UNIDADE = """
-    SELECT c.cidade_id, c.cidade_name, c.superintendencia_id
-      FROM {i}.superintendencia_cidade c
-      JOIN {i}.regional_superintendencia s USING (superintendencia_id)
-     WHERE s.unidade_id = $1
+    SELECT c.cidade_id, c.cidade_name, ce.emp_codigo
+      FROM {i}.cidade c
+      JOIN {i}.cidade_empresa ce ON ce.cidade_id = c.cidade_id
+      JOIN {i}.empresa e ON e.emp_codigo = ce.emp_codigo
+     WHERE e.unidade_id = $1
 """
 
 
@@ -215,10 +221,10 @@ async def unidade(unidade_id: str) -> dict[str, Any] | None:
 async def hierarquia(unidade_id: str) -> dict[str, Any]:
     """Grupo 01 — a arvore inteira, cinco niveis.
 
-    Os nomes sao os do front (`cadastro/domain/hierarquia.ts`) e sao CURTOS:
-    `rid`/`uid`/`supId`/`cidId`/`sis`/`jus`. Eu tinha usado `regionalId`,
-    `superintendenciaId`, `cidadeId`, `sistemaId`, `jusante` — e a tela do Grupo 01
-    renderizava em branco, porque cada campo que ela procura vinha `undefined`.
+    OS NOMES SAO OS DO FRONT, e sao curtos: `rid`/`uid`/`empId`/`cidId`/`sis`/
+    `jus`, como declarados em `cadastro/domain/hierarquia.ts`. Renomear um deles
+    aqui nao quebra nada visivel — a tela apenas encontra `undefined` no lugar do
+    campo e renderiza em branco, sem erro.
 
     Tudo string: o front trata como texto e chama `.trim()`.
     """
@@ -234,15 +240,16 @@ async def hierarquia(unidade_id: str) -> dict[str, Any]:
         "unome": u.get("unidade_name") or "",
         "waccMedio": pt_br(u.get("wacc_medio")),
     }
-    supers = await db.buscar(
-        f"""SELECT superintendencia_id AS id, superintendencia_name AS nome
-              FROM {_i()}.regional_superintendencia WHERE unidade_id = $1
+    empresas = await db.buscar(
+        f"""SELECT emp_codigo AS id, empresa AS nome,
+                   data_fim_concessao AS "fimConcessao"
+              FROM {_i()}.empresa WHERE unidade_id = $1
              ORDER BY 2""",
         unidade_id,
     )
     cidades = await db.buscar(
         f"""SELECT cidade_id AS id, cidade_name AS nome,
-                   superintendencia_id AS "supId"
+                   emp_codigo AS "empId"
               FROM ({_cidades_cte()}) c ORDER BY cidade_name""",
         unidade_id,
     )
@@ -283,7 +290,7 @@ async def hierarquia(unidade_id: str) -> dict[str, Any]:
     # COMPONENTE SEM SISTEMA — cadastrado, ainda nao colocado em lugar nenhum.
     #
     # NAO e recortado por unidade, e nao poderia ser: sem sistema nao ha cidade,
-    # nao ha superintendencia, nao ha unidade. E o modelo real do produto — do
+    # nao ha empresa, nao ha unidade. E o modelo real do produto — do
     # Databricks vem quais sub-bacias e qual ETE sao do sistema, e TODAS as CTS
     # cadastradas; em que sistema cada CTS entra e a Regional que decide, e ela
     # pode colocar qualquer uma que exista na base.
@@ -311,7 +318,7 @@ async def hierarquia(unidade_id: str) -> dict[str, Any]:
 
     return {
         "unidReg": unid,
-        "superintendencias": txt(supers),
+        "empresas": txt(empresas),
         "cidades": txt(cidades),
         "sistemas": txt(sistemas),
         "topo": txt(topo),
@@ -323,11 +330,13 @@ async def contrato(unidade_id: str) -> dict[str, Any]:
     """Grupo 02 — cidades, metas e as faixas de paridade.
 
     Os nomes aqui são CURTOS (`fim`, `cob`, `cid`, `par`) porque são os do front
-    (`Cidade`, `Meta`, `Fator` em `cadastro/domain/contrato.ts`). Eu tinha usado
-    `fimConcessao`, `cidadeId`, `coberturaPct` e `paridade`, e o efeito foi um
-    "Unexpected Application Error" no navegador ao abrir o cadastro: a contagem de
-    pendências chama `c.fim.trim()` direto, sem guarda, e `undefined.trim()`
-    derruba a tela inteira.
+    (`Cidade`, `Meta`, `Fator` em `cadastro/domain/contrato.ts`). A grafia é
+    contrato: o front lê cada campo pelo nome, sem guarda de ausência, e um campo
+    rebatizado aqui chega `undefined` do outro lado.
+
+    `fim` CONTINUA SENDO SERVIDO e não é mais editável por aqui: a concessão é da
+    empresa (`PUT /empresas/{emp_codigo}`), e a aba do município apenas mostra o
+    ano que desceu para ela.
 
     E TUDO vai como string, inclusive ano e percentual — o front trata todo campo
     de ficha como texto editável e chama `.trim()` neles. Número cru quebraria do
@@ -335,10 +344,15 @@ async def contrato(unidade_id: str) -> dict[str, Any]:
     """
     cidades = await db.buscar(
         f"""SELECT c.cidade_id AS id, c.cidade_name AS nome,
+                   -- A EMPRESA que responde pelo municipio. A cidade sempre teve
+                   -- uma (`cidade_empresa`), mas a consulta nao a trazia e a aba
+                   -- mostrava as duas colunas vazias.
+                   c.emp_codigo AS "empId", emp.empresa AS "empNome",
                    o.data_fim_concessao AS fim,
                    o.unidade_cobertura AS cob,
                    o.atualizado_em, o.atualizado_por
               FROM ({_cidades_cte()}) c
+              JOIN {_i()}.empresa emp ON emp.emp_codigo = c.emp_codigo
               LEFT JOIN {_i()}.cidade_operacional o USING (cidade_id)
              ORDER BY c.cidade_name""",
         unidade_id,
@@ -441,14 +455,13 @@ async def sub_bacias(unidade_id: str) -> dict[str, Any]:
                    t.componente_sistema_nome AS sub_nome,
                    t.componente_sistema_id_jusante AS jusante,
                    s.sistema_id, s.sistema_name,
-                   c.cidade_id, c.cidade_name, c.superintendencia_id,
-                   r.superintendencia_name
+                   c.cidade_id, c.cidade_name, c.emp_codigo,
+                   e.empresa
               FROM {_i()}.sistema_topologia t
               JOIN {_i()}.cidade_sistema s USING (sistema_id)
               JOIN ({_cidades_cte()}) c ON c.cidade_id = s.cidade_id
-              JOIN {_i()}.regional_superintendencia r
-                   USING (superintendencia_id)
-             ORDER BY r.superintendencia_name, c.cidade_name, s.sistema_name,
+              JOIN {_i()}.empresa e USING (emp_codigo)
+             ORDER BY e.empresa, c.cidade_name, s.sistema_name,
                       t.componente_sistema_id""",
         unidade_id,
     )
@@ -491,10 +504,10 @@ def _arvore(linhas: list[dict[str, Any]], com_ficha: set[str]) -> list[dict[str,
         if l["sub_id"] not in com_ficha:
             continue
         sup = sups.setdefault(
-            l["superintendencia_id"],
+            l["emp_codigo"],
             {
-                "id": l["superintendencia_id"],
-                "nome": l["superintendencia_name"] or l["superintendencia_id"],
+                "id": l["emp_codigo"],
+                "nome": l["empresa"] or l["emp_codigo"],
                 "_cid": {},
             },
         )
@@ -554,10 +567,9 @@ _OBRA_LEITURA = {
 #:   sub-bacia:  Coletor tronco | Estacao elevatoria (EEE) | Linha de recalque (LR)
 #:   CTS:        Tronco         | EEE                      | Linha de recalque
 #:
-#: Eu tinha usado a grafia da sub-bacia para a CTS, e so o primeiro componente
-#: casava: a ficha voltava com 1 obra em vez de 4, e as outras tres perdiam o que a
-#: Regional tivesse digitado. Aceitar as duas grafias e o que faz a leitura
-#: sobreviver a diferenca de vocabulario entre as tabelas.
+#: AS DUAS GRAFIAS SAO ACEITAS porque as tabelas divergem no vocabulario. Usar so
+#: a da sub-bacia faz a ficha da CTS voltar com 1 obra em vez de 4 — e as outras
+#: tres perdem, em silencio, o que a Regional tiver digitado.
 _INDICE_SUBBACIA = {
     "Ligacao de esgoto": "0", "Ligação de esgoto": "0",
     "Rede coletora": "1",
@@ -619,6 +631,10 @@ async def etes(unidade_id: str) -> dict[str, Any]:
     """
     linhas = await db.buscar(
         f"""SELECT e.ete_id, t.componente_sistema_id AS sub, s.cidade_id,
+                   -- O SISTEMA da ETE. O join com `cidade_sistema` ja existia
+                   -- (e por ele que a ETE chega a uma unidade); faltava trazer a
+                   -- coluna, e a tela mostrava "ID Sistema" vazio nas 474.
+                   s.sistema_id, s.sistema_name,
                    e.capacidade_por_modulo, e.capex_por_modulo, e.opex_por_modulo,
                    e.tempo_de_execucao, e.capacidade_nominal_atual,
                    e.vazao_de_operacao_atual, e.capex_terreno, e.modulos, e.wacc,
@@ -666,6 +682,8 @@ async def etes(unidade_id: str) -> dict[str, Any]:
             "id": l["ete_id"],
             "sub": l["sub"] or "",
             "cidId": l["cidade_id"] or "",
+            "sisId": l["sistema_id"] or "",
+            "sistema": l["sistema_name"] or l["sistema_id"] or "",
             "nova": (l["nova"] or "Nao"),
             #: `pt_br_ano` nos que sao ANO, pela mesma razao da aba de obras: um
             #: `pt_br(2028)` devolve "2.028", e ano com separador de milhar e erro

@@ -14,8 +14,8 @@ mostrar a INCLINAÇÃO da curva, e a inclinação aparece muito antes da prova d
 otimalidade. Por isso o modo `rapido` corta o tempo de solver: mesma otimização,
 mesmos dados, mesmas restrições, menos relógio.
 
-QUANTO MENOS DEPENDE DO TAMANHO DO MODELO, e a primeira versão errou nisso —
-dava 60s a todas as unidades. Ver `segundos_da_estimativa`.
+QUANTO MENOS DEPENDE DO TAMANHO DO MODELO: um valor fixo para todas as unidades
+sobra na pequena e falta na grande. Ver `segundos_da_estimativa`.
 
 `MAX_TIME_S` entra nos `params`, e não numa coluna à parte — de propósito. O
 digest da deduplicação é sobre `params`, então a estimativa de 60s e a simulação

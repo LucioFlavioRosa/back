@@ -208,6 +208,21 @@ async def salvar_cts(
     )
 
 
+@router.put("/unidades/{unidade_id}/empresas/{emp_codigo}", response_model=formas.Gravacao, response_model_exclude_unset=True)
+async def salvar_empresa(
+    unidade_id: str, emp_codigo: str, corpo: Corpo, usuario: Usuario
+) -> dict[str, Any]:
+    """Grava a ficha da empresa — hoje, o fim da concessão.
+
+    O valor desce para os municípios dela por gatilho do banco, e não aqui: a
+    carga do Databricks também escreve nesta tabela, e propagar na aplicação
+    deixaria a cidade com o prazo antigo quando a empresa chegasse por fora.
+    """
+    return await cadastro_escrita.salvar_empresa(
+        unidade_id=unidade_id, emp_codigo=emp_codigo, corpo=corpo, autor=usuario
+    )
+
+
 @router.put("/unidades/{unidade_id}/contrato/{cidade_id}", response_model=formas.Gravacao, response_model_exclude_unset=True)
 async def salvar_contrato(
     unidade_id: str, cidade_id: str, corpo: Corpo, usuario: Usuario

@@ -167,8 +167,8 @@ def digest(params: dict[str, Any]) -> str:
 _CADASTRO_ALTERADO_EM = """
 WITH cidades AS (
     SELECT c.cidade_id
-      FROM {i}.superintendencia_cidade c
-      JOIN {i}.regional_superintendencia s USING (superintendencia_id)
+      FROM {i}.cidade_empresa c
+      JOIN {i}.empresa s USING (emp_codigo)
      WHERE s.unidade_id = $1
 ),
 comps AS (

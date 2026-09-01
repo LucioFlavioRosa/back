@@ -30,8 +30,8 @@ PG = "postgresql://otim:otim@localhost:55432/otimizador"
 #: Aba -> (tabela, chave primaria para casar as linhas)
 ABAS = {
     "unidade-regional": ("unidade_regional", "unidade_id"),
-    "regional-superintendencia": ("regional_superintendencia", "superintendencia_id"),
-    "superintendencia-cidade": ("superintendencia_cidade", "cidade_id"),
+    "empresa": ("empresa", "emp_codigo"),
+    "cidade-empresa": ("cidade_empresa", "cidade_id"),
     "cidade-sistema": ("cidade_sistema", "sistema_id"),
     "sistema-topologia": ("sistema_topologia", "componente_sistema_id"),
     "cidade-operacional": ("cidade_operacional", "cidade_id"),

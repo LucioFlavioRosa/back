@@ -65,9 +65,15 @@ async def obras(
         # Recorte desconhecido nao vira filtro nenhum, e a lista sai completa. E
         # o mesmo criterio de `situacao`/`ordenar`: a querystring escolhe entre
         # valores previstos, nunca compoe SQL.
-        if recorte in ("terceiro", "obrigatoria", "escolhida"):
-            args.append(recorte)
-            onde.append(f"{casc.RECORTE_SQL} = ${len(args)}")
+        # A lista de valores validos vive na ROTA, como `Literal` — ela recusa o
+        # desconhecido com 422 antes de chegar aqui. Esta checagem sobra para
+        # quem chamar a funcao direto (um script, um teste), e por isso ela
+        # LEVANTA em vez de ignorar: filtro que nao se aplica em silencio
+        # devolve a lista inteira parecendo filtrada.
+        if recorte not in ("terceiro", "obrigatoria", "escolhida"):
+            raise ValueError(f"recorte desconhecido: {recorte!r}")
+        args.append(recorte)
+        onde.append(f"{casc.RECORTE_SQL} = ${len(args)}")
 
     tamanho = max(1, min(tamanho, casc.TAMANHO_MAX))
     pagina = max(1, pagina)

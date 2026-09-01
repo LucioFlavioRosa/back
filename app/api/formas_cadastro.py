@@ -65,15 +65,31 @@ class UnidadeERegional(BaseModel):
     waccMedio: str
 
 
-class Superintendencia(BaseModel):
+class Empresa(BaseModel):
+    """O nível entre a unidade e o município (modelo de dados v8).
+
+    Chamava-se superintendência até a v7. A troca é de nome e de posição no
+    caminho — `regional > unidade > empresa > cidade` —, não de conteúdo: o
+    campo continua sendo (código, nome) e a tabela de origem manteve as três
+    colunas que tinha.
+    """
+
     id: str
     nome: str
+    #: Ano do fim da concessao DA EMPRESA — a fonte de verdade do prazo.
+    #:
+    #: Vazio enquanto a Aegea nao informar, e nesse caso cada municipio mantem o
+    #: ano que ja tinha. Preenchido, ele desce para todas as cidades da empresa
+    #: (gatilho `empresa_propaga_concessao`), porque e por cidade que o motor le.
+    #:
+    #: Vem como texto porque o Grupo 01 inteiro e string (ver `hierarquia`).
+    fimConcessao: str
 
 
 class CidadeDaHierarquia(BaseModel):
     id: str
     nome: str
-    supId: str
+    empId: str
 
 
 class SistemaDaHierarquia(BaseModel):
@@ -106,7 +122,7 @@ class ComponenteSemSistema(BaseModel):
 
 class Hierarquia(BaseModel):
     unidReg: UnidadeERegional
-    superintendencias: list[Superintendencia]
+    empresas: list[Empresa]
     cidades: list[CidadeDaHierarquia]
     sistemas: list[SistemaDaHierarquia]
     topo: list[NoDaTopologia]
@@ -119,6 +135,13 @@ class Hierarquia(BaseModel):
 class CidadeDoContrato(BaseModel):
     id: str
     nome: str
+    #: A empresa que responde pelo município — o nível acima dele na hierarquia.
+    #: A aba mostrava as duas colunas vazias porque a consulta não as trazia.
+    empId: str
+    empNome: str
+    #: Fim da concessão. LEITURA: quem o define é a empresa, e o banco o desce
+    #: para as cidades dela. Continua no payload porque a régua de cobertura
+    #: divide a ficha com ele.
     fim: str
     cob: str
     atualizadoEm: str
@@ -205,6 +228,10 @@ class Cts(BaseModel):
 class Ete(BaseModel):
     id: str
     cidId: str
+    #: O SISTEMA da ETE. A consulta já passava por `cidade_sistema` para achar a
+    #: unidade; faltava trazer a coluna, e a tela mostrava "ID Sistema" vazio.
+    sisId: str
+    sistema: str
     sub: str
     capMod: str
     capexMod: str

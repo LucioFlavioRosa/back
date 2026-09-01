@@ -220,10 +220,10 @@ def validate_payloads(payloads: dict[str, Any]) -> list[Issue]:
 
     h = payloads["hier"]
     validate_obj(h.get("unidReg"), ["rid", "rnome", "uid", "unome", "waccMedio"], "unidReg", issues)
-    for i, s in enumerate(h.get("superintendencias", [])):
-        validate_obj(s, ["id", "nome"], f"superintendencias[{i}]", issues)
+    for i, s in enumerate(h.get("empresas", [])):
+        validate_obj(s, ["id", "nome"], f"empresas[{i}]", issues)
     for i, c in enumerate(h.get("cidades", [])):
-        validate_obj(c, ["id", "nome", "supId"], f"cidadeH[{i}]", issues)
+        validate_obj(c, ["id", "nome", "empId"], f"cidadeH[{i}]", issues)
     for i, s in enumerate(h.get("sistemas", [])):
         validate_obj(s, ["id", "nome", "cidId"], f"sistemaH[{i}]", issues)
     for i, t in enumerate(h.get("topo", [])):

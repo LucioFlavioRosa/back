@@ -21,7 +21,7 @@ O front cacheia tudo isto com `staleTime: Infinity` — o que so e correto porqu
 `app/dominio/status.py`).
 """
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 
@@ -352,10 +352,9 @@ async def sensibilidade(
     comparacao "quanto muda em relacao a hoje".
 
     OS PONTOS SAEM DA LINHAGEM (`run_request.base_run_id`), e nao do nome da
-    rodada. A primeira versao escrevia o degrau no rotulo e o lia de volta com
-    uma expressao regular; o rotulo e livre, entao renomear a rodada desmanchava
-    a curva calada, e uma variacao deduplicada sob outro nome nunca era
-    encontrada. Ver `migracoes/013_estimativa_de_sensibilidade.sql`.
+    rodada. O rotulo e livre: le-lo com expressao regular faz renomear a rodada
+    desmanchar a curva em silencio, e uma variacao deduplicada sob outro nome
+    nunca e encontrada. Ver `migracoes/013_estimativa_de_sensibilidade.sql`.
 
     A FAIXA E DE QUEM PERGUNTA (`?de=&ate=&pontos=`), e o padrao e +10% a +50% em
     cinco. "Quanto a mais e plausivel" e decisao de negocio e muda por unidade:
@@ -474,7 +473,13 @@ async def obras(
     situacao: Annotated[str | None, Query()] = None,
     cidade: Annotated[str | None, Query()] = None,
     ano: Annotated[int | None, Query()] = None,
-    recorte: Annotated[str | None, Query()] = None,
+    # `Literal` E NAO `str`: o valor invalido passa a ser recusado com 422 na
+    # borda, e os quatro validos aparecem no OpenAPI. Antes o repositorio
+    # ignorava em silencio o que nao reconhecia — um `?recorte=terceiros` (com s)
+    # devolvia a lista inteira como se nenhum filtro tivesse sido pedido.
+    recorte: Annotated[
+        Literal["todas", "terceiro", "obrigatoria", "escolhida"] | None, Query()
+    ] = None,
     pagina: Annotated[int, Query(ge=1)] = 1,
     tamanho: Annotated[int, Query(ge=1, le=500)] = 50,
     ordenar: Annotated[str, Query()] = "inicio",
