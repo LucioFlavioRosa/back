@@ -23,20 +23,39 @@ O front cacheia tudo isto com `staleTime: Infinity` — o que so e correto porqu
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Body, HTTPException, Query, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 
-from app.api.deps import Usuario, Quem
+from app.api.deps import Usuario, Quem, guarda_de_rota
 from app.dominio import run_id as rid
+from app.api import formas_resultado as formas
 from app.infra.repositorios import niveis, resultado
 
-router = APIRouter(tags=["resultados"])
+#: PREFIXO E GUARDA MORAM NO ROTEADOR, e nao no `include_router`. Assim quem
+#: le este arquivo ve sob que caminho as rotas abaixo vivem e que elas ja
+#: nascem protegidas — sem precisar abrir o `main.py` para descobrir.
+#:
+#: `main.py` nao perde a visao do conjunto: `test_guarda_de_rota.py` cobra
+#: que TODO roteador servido sob /api traga esta dependencia.
+router = APIRouter(
+    prefix="/api",
+    tags=["resultados"],
+    dependencies=[Depends(guarda_de_rota)],
+)
 
 
-@router.get("/runs")
+# `exclude_unset` porque o contrato do front distingue AUSENTE de nulo: `parametros`
+# e `metricas` sao `?` la — rodada nao publicada nao tem nenhum dos dois —, e o
+# modelo, com default `None`, materializava `"metricas": null` onde antes a chave
+# nem existia. `null` diria "existe e nao tem valor"; ausente diz "nao se aplica".
+@router.get(
+    "/runs",
+    response_model=list[formas.RunResumo],
+    response_model_exclude_unset=True,
+)
 async def historico(
     quem: Quem,
-    unidade: str | None = Query(None),
-    usuario: str | None = Query(None),
+    unidade: Annotated[str | None, Query()] = None,
+    usuario: Annotated[str | None, Query()] = None,
 ) -> list[dict[str, Any]]:
     """A lista do historico. Sai da view `otim_vw_historico`, que existe justamente
     para esta tela consumir sem nenhum join.
@@ -76,7 +95,7 @@ async def historico(
     return [l for l in linhas if l.get("unidadeId") in quem.unidades]
 
 
-@router.get("/runs/{run_id}/meta")
+@router.get("/runs/{run_id}/meta", response_model=formas.RunMeta)
 async def meta(run_id: str) -> dict[str, Any]:
     """Alimenta o header de TODOS os niveis: chips de parametro e status do solver."""
     rid.exigir_valido(run_id)
@@ -208,55 +227,142 @@ async def desfavoritar(run_id: str, quem: Quem) -> None:
 # como se fossem dado.
 
 
+async def _run_publicado(run_id: str) -> str:
+    """Valida o formato E a existencia da rodada, e devolve o `run_id`.
+
+    DEPENDENCIA, e nao funcao chamada na primeira linha de cada rota. E a mesma
+    razao pela qual `guarda_de_rota` vive no roteador e nao endpoint a endpoint
+    (ver `main.py`): assim a rota nova NASCE com a checagem, em vez de depender de
+    alguem lembrar. As sete rotas de agregado nasceram sem ela justamente por
+    esquecimento, e devolviam 200 com zeros para um `run_id` inventado.
+
+    Fica como parametro, e nao no roteador: `GET /runs` e `POST /runs` nao tem
+    `run_id`, e as rotas de um recorte so (cidade, sistema, sub-bacia, obra) ja
+    respondem 404 por `_ou_404` — passar por aqui as faria pagar uma consulta a
+    mais para chegar ao mesmo lugar.
+
+    As rotas que devolvem AGREGADO — painel, ebitda, lista de cidades,
+    explicabilidade, lista de obras, cronograma — nao tem um registro unico para
+    achar ou nao achar, entao sem esta checagem elas respondiam 200 com zeros
+    para um `run_id` inventado. Zero de sub-bacia presa e zero de obra sao
+    respostas legitimas de uma rodada de verdade; devolve-las para uma rodada que
+    nao existe torna as duas coisas indistinguiveis.
+
+    As rotas de um recorte so (cidade, sistema, sub-bacia, obra) nao precisam
+    dele: `_ou_404` ja nao acha o registro quando a rodada nao existe.
+    """
+    rid.exigir_valido(run_id)
+    if not await niveis.existe(run_id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Rodada não encontrada.")
+    return run_id
+
+
+#: O `run_id` de uma rodada que existe. Alias para reuso, no estilo de
+#: `Usuario`/`Quem` em `deps.py`.
+RunPublicado = Annotated[str, Depends(_run_publicado)]
+
+
 async def _ou_404(valor, o_que: str):
     if valor is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"{o_que} não encontrado nesta rodada.")
     return valor
 
 
-@router.get("/runs/{run_id}/painel")
-async def painel(run_id: str) -> dict[str, Any]:
+@router.get("/runs/{run_id}/painel", response_model=formas.PainelGlobal)
+async def painel(run_id: RunPublicado) -> dict[str, Any]:
     """Os 6 quadros do nivel global numa requisicao so.
 
     Desvio consciente do handoff, que sugeria `/ano`, `/mes`, `/obras/agregado` e
     `/subbacias/histograma` separados: sao quadros que aparecem sempre juntos, e o
     backend le as tabelas da mesma rodada de qualquer jeito.
     """
-    rid.exigir_valido(run_id)
     return await niveis.painel(run_id)
 
 
-@router.get("/runs/{run_id}/ebitda")
-async def ebitda(run_id: str, cidade: str | None = Query(None)) -> dict[str, Any]:
-    rid.exigir_valido(run_id)
+@router.get("/runs/{run_id}/ebitda", response_model=formas.PainelEbitda)
+async def ebitda(
+    run_id: RunPublicado, cidade: Annotated[str | None, Query()] = None
+) -> dict[str, Any]:
     return await niveis.ebitda(run_id, cidade=cidade)
 
 
-@router.get("/runs/{run_id}/cidades")
-async def cidades(run_id: str) -> list[dict[str, Any]]:
-    rid.exigir_valido(run_id)
+@router.get("/runs/{run_id}/cidades", response_model=list[formas.CidadeLinha])
+async def cidades(run_id: RunPublicado) -> list[dict[str, Any]]:
     return await niveis.cidades(run_id)
 
 
-@router.get("/runs/{run_id}/cidades/{cidade_id}")
+@router.get("/runs/{run_id}/cidades/{cidade_id}", response_model=formas.CidadeDetalhe)
 async def cidade(run_id: str, cidade_id: str) -> dict[str, Any]:
     rid.exigir_valido(run_id)
     return await _ou_404(await niveis.cidade(run_id, cidade_id), "Cidade")
 
 
-@router.get("/runs/{run_id}/sistemas/{sistema_id}/topologia")
+@router.get("/runs/{run_id}/sistemas/{sistema_id}/topologia", response_model=formas.Fluxo)
 async def topologia(run_id: str, sistema_id: str) -> dict[str, Any]:
     rid.exigir_valido(run_id)
     return await _ou_404(await niveis.topologia(run_id, sistema_id), "Sistema")
 
 
-@router.get("/runs/{run_id}/subbacias/{sub_id}")
+@router.get("/runs/{run_id}/subbacias/{sub_id}", response_model=formas.SubBaciaDetalhe)
 async def subbacia(run_id: str, sub_id: str) -> dict[str, Any]:
     rid.exigir_valido(run_id)
     return await _ou_404(await niveis.subbacia(run_id, sub_id), "Sub-bacia")
 
 
-@router.get("/runs/{run_id}/obras/{obra_id}")
+@router.get("/runs/{run_id}/explicabilidade", response_model=formas.ExplicabilidadeGlobal)
+async def explicabilidade(run_id: RunPublicado) -> dict[str, Any]:
+    """Por que o plano nao conecta 100% — agregado por motivo, nivel global.
+
+    Sem `_ou_404`: uma rodada sem nenhuma sub-bacia presa e uma resposta legitima
+    (`naoFaturando: 0`), e a tela a trata como "nada a explicar". 404 aqui diria
+    que a rodada nao existe.
+    """
+    return await niveis.explicabilidade(run_id)
+
+
+@router.get("/runs/{run_id}/cidades/{cidade_id}/explicabilidade", response_model=formas.ExplicabilidadeGlobal)
+async def explicabilidade_da_cidade(run_id: RunPublicado, cidade_id: str) -> dict[str, Any]:
+    """O mesmo recorte dentro de uma cidade.
+
+    Endpoint proprio, e nao `?cidade=` no de cima: a URL da cidade ja e
+    `/cidades/{id}`, e colar o recorte nela segue o padrao de `/cidades/{id}`.
+    Aqui o 404 vale — cidade que nao pertence a rodada nao tem explicacao nenhuma.
+    """
+    return await _ou_404(await niveis.explicabilidade(run_id, cidade_id), "Cidade")
+
+
+# As duas rotas de obra abaixo vem ANTES de `/obras/{obra_id}`, e a ordem e o que
+# as faz existir: o FastAPI casa na ordem de declaracao, e `/obras/{obra_id}`
+# aceitaria "cronograma" como se fosse um id — resposta 404 "Obra nao encontrada"
+# para um endpoint que existe.
+@router.get("/runs/{run_id}/obras/cronograma", response_model=formas.CronogramaDeObras)
+async def cronograma_de_obras(run_id: RunPublicado) -> dict[str, Any]:
+    return await niveis.cronograma_de_obras(run_id)
+
+
+@router.get("/runs/{run_id}/obras", response_model=formas.ObrasPagina)
+async def obras(
+    run_id: RunPublicado,
+    situacao: Annotated[str | None, Query()] = None,
+    cidade: Annotated[str | None, Query()] = None,
+    ano: Annotated[int | None, Query()] = None,
+    pagina: Annotated[int, Query(ge=1)] = 1,
+    tamanho: Annotated[int, Query(ge=1, le=500)] = 50,
+    ordenar: Annotated[str, Query()] = "inicio",
+) -> dict[str, Any]:
+    """A lista de obras do plano, paginada. `total` e o do resultado FILTRADO."""
+    return await niveis.obras(
+        run_id,
+        situacao=situacao,
+        cidade=cidade,
+        ano=ano,
+        pagina=pagina,
+        tamanho=tamanho,
+        ordenar=ordenar,
+    )
+
+
+@router.get("/runs/{run_id}/obras/{obra_id}", response_model=formas.ObraDetalhe)
 async def obra(run_id: str, obra_id: str) -> dict[str, Any]:
     rid.exigir_valido(run_id)
     return await _ou_404(await niveis.obra(run_id, obra_id), "Obra")

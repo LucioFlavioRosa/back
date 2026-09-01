@@ -110,6 +110,12 @@ _NAO_NEGATIVOS = {
     "ligU", "ligA", "ligN", "ligURes", "ligARes",
     "ecoU", "ecoA", "ecoN", "ecoURes", "ecoARes",
     "obra.qtd", "obra.preco", "obra.opex", "obra.dur", "obra.tPred",
+    #: Espera nao e negativa — mesma regra de `obra.tPred`, que ja estava aqui.
+    #: `ete.anoObrig`/`ete.proibAte` NAO entram, e a assimetria e proposital:
+    #: `obra_obrigatoria_ano` tambem e CODIGO (0 = nao obrigatoria, -1 = qualquer
+    #: ano), entao um negativo ali e valor legitimo. As irmas de obra tambem estao
+    #: fora desta lista, pela mesma razao.
+    "ete.tPred",
 }
 
 
@@ -128,7 +134,13 @@ _INTEIROS = {
     # obras (componentes_*_capex)
     "obra.tPred", "obra.dur", "obra.anoObrig", "obra.proibAte",
     # ETE
-    "ete.tExec", "ete.modulos",
+    #: As tres ultimas entraram junto com os campos de prazo/janela da ETE. Sem
+    #: elas, `anoObrig: "2028,5"` respondia 200 e o banco guardava 2028 — a coluna
+    #: e `integer`, e o truncamento acontecia sem ninguem ver. E a mesma perda
+    #: silenciosa que este conjunto existe para impedir, e as colunas irmas de
+    #: obra (`obra.anoObrig`, `obra.proibAte`) ja estavam protegidas ali em cima:
+    #: era a ETE que tinha ficado de fora.
+    "ete.tExec", "ete.modulos", "ete.tPred", "ete.anoObrig", "ete.proibAte",
     # contrato
     "cidade.fim", "meta.ano",
 }
@@ -983,9 +995,18 @@ _ETE = {
     "terreno": "capex_terreno",
     "modulos": "modulos",
     "wacc": "wacc",
+    #: Prazo e janela da obra da ETE — ver o comentario gemeo na leitura
+    #: (`cadastro.py`, MAPA de `etes`). O motor le as tres; faltava a tela poder
+    #: escrever. `capacidade_ociosa` fica de fora por ser derivada.
+    "tPred": "tempo_predecessoras",
+    "anoObrig": "obra_obrigatoria_ano",
+    "proibAte": "obra_proibida_ate",
 }
 #: Colunas de ETE que sao numero — as demais (`nova`) sao texto.
-_ETE_NUM = {"capMod","capexMod","opexMod","tExec","capNom","vazOp","terreno","modulos","wacc"}
+#: As tres novas sao INTEGER na tabela (ano e quantidade de anos), entao entram
+#: aqui: sem isso `_numerico` nao roda e o driver recebe string num campo `integer`.
+_ETE_NUM = {"capMod","capexMod","opexMod","tExec","capNom","vazOp","terreno","modulos","wacc",
+            "tPred","anoObrig","proibAte"}
 
 
 def _nova_para_texto(v: Any) -> Any:

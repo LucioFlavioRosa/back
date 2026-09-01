@@ -40,6 +40,16 @@ FORMAS_DO_CONTRATO = {
     "GET /runs/{}/ebitda",
     "GET /runs/{}/cidades",
     "GET /runs/{}/cidades/{}",
+    # Explicabilidade agregada: a mesma pergunta do nivel 4 ("por que nao
+    # fatura?"), respondida antes de escolher a sub-bacia. Duas rotas e nao uma
+    # com `?cidade=`: a URL da cidade ja e `/cidades/{}`, e o recorte cola nela.
+    "GET /runs/{}/explicabilidade",
+    "GET /runs/{}/cidades/{}/explicabilidade",
+    # A LISTA e o CRONOGRAMA vem antes de `/obras/{}` na declaracao, e a ordem e
+    # parte do contrato: o FastAPI casa por ordem, e `/obras/{}` engoliria
+    # "cronograma" como se fosse um id de obra.
+    "GET /runs/{}/obras",
+    "GET /runs/{}/obras/cronograma",
     "GET /runs/{}/sistemas/{}/topologia",
     "GET /runs/{}/subbacias/{}",
     "GET /runs/{}/obras/{}",
@@ -125,7 +135,7 @@ def test_nenhum_endpoint_a_mais():
 def test_a_lista_nao_esta_vazia():
     # Guarda contra o teste passar por não encontrar rota nenhuma — se `_expostas`
     # quebrar com uma mudança do FastAPI, os dois testes acima passariam vazios.
-    assert len(_expostas()) == len(FORMAS_DO_CONTRATO) == 35
+    assert len(_expostas()) == len(FORMAS_DO_CONTRATO) == 39
 
 
 @pytest.mark.parametrize("run_id", ["r1' OR 1=1", "../etc", "com espaco", ""])

@@ -20,12 +20,24 @@ alguém já preencheu.
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Body, HTTPException, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 
-from app.api.deps import Quem, Usuario
+from app.api.deps import Quem, Usuario, guarda_de_rota
+from app.api import formas_cadastro as formas
 from app.infra.repositorios import cadastro, cadastro_escrita
 
-router = APIRouter(tags=["cadastro"])
+#: PREFIXO E GUARDA MORAM NO ROTEADOR, e nao no `include_router`. Assim quem
+#: le este arquivo ve sob que caminho as rotas abaixo vivem e que elas ja
+#: nascem protegidas — sem precisar abrir o `main.py` para descobrir.
+#:
+#: `guarda_de_rota` le `{unidade_id}`/`{run_id}` do caminho; `main.py` nao
+#: perde a visao do conjunto porque `test_guarda_de_rota.py` cobra que TODO
+#: roteador servido sob /api traga esta dependencia.
+router = APIRouter(
+    prefix="/api",
+    tags=["cadastro"],
+    dependencies=[Depends(guarda_de_rota)],
+)
 
 
 async def _ou_404(valor, o_que: str, feminino: bool = False):
@@ -44,7 +56,7 @@ async def _ou_404(valor, o_que: str, feminino: bool = False):
 # SEM concessao nenhuma, enumerava todas as regionais, todas as unidades, e os
 # resumos operacionais delas. E o vazamento mais barato que existe: entrega o mapa
 # da organizacao inteira numa requisicao, antes de qualquer tentativa de acesso.
-@router.get("/regionais")
+@router.get("/regionais", response_model=list[formas.Regional])
 async def regionais(quem: Quem) -> list[dict[str, Any]]:
     todas = await cadastro.regionais()
     if quem.tudo:
@@ -59,7 +71,7 @@ async def regionais(quem: Quem) -> list[dict[str, Any]]:
     return [r for r in todas if r["id"] in minhas]
 
 
-@router.get("/regionais/{regional_id}/unidades")
+@router.get("/regionais/{regional_id}/unidades", response_model=list[formas.Unidade])
 async def unidades(regional_id: str, quem: Quem) -> list[dict[str, Any]]:
     todas = await cadastro.unidades(regional_id)
     if quem.tudo:
@@ -70,13 +82,13 @@ async def unidades(regional_id: str, quem: Quem) -> list[dict[str, Any]]:
     return [u for u in todas if u["id"] in quem.unidades]
 
 
-@router.get("/unidades/{unidade_id}")
+@router.get("/unidades/{unidade_id}", response_model=formas.Unidade)
 async def unidade(unidade_id: str) -> dict[str, Any]:
     return await _ou_404(await cadastro.unidade(unidade_id), "Unidade", feminino=True)
 
 
 # ------------------------------------------------------------------- fichas
-@router.get("/unidades/{unidade_id}/hierarquia")
+@router.get("/unidades/{unidade_id}/hierarquia", response_model=formas.Hierarquia)
 async def hierarquia(unidade_id: str) -> dict[str, Any]:
     """Grupo 01 — a árvore organizacional inteira, do Databricks.
 
@@ -86,7 +98,7 @@ async def hierarquia(unidade_id: str) -> dict[str, Any]:
     return await cadastro.hierarquia(unidade_id)
 
 
-@router.get("/unidades/{unidade_id}/contrato")
+@router.get("/unidades/{unidade_id}/contrato", response_model=formas.Contrato)
 async def contrato(unidade_id: str) -> dict[str, Any]:
     """Grupo 02 — cidades, metas de cobertura e faixas de paridade.
 
@@ -97,7 +109,7 @@ async def contrato(unidade_id: str) -> dict[str, Any]:
     return await cadastro.contrato(unidade_id)
 
 
-@router.get("/unidades/{unidade_id}/sub-bacias")
+@router.get("/unidades/{unidade_id}/sub-bacias", response_model=formas.SubBacias)
 async def sub_bacias(unidade_id: str) -> dict[str, Any]:
     """Grupo 03 — a árvore de coleta e as fichas.
 
@@ -107,12 +119,12 @@ async def sub_bacias(unidade_id: str) -> dict[str, Any]:
     return await cadastro.sub_bacias(unidade_id)
 
 
-@router.get("/unidades/{unidade_id}/etes")
+@router.get("/unidades/{unidade_id}/etes", response_model=formas.Etes)
 async def etes(unidade_id: str) -> dict[str, Any]:
     return await cadastro.etes(unidade_id)
 
 
-@router.get("/unidades/{unidade_id}/cts")
+@router.get("/unidades/{unidade_id}/cts", response_model=formas.Cts)
 async def cts(unidade_id: str) -> dict[str, Any]:
     """Grupo 05 — CTS e o pareamento 1:1 com a sub-bacia.
 
@@ -123,12 +135,12 @@ async def cts(unidade_id: str) -> dict[str, Any]:
     return await cadastro.cts(unidade_id)
 
 
-@router.get("/unidades/{unidade_id}/alteracoes")
+@router.get("/unidades/{unidade_id}/alteracoes", response_model=formas.Alteracoes)
 async def alteracoes(
     unidade_id: str,
-    tipo: str | None = None,
-    fichaId: str | None = None,  # noqa: N803 — camelCase e a convencao do contrato
-    limite: int = cadastro.LIMITE_ALTERACOES,
+    tipo: Annotated[str | None, Query()] = None,
+    fichaId: Annotated[str | None, Query()] = None,  # noqa: N803 — camelCase e a convencao do contrato
+    limite: Annotated[int, Query()] = cadastro.LIMITE_ALTERACOES,
 ) -> dict[str, Any]:
     """A trilha de auditoria do cadastro: quem mudou o quê, quando.
 
@@ -175,7 +187,7 @@ async def alteracoes(
 Corpo = Annotated[dict[str, Any], Body()]
 
 
-@router.put("/unidades/{unidade_id}/sub-bacias/{sub_id}")
+@router.put("/unidades/{unidade_id}/sub-bacias/{sub_id}", response_model=formas.Gravacao, response_model_exclude_unset=True)
 async def salvar_sub_bacia(
     unidade_id: str, sub_id: str, corpo: Corpo, usuario: Usuario
 ) -> dict[str, Any]:
@@ -184,7 +196,7 @@ async def salvar_sub_bacia(
     )
 
 
-@router.put("/unidades/{unidade_id}/cts/{cts_id}")
+@router.put("/unidades/{unidade_id}/cts/{cts_id}", response_model=formas.Gravacao, response_model_exclude_unset=True)
 async def salvar_cts(
     unidade_id: str, cts_id: str, corpo: Corpo, usuario: Usuario
 ) -> dict[str, Any]:
@@ -193,7 +205,7 @@ async def salvar_cts(
     )
 
 
-@router.put("/unidades/{unidade_id}/contrato/{cidade_id}")
+@router.put("/unidades/{unidade_id}/contrato/{cidade_id}", response_model=formas.Gravacao, response_model_exclude_unset=True)
 async def salvar_contrato(
     unidade_id: str, cidade_id: str, corpo: Corpo, usuario: Usuario
 ) -> dict[str, Any]:
@@ -202,7 +214,7 @@ async def salvar_contrato(
     )
 
 
-@router.put("/unidades/{unidade_id}/etes/{ete_id}")
+@router.put("/unidades/{unidade_id}/etes/{ete_id}", response_model=formas.Gravacao, response_model_exclude_unset=True)
 async def salvar_ete(
     unidade_id: str, ete_id: str, corpo: Corpo, usuario: Usuario
 ) -> dict[str, Any]:
@@ -211,7 +223,7 @@ async def salvar_ete(
     )
 
 
-@router.put("/unidades/{unidade_id}/topologia/{componente_id}")
+@router.put("/unidades/{unidade_id}/topologia/{componente_id}", response_model=formas.Gravacao, response_model_exclude_unset=True)
 async def salvar_topologia(
     unidade_id: str, componente_id: str, corpo: Corpo, usuario: Usuario
 ) -> dict[str, Any]:
@@ -230,7 +242,7 @@ async def salvar_topologia(
     )
 
 
-@router.put("/unidades/{unidade_id}/sistemas/{sistema_id}")
+@router.put("/unidades/{unidade_id}/sistemas/{sistema_id}", response_model=formas.Gravacao, response_model_exclude_unset=True)
 async def salvar_sistema(
     unidade_id: str, sistema_id: str, corpo: Corpo, usuario: Usuario
 ) -> dict[str, Any]:
@@ -247,7 +259,7 @@ async def salvar_sistema(
     )
 
 
-@router.delete("/unidades/{unidade_id}/topologia/{componente_id}")
+@router.delete("/unidades/{unidade_id}/topologia/{componente_id}", response_model=formas.Gravacao, response_model_exclude_unset=True)
 async def remover_da_topologia(
     unidade_id: str, componente_id: str, usuario: Usuario
 ) -> dict[str, Any]:

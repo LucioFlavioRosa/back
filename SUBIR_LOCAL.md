@@ -70,7 +70,7 @@ docker compose exec -T db pg_restore -U otim -d otimizador --no-owner < dev/cada
 
 | Esquema | Objetos | FKs | Dado |
 |---|---|---|---|
-| `input` | 17 tabelas | 10 | **completo** — 4.850 sub-bacias, 997 ETEs, 141 cidades |
+| `input` | 17 tabelas | 10 | **completo** — 4.850 sub-bacias, 997 ETEs, 337 CTS, 141 cidades |
 | `controle` | 7 tabelas | 1 | as 3 concessões de acesso; **sem histórico de rodadas** |
 | `public` | 14 tabelas + 3 views | 13 | **vazio** — você gera os seus resultados |
 
@@ -83,9 +83,9 @@ recorte por unidade funcionar:
 | `ana@aegea` | analista | regional `rA` |
 | `bruno@aegea` | analista | só a unidade `uB2` |
 
-A trilha de correções do cadastro (`input.override`) vem com 18 linhas de exemplo — override
-tem valor antigo, valor novo, autor e data, e é assim que a tela mostra o que foi corrigido à
-mão sobre o dado do Databricks.
+A trilha de correções do cadastro (`input.override`) vem com 283 linhas — override tem valor
+antigo, valor novo, autor e data, e é assim que a tela mostra o que foi corrigido à mão sobre
+o dado do Databricks.
 
 As migrações do cadastro e a do resultado já estão aplicadas. Índices, constraints e
 `COMMENT ON COLUMN` vêm junto.
@@ -106,7 +106,7 @@ curl http://localhost:8000/readyz          # migracoesFaltando: []
 
 > **Por que um dump, e não os DDLs.** O cadastro nasce de uma planilha que não está no
 > repositório (2 MB, no OneDrive do time). O dump é o mesmo dado, com as migrações já
-> aplicadas, em 771 KB. Quem for **regenerar da planilha** usa `dev/recarregar_tudo.py` — leva
+> aplicadas, em 712 KB. Quem for **regenerar da planilha** usa `dev/recarregar_tudo.py` — leva
 > ~20 min porque também roda as 5 unidades.
 >
 > **Por que o `public` vem vazio, mas vem.** Sem as 17 tabelas de resultado, `GET /runs`
@@ -196,11 +196,11 @@ Um roteiro de 5 minutos:
 | rodada vai a **ERRO** com `ModuleNotFoundError: otimizador` | imports do pacote plano | passo 4 |
 | `readyz` com `migracoesFaltando` | banco vazio ou desatualizado | passo 3 |
 | a tela abre mas não lista unidades | o dump não entrou | repita o passo 3 e confira as 4.850 sub-bacias |
-| reiniciou a máquina e nada sobe | containers parados | `docker compose -f docker-compose.yml -f docker-compose.e2e.yml start` — **`start`, não `up`** |
+| reiniciou a máquina e nada sobe | containers parados | `docker compose -f docker-compose.yml -f docker-compose.e2e.yml start` |
 
-> **Sobre `start` e não `up`:** o serviço `db` **não tem volume nomeado**, então o dado mora na
-> camada gravável do container. `start` religa o que existe; um `up` que decida recriar o `db`
-> apaga o banco. Se isso acontecer, é o passo 3 de novo — que é justamente por que o dump existe.
+> **O banco fica no volume `db-dados`**, declarado no `docker-compose.yml`. Ele sobrevive a
+> `up`, a `down` e ao `docker volume prune`; some só com `docker compose down -v`, que é
+> explícito. Se um dia sumir mesmo assim, é o passo 3 de novo.
 
 ---
 

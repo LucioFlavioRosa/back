@@ -15,18 +15,19 @@ Ficam fora do prefixo `/api` porque quem chama e o kubelet, direto no pod.
 
 from fastapi import APIRouter, Response, status
 
+from app.api import formas_cadastro as formas
 from app.config import config
 from app.infra import db, fila
 
 router = APIRouter(tags=["saúde"], include_in_schema=False)
 
 
-@router.get("/healthz")
+@router.get("/healthz", response_model=formas.Saude)
 async def vivo() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@router.get("/readyz")
+@router.get("/readyz", response_model=formas.ProntidaoDoServico)
 async def pronto(resposta: Response) -> dict[str, object]:
     banco = await db.saudavel()
     cfg = config()

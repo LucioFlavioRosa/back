@@ -93,6 +93,29 @@ def _realizado_pct(cobertura: float | None, alvo_lig: float | None, pct_alvo: fl
     return round(cobertura / alvo_lig * pct_alvo * 100, 1)
 
 
+def _meta(m: dict[str, Any]) -> dict[str, Any]:
+    """Uma linha de `otim_meta_cobertura` no formato do contrato.
+
+    Fica em funcao propria porque DUAS telas a pedem: o cartao-grafico do nivel 1
+    (`cidades`) e a cidade aberta (`cidade`). Duas copias da mesma conversao
+    divergiriam no dia em que uma das duas ganhasse um campo.
+
+    `pct_alvo` vem do motor como FRACAO (0.4); o contrato pede percentual (40.0) —
+    campos `Pct` vao de 0 a 100. E o realizado e o alvo reescalado pela razao entre
+    o que se cobriu e o que se devia cobrir: 524 de 400 ligacoes com alvo de 40%
+    da 52,4%.
+    """
+    return {
+        "ano": m["ano"],
+        "alvoPct": _escala_pct(m["pct_alvo"]),
+        "realizadoPct": _realizado_pct(
+            m["cobertura_ligacoes"], m["alvo_ligacoes"], m["pct_alvo"]
+        ),
+        "atingida": m["atingida"],
+        "dentroDaJanela": m["dentro_janela_capex"],
+    }
+
+
 def _situacao(linha: dict[str, Any]) -> str:
     """`construida | nao-construida | terceiro | sem-obra`.
 
@@ -148,6 +171,103 @@ async def _cascata(run_id: str, cidade: str | None = None, sub_bacia: str | None
         {"rotulo": "OPEX", "valor": -abs(linha["opex"]), "tipo": "sai"},
         {"rotulo": "VPL", "valor": linha["vpl"], "tipo": "total"},
     ]
+
+
+async def _obras_do_plano_por_ano(
+    run_id: str,
+    cidade: str | None = None,
+    sistema: str | None = None,
+    sub_bacia: str | None = None,
+) -> list[dict[str, Any]]:
+    """As obras EXECUTADAS, agrupadas por ano e componente, no recorte pedido.
+
+    `construida AND data_inicio IS NOT NULL` é o mesmo recorte que o painel global
+    sempre usou: obra fora do plano não tem ano de execução, e colocá-la num ano
+    qualquer inventaria cronograma.
+
+    Devolve a linha crua de propósito — `obrasPorAno` (do painel) conta OBRAS e
+    `elementosPorAno` (de todos os níveis) soma QUANTIDADE FÍSICA. São perguntas
+    diferentes sobre a mesma linha, e uma consulta só evita que os dois recortes
+    divirjam no dia em que um deles mudar de filtro.
+    """
+    onde = ["o.run_id = $1", "o.construida", "o.data_inicio IS NOT NULL"]
+    args: list[Any] = [run_id]
+    if cidade:
+        args.append(cidade)
+        onde.append(f"o.cidade = ${len(args)}")
+    if sistema:
+        # Ver a nota da consulta dos elos: `otim_obra.sistema` só vem preenchido em
+        # parte das obras, e quem sabe o sistema das demais é a sub-bacia.
+        args.append(sistema)
+        onde.append(f"COALESCE(o.sistema, s.sistema) = ${len(args)}")
+    if sub_bacia:
+        args.append(sub_bacia)
+        onde.append(f"o.no = ${len(args)}")
+
+    return await db.buscar(
+        f"""SELECT LEFT(o.data_inicio, 4)::int AS ano,
+                   o.componente,
+                   COUNT(*) AS obras,
+                   SUM(o.quantidade) AS quantidade,
+                   COUNT(DISTINCT o.unidade) AS unidades_distintas,
+                   MIN(o.unidade) AS unidade,
+                   COALESCE(SUM(o.capex), 0) AS capex
+              FROM {_p()}.otim_obra o
+              LEFT JOIN {_p()}.otim_subbacia s
+                     ON s.run_id = o.run_id AND s.sub_bacia = o.no
+             WHERE {' AND '.join(onde)}
+             GROUP BY 1, 2
+             ORDER BY 1, 2""",
+        *args,
+    )
+
+
+def _elementos_por_ano(linhas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """As linhas acima no formato `ElementoDoAno` do contrato.
+
+    A REGRA DA UNIDADE FÍSICA, que é a razão de este formato existir: metro não
+    soma com unidade. Quando o mesmo componente aparece no ano com mais de uma
+    unidade, `quantidade` e `unidade` saem `null` — e `preco` sai junto, porque
+    não há por que dividir. `capex` continua: reais somam entre unidades
+    diferentes, e é o que faz a leitura por CAPEX ser a única que nunca esconde
+    um ano de obra.
+
+    `null` e não 0, pelo mesmo motivo de sempre: 0 afirmaria "não se construiu
+    nada", e o fato é que a conta não existe. A ETE cai aqui naturalmente — o
+    módulo não tem quantidade nem unidade, e chega com capex.
+    """
+    por_ano: dict[int, list[dict[str, Any]]] = {}
+    for l in linhas:
+        unica = l["unidades_distintas"] == 1
+        quantidade = l["quantidade"] if unica else None
+        capex = l["capex"]
+        por_ano.setdefault(l["ano"], []).append(
+            {
+                "componente": nome_componente(l["componente"]),
+                "quantidade": quantidade,
+                "unidade": l["unidade"] if unica else None,
+                # Preço unitário MÉDIO do ano — a tela o rotula "R$/{unidade}".
+                # Vem da divisão, e não da coluna `preco_unitario`: o que importa
+                # é o preço do que se construiu, ponderado pela quantidade.
+                "precoUnitario": (capex / quantidade) if quantidade else None,
+                "capex": capex,
+            }
+        )
+    return [
+        {"ano": ano, "porComponente": comps} for ano, comps in sorted(por_ano.items())
+    ]
+
+
+async def existe(run_id: str) -> bool:
+    """A rodada foi publicada?
+
+    `otim_meta` e a mesma fonte que `/runs/{id}/meta` usa para responder 404, e
+    por isso e a definicao certa de "existe" para as telas de resultado: rodada
+    ainda na fila nao tem linha ali, e nao tem resultado nenhum a mostrar.
+    """
+    return bool(
+        await db.buscar_um(f"SELECT 1 FROM {_p()}.otim_meta WHERE run_id = $1", run_id)
+    )
 
 
 # ---------------------------------------------------------------- nível global
@@ -232,18 +352,15 @@ async def painel(run_id: str) -> dict[str, Any]:
         (cap_ete or {}).get("unidade") if (cap_ete or {}).get("unidades_distintas") == 1 else None
     )
 
-    obras_ano = await db.buscar(
-        f"""SELECT EXTRACT(YEAR FROM to_date(data_inicio, 'YYYY-MM'))::int AS ano,
-                   componente, COUNT(*) AS quantidade
-              FROM {_p()}.otim_obra
-             WHERE run_id = $1 AND construida AND data_inicio IS NOT NULL
-             GROUP BY 1, 2 ORDER BY 1""",
-        run_id,
-    )
+    obras_ano = await _obras_do_plano_por_ano(run_id)
     por_ano: dict[int, list[dict[str, Any]]] = {}
     for o in obras_ano:
+        # Aqui `quantidade` e a CONTAGEM DE OBRAS, e nao a quantidade fisica:
+        # `obrasPorAno` sempre significou isso, e o front do :8080 o le assim
+        # (`GraficoObrasPorAno`). A quantidade fisica vai em `elementosPorAno`,
+        # logo abaixo, montada da MESMA consulta para os dois nao divergirem.
         por_ano.setdefault(o["ano"], []).append(
-            {"componente": nome_componente(o["componente"]), "quantidade": o["quantidade"]}
+            {"componente": nome_componente(o["componente"]), "quantidade": o["obras"]}
         )
 
     return {
@@ -296,6 +413,7 @@ async def painel(run_id: str) -> dict[str, Any]:
         "obrasPorAno": [
             {"ano": ano, "porComponente": comps} for ano, comps in sorted(por_ano.items())
         ],
+        "elementosPorAno": _elementos_por_ano(obras_ano),
         "fimCapex": await _fim_capex(run_id),
     }
 
@@ -357,6 +475,32 @@ async def cidades(run_id: str) -> list[dict[str, Any]]:
              WHERE c.run_id = $1 ORDER BY c.vpl DESC""",
         run_id,
     )
+
+    # A SERIE DE COBERTURA E AS METAS VEM JUNTO, em duas consultas para a lista
+    # inteira. O cartao-grafico do nivel 1 desenha o par cobertura x meta de cada
+    # cidade; buscar por cidade seria N+1 — 141 idas ao banco numa unidade grande,
+    # e o front teria de abrir 141 requisicoes para montar uma grade de cartoes.
+    cobertura = await db.buscar(
+        f"""SELECT cidade, ano, cobertura_pct FROM {_p()}.otim_cobertura
+             WHERE run_id = $1 ORDER BY cidade, ano""",
+        run_id,
+    )
+    metas = await db.buscar(
+        f"""SELECT cidade, ano, pct_alvo, cobertura_ligacoes, alvo_ligacoes,
+                   atingida, dentro_janela_capex
+              FROM {_p()}.otim_meta_cobertura
+             WHERE run_id = $1 ORDER BY cidade, ano""",
+        run_id,
+    )
+    por_cidade_cobertura: dict[str, list[dict[str, Any]]] = {}
+    for c in cobertura:
+        por_cidade_cobertura.setdefault(c["cidade"], []).append(
+            {"ano": c["ano"], "coberturaPct": c["cobertura_pct"]}
+        )
+    por_cidade_metas: dict[str, list[dict[str, Any]]] = {}
+    for m in metas:
+        por_cidade_metas.setdefault(m["cidade"], []).append(_meta(m))
+
     return [
         {
             "id": l["cidade"],
@@ -367,9 +511,321 @@ async def cidades(run_id: str) -> list[dict[str, Any]]:
             "metasAtingidas": l["metas_atingidas"],
             "metasTotal": l["metas_total"],
             "sistemas": l["sistemas"],
+            # Lista vazia, e nao ausencia: a cidade sem serie publicada existe, e o
+            # front distingue "nao tem curva" de "campo que nao veio".
+            "cobertura": por_cidade_cobertura.get(l["cidade"], []),
+            "metas": por_cidade_metas.get(l["cidade"], []),
         }
         for l in linhas
     ]
+
+
+# ------------------------------------------- nível global: por que não fatura
+#
+# A pergunta que estes dois endpoints respondem — "por que o plano não conecta
+# 100%?" — já tinha resposta no nível 4, uma sub-bacia por vez (`subbacia`, campo
+# `explicacao`). O que faltava era chegar nela SEM já saber qual sub-bacia abrir.
+
+
+async def explicabilidade(run_id: str, cidade: str | None = None) -> dict[str, Any] | None:
+    """Por que as sub-bacias que não faturam não faturam, agregado por motivo.
+
+    Com `cidade`, o mesmo recorte dentro de uma cidade — é o bloco "sub-bacias
+    fora do plano" do nível 2. Devolve `None` quando a cidade não existe naquela
+    rodada, para o endpoint responder 404 em vez de zeros que parecem dado.
+
+    ## A categoria de uma sub-bacia é a da sua OBRA DE COLETA
+
+    Um nó tem várias obras (ligação, rede, tronco, EEE...) e elas discordam de
+    categoria com frequência — em `run_20260812_000112_0ba066`, 2065 dos 2269 nós
+    que não faturam têm obras de categorias diferentes. "A primeira que aparecer"
+    daria uma resposta que muda entre duas execuções da mesma consulta.
+
+    `otim_subbacia.obra_coleta` nomeia A obra que coleta daquele nó, e é ela que
+    decide se a sub-bacia entra ou não no plano. A regra é determinística e
+    completa: no run acima ela classifica exatamente as 2269, sem sobra.
+
+    ## Por que a lista de sub-bacias vem inteira
+
+    Cada categoria carrega TODAS as suas sub-bacias, não uma amostra. O total de
+    itens é exatamente `naoFaturando` — no maior run publicado, 2269 objetos
+    pequenos. Uma amostra silenciosa seria pior que o peso: a tela mostra a
+    contagem verdadeira no cabeçalho e a lista logo abaixo, e quem abrisse uma
+    lista de 20 sob um título de "1142 sub-bacias" leria uma como a outra.
+    """
+    filtro_cidade = " AND s.cidade = $2" if cidade else ""
+    args: tuple = (run_id, cidade) if cidade else (run_id,)
+
+    if cidade:
+        existe = await db.buscar_um(
+            f"SELECT 1 FROM {_p()}.otim_cidade WHERE run_id = $1 AND cidade = $2",
+            run_id,
+            cidade,
+        )
+        if not existe:
+            return None
+
+    totais = await db.buscar_um(
+        f"""SELECT COUNT(*) AS total,
+                   COUNT(*) FILTER (WHERE NOT s.faturando) AS nao_fatura
+              FROM {_p()}.otim_subbacia s
+             WHERE s.run_id = $1{filtro_cidade}""",
+        *args,
+    )
+
+    presas = await db.buscar(
+        f"""SELECT s.sub_bacia, s.cidade, s.sistema,
+                   COALESCE(s.vazao_marginal, 0) AS vazao,
+                   oc.categoria_motivo
+              FROM {_p()}.otim_subbacia s
+              LEFT JOIN {_p()}.otim_obra oc
+                     ON oc.run_id = s.run_id AND oc.obra_id = s.obra_coleta
+             WHERE s.run_id = $1 AND NOT s.faturando{filtro_cidade}
+             ORDER BY COALESCE(s.vazao_marginal, 0) DESC, s.sub_bacia""",
+        *args,
+    )
+
+    categorias: dict[str, dict[str, Any]] = {}
+    for linha in presas:
+        # Sem categoria a sub-bacia continua contando: some do agrupamento e o
+        # cabecalho ("185 de 1047 nao faturam") deixaria de fechar com as parcelas.
+        chave = linha["categoria_motivo"] or "Sem motivo registrado"
+        c = categorias.setdefault(
+            chave, {"categoria": chave, "subbacias": 0, "vazaoPresa": 0.0, "itens": []}
+        )
+        c["subbacias"] += 1
+        c["vazaoPresa"] += linha["vazao"]
+        c["itens"].append(
+            {
+                "subBaciaId": linha["sub_bacia"],
+                "cidadeId": linha["cidade"],
+                "sistemaId": linha["sistema"],
+                "vazaoPresa": linha["vazao"],
+            }
+        )
+
+    # O ELO: a obra que, nao construida, tira OUTRAS sub-bacias do plano.
+    #
+    # `DISTINCT` no par (elo, no) antes de somar: um no com tres obras travadas
+    # pelo mesmo elo apareceria tres vezes, e a vazao dele entraria tres vezes na
+    # soma. E a ordenacao e pela VAZAO liberada, nao pela contagem — decidir onde
+    # investir depende de QUEM esta preso, nao de quantos.
+    elos = await db.buscar(
+        f"""WITH presos AS (
+                SELECT DISTINCT o.elo_que_trava AS elo, o.no AS sub_bacia
+                  FROM {_p()}.otim_obra o
+                 WHERE o.run_id = $1
+                   AND o.elo_que_trava IS NOT NULL
+                   AND o.no IS NOT NULL
+            )
+            SELECT p.elo AS obra_id, e.componente, e.cidade, e.no,
+                   -- `otim_obra.sistema` vem VAZIO nas obras de transporte (6695
+                   -- das 8079 do maior run): o motor so o preenche onde a obra
+                   -- pertence a um sistema por si. Quem sabe o sistema e a
+                   -- sub-bacia em que a obra esta, e o contrato promete um
+                   -- `sistemaId` de verdade — a tela monta `/sistemas/{id}` com
+                   -- ele, e um `null` viraria link para lugar nenhum.
+                   COALESCE(e.sistema, se.sistema) AS sistema,
+                   COUNT(*) AS bloqueia,
+                   COALESCE(SUM(s.vazao_marginal), 0) AS vazao_liberada
+              FROM presos p
+              JOIN {_p()}.otim_subbacia s
+                ON s.run_id = $1 AND s.sub_bacia = p.sub_bacia
+              LEFT JOIN {_p()}.otim_obra e
+                     ON e.run_id = $1 AND e.obra_id = p.elo
+              LEFT JOIN {_p()}.otim_subbacia se
+                     ON se.run_id = $1 AND se.sub_bacia = e.no
+             WHERE TRUE{filtro_cidade}
+             GROUP BY p.elo, e.componente, e.cidade, e.sistema, se.sistema, e.no
+             ORDER BY vazao_liberada DESC, bloqueia DESC, p.elo""",
+        *args,
+    )
+
+    return {
+        "naoFaturando": (totais or {}).get("nao_fatura") or 0,
+        "totalSubbacias": (totais or {}).get("total") or 0,
+        "categorias": sorted(
+            categorias.values(), key=lambda c: c["vazaoPresa"], reverse=True
+        ),
+        "elos": [
+            {
+                "obraId": e["obra_id"],
+                "componente": nome_componente(e["componente"]),
+                "cidadeId": e["cidade"],
+                "sistemaId": e["sistema"],
+                "subBaciaId": e["no"],
+                "bloqueia": e["bloqueia"],
+                "vazaoLiberada": e["vazao_liberada"],
+            }
+            for e in elos
+        ],
+    }
+
+
+# ------------------------------------------- nível global: o plano de execução
+#
+# A mesma `otim_obra` que o nível 5 lê uma linha por vez, agora vista do topo: a
+# lista do plano e o cronograma por ano.
+
+#: A linha de ETE com `status = 'N/A'` NÃO É OBRA. Ela existe para a ETE ter ficha
+#: (capex 0, sem quantidade, sem data), e o que de fato se constrói é o módulo
+#: (`tipo = 'ete_mod'`). Deixá-la na lista poria 474 linhas de capex zero no meio
+#: do plano de execução.
+_SO_OBRA = "o.status <> 'N/A'"
+
+#: `_situacao()` (Python) e este CASE dizem a MESMA coisa, na mesma ordem — obra de
+#: terceiro que já existe é `terceiro`, e não `construida`, porque quem paga muda a
+#: leitura do plano. A duplicação é consciente: a lista é paginada, e filtrar por
+#: situação depois de trazer a página daria um `total` que não bate com o filtro.
+_SITUACAO_SQL = (
+    "CASE WHEN LOWER(COALESCE(o.responsavel, '')) LIKE 'terceiro%' THEN 'terceiro'"
+    "     WHEN o.construida THEN 'construida'"
+    "     ELSE 'nao-construida' END"
+)
+
+#: Whitelist — o `ordenar` da querystring escolhe uma ENTRADA, nunca compõe SQL.
+_ORDENS = {
+    "inicio": "o.data_inicio NULLS LAST, o.obra_id",
+    "capex": "o.capex DESC NULLS LAST, o.obra_id",
+    "cidade": "o.cidade, o.data_inicio NULLS LAST, o.obra_id",
+}
+
+#: Teto de página. O front pede 200 ao abrir um ano do cronograma. Pela rota o
+#: valor já chega validado (`Query(le=500)`, que recusa o excesso com 422 em vez
+#: de fingir que atendeu); este `min` é o teto para quem chamar a função direto —
+#: um script de conferência, um teste —, onde nada mais impede pedir as 8 mil
+#: obras da rodada de uma vez.
+_TAMANHO_MAX = 500
+
+
+async def obras(
+    run_id: str,
+    situacao: str | None = None,
+    cidade: str | None = None,
+    ano: int | None = None,
+    pagina: int = 1,
+    tamanho: int = 50,
+    ordenar: str = "inicio",
+) -> dict[str, Any]:
+    """A lista de obras do plano, paginada.
+
+    Paginada de propósito: uma unidade grande publica milhares de linhas em
+    `otim_obra` — 8079 no maior run de hoje. `total` é o tamanho do resultado
+    FILTRADO, e não o da rodada: é o número de que a tela precisa para paginar.
+    """
+    onde = ["o.run_id = $1", _SO_OBRA]
+    args: list[Any] = [run_id]
+
+    if situacao:
+        args.append(situacao)
+        onde.append(f"{_SITUACAO_SQL} = ${len(args)}")
+    if cidade:
+        args.append(cidade)
+        onde.append(f"o.cidade = ${len(args)}")
+    if ano:
+        # `data_inicio` e texto 'AAAA-MM': comparar o prefixo dispensa converter a
+        # coluna, e o ano sem obra nenhuma devolve pagina vazia, nao erro.
+        args.append(str(ano))
+        onde.append(f"LEFT(o.data_inicio, 4) = ${len(args)}")
+
+    tamanho = max(1, min(tamanho, _TAMANHO_MAX))
+    pagina = max(1, pagina)
+
+    # O TOTAL VEM DE UMA CONSULTA PROPRIA, e nao de um `COUNT(*) OVER ()` na
+    # pagina. A janela so devolve valor quando ha linha: com `pagina=9999` a
+    # resposta saia `{"total": 0, "itens": []}` numa rodada com 7605 obras, e o
+    # front nao tem como distinguir "acabou" de "nao ha nada". Uma rodada
+    # publicada e imutavel, entao as duas consultas nao podem discordar.
+    filtros = list(args)
+    total = await db.buscar_um(
+        f"""SELECT COUNT(*) AS total
+              FROM {_p()}.otim_obra o
+              LEFT JOIN {_p()}.otim_subbacia s
+                     ON s.run_id = o.run_id AND s.sub_bacia = o.no
+             WHERE {' AND '.join(onde)}""",
+        *filtros,
+    )
+
+    args.extend([tamanho, (pagina - 1) * tamanho])
+    linhas = await db.buscar(
+        f"""SELECT o.obra_id, o.componente, o.responsavel, o.construida,
+                   o.cidade, o.no, o.capex, o.quantidade, o.unidade,
+                   o.data_inicio, o.prazo_meses,
+                   -- Ver a nota da consulta dos elos: `otim_obra.sistema` so vem
+                   -- preenchido em parte das obras, e quem sabe o sistema das
+                   -- demais e a sub-bacia em que elas estao.
+                   COALESCE(o.sistema, s.sistema) AS sistema
+              FROM {_p()}.otim_obra o
+              LEFT JOIN {_p()}.otim_subbacia s
+                     ON s.run_id = o.run_id AND s.sub_bacia = o.no
+             WHERE {' AND '.join(onde)}
+             ORDER BY {_ORDENS.get(ordenar, _ORDENS['inicio'])}
+             LIMIT ${len(args) - 1} OFFSET ${len(args)}""",
+        *args,
+    )
+
+    return {
+        "total": (total or {}).get("total") or 0,
+        "itens": [
+            {
+                "obraId": l["obra_id"],
+                "componente": nome_componente(l["componente"]),
+                "situacao": _situacao(l),
+                "cidadeId": l["cidade"],
+                "sistemaId": l["sistema"],
+                # `null` para ETE e modulo de ETE: eles nao tem sub-bacia propria.
+                "subBaciaId": l["no"],
+                "capex": l["capex"],
+                "quantidade": l["quantidade"],
+                "unidade": l["unidade"],
+                "anoInicio": int(str(l["data_inicio"])[:4]) if l["data_inicio"] else None,
+                "prazoMeses": l["prazo_meses"],
+            }
+            for l in linhas
+        ],
+    }
+
+
+async def cronograma_de_obras(run_id: str) -> dict[str, Any]:
+    """Quantas obras de cada componente começam em cada ano, e quanto custam.
+
+    Só o que ENTRA no plano: `data_inicio` só existe para obra que a rodada
+    agendou. Obra fora do plano não tem ano de execução, e empurrá-la para um ano
+    qualquer inventaria cronograma.
+    """
+    linhas = await db.buscar(
+        f"""SELECT LEFT(o.data_inicio, 4)::int AS ano,
+                   o.componente,
+                   COUNT(*) AS obras,
+                   COALESCE(SUM(o.capex), 0) AS capex,
+                   COUNT(*) FILTER (
+                       WHERE LOWER(COALESCE(o.responsavel, '')) LIKE 'terceiro%'
+                   ) AS terceiro
+              FROM {_p()}.otim_obra o
+             WHERE o.run_id = $1 AND o.data_inicio IS NOT NULL AND {_SO_OBRA}
+             GROUP BY 1, 2
+             ORDER BY 1, 2""",
+        run_id,
+    )
+
+    anos: dict[int, dict[str, Any]] = {}
+    for l in linhas:
+        a = anos.setdefault(
+            l["ano"],
+            {"ano": l["ano"], "obras": 0, "capex": 0.0, "obrasTerceiro": 0, "porComponente": []},
+        )
+        a["obras"] += l["obras"]
+        a["capex"] += l["capex"]
+        a["obrasTerceiro"] += l["terceiro"]
+        a["porComponente"].append(
+            {
+                "componente": nome_componente(l["componente"]),
+                "obras": l["obras"],
+                "capex": l["capex"],
+            }
+        )
+
+    return {"anos": [anos[a] for a in sorted(anos)]}
 
 
 # ---------------------------------------------------------------- nível cidade
@@ -431,23 +887,11 @@ async def cidade(run_id: str, cidade_id: str) -> dict[str, Any] | None:
         "cobertura": [
             {"ano": c["ano"], "coberturaPct": c["cobertura_pct"]} for c in cobertura
         ],
-        "metas": [
-            {
-                "ano": m["ano"],
-                # `pct_alvo` vem do motor como FRACAO (0.4); o contrato pede
-                # percentual (40.0) — campos `Pct` vao de 0 a 100. E o realizado e
-                # o alvo reescalado pela razao entre o que se cobriu e o que se
-                # devia cobrir: 524 de 400 ligacoes com alvo de 40% da 52,4%.
-                "alvoPct": _escala_pct(m["pct_alvo"]),
-                "realizadoPct": _realizado_pct(
-                    m["cobertura_ligacoes"], m["alvo_ligacoes"], m["pct_alvo"]
-                ),
-                "atingida": m["atingida"],
-                "dentroDaJanela": m["dentro_janela_capex"],
-            }
-            for m in metas
-        ],
+        "metas": [_meta(m) for m in metas],
         "cascata": await _cascata(run_id, cidade=cidade_id),
+        "elementosPorAno": _elementos_por_ano(
+            await _obras_do_plano_por_ano(run_id, cidade=cidade_id)
+        ),
         "paridade": {
             # PENDENTE — as FAIXAS de paridade (cobertura → fator) vivem em
             # `input.fator_esgoto`, e não nas tabelas de resultado: o job publica a
@@ -533,6 +977,9 @@ async def topologia(run_id: str, sistema_id: str) -> dict[str, Any] | None:
         "subbacias": sistema["sub_bacias"],
         "faturando": sistema["sub_bacias_faturando"],
         "capexConstruido": sistema["capex_modulos_construidos"],
+        "elementosPorAno": _elementos_por_ano(
+            await _obras_do_plano_por_ano(run_id, sistema=sistema_id)
+        ),
         "nos": [
             {
                 "id": n["sub_bacia"],
@@ -646,13 +1093,39 @@ async def subbacia(run_id: str, sub_id: str) -> dict[str, Any] | None:
         "vazao": base["vazao_marginal"],
         "vpl": base["vpl"],
         "cascata": await _cascata(run_id, sub_bacia=sub_id),
+        "elementosPorAno": _elementos_por_ano(
+            await _obras_do_plano_por_ano(run_id, sub_bacia=sub_id)
+        ),
         "receita": [
             {"ano": r["ano"], "direta": r["receita_direta"], "indireta": r["receita_indireta"]}
             for r in receita
         ],
         "explicacao": {
+            # A MESMA REGRA DA EXPLICABILIDADE AGREGADA: a categoria da sub-bacia e
+            # a da sua OBRA DE COLETA (ver `explicabilidade`, acima). Era "a
+            # primeira obra do no que tivesse categoria", numa consulta sem
+            # `ORDER BY` — e as obras de um no discordam de categoria em 2148 dos
+            # 2269 nos que nao faturam. O nivel 1 dizia "Nao se paga" para
+            # `c1b3_1_3` enquanto esta tela dizia "Compartilhada nao acionada",
+            # sobre a mesma sub-bacia, na mesma rodada.
+            #
+            # O fallback ordenado so existe para a sub-bacia sem obra de coleta
+            # com categoria: nao acontece nos dados de hoje, e se acontecer e
+            # melhor uma resposta estavel que uma sorteada.
             "categoria": next(
-                (e["categoria_motivo"] for e in elementos if e.get("categoria_motivo")), None
+                (
+                    e["categoria_motivo"]
+                    for e in elementos
+                    if e["obra_id"] == base.get("obra_coleta") and e.get("categoria_motivo")
+                ),
+                next(
+                    (
+                        e["categoria_motivo"]
+                        for e in sorted(elementos, key=lambda e: e["obra_id"])
+                        if e.get("categoria_motivo")
+                    ),
+                    None,
+                ),
             ),
             "elo": elo if elo in ids_daqui else None,
             "narrativa": base.get("motivo_sem_receita"),
