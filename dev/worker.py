@@ -563,6 +563,7 @@ def executar(run_id: str, tempo: int) -> None:
         raise RuntimeError("a rodada nao tem ORCAMENTO em run_request.params")
     log(run_id, f"unidade={unidade}  {descricao}")
 
+    import carregar_postgres as C
     import dashboard_otimizador_v2 as D
     import otimizador_capex_cpsat63 as CP
     import otimizador_capex_v62 as M
@@ -600,8 +601,9 @@ def executar(run_id: str, tempo: int) -> None:
             "o recorte."
         )
 
+    abas = C.abas_do_postgres(R.PG)
     cen = M.ler_banco(
-        R.BANCO,
+        abas,
         unidade=unidade,
         orcamento=orc,
         base_receita=p.get("BASE_RECEITA", "arrecadada"),
@@ -768,7 +770,8 @@ def executar(run_id: str, tempo: int) -> None:
     bat_mat = threading.Thread(target=acompanhar_mat, daemon=True)
     bat_mat.start()
     try:
-        tabs = P.materializar(cen, res, banco=R.BANCO, run_id=run_id, params=p)
+        tabs = P.materializar(cen, res, banco="postgres://input", run_id=run_id,
+                              abas_fonte=abas, params=p)
     finally:
         parar_mat.set()
         bat_mat.join(timeout=2)

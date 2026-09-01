@@ -22,7 +22,7 @@ docker compose up -d
 docker compose exec -T db psql -U otim -d otimizador < .../ddl_input.sql
 docker compose exec -T db psql -U otim -d otimizador < .../ddl_otimizador.sql
 
-# Dado REAL, da planilha: apaga tudo, carrega e roda as 5 unidades (~20 min).
+# Refaz as RODADAS sobre o cadastro atual: apaga resultados e roda as 5 unidades (~20 min).
 python dev/recarregar_tudo.py
 
 # Ponta a ponta com o FRONT junto (nginx + FastAPI + Postgres + Service Bus):
@@ -42,7 +42,6 @@ python testes_de_integracao/contrato_de_resultado.py            # respostas de R
 UNIDADE=uA1 python testes_de_integracao/contrato_de_cadastro.py  # respostas de CADASTRO vs os tipos do front
 python testes_de_integracao/smoke_incons.py      # as CTS que existem pela metade
 python testes_de_integracao/smoke_ida_e_volta.py # ler a ficha e salvá-la de volta, sem tradução
-python dev/conferir_planilha.py # o banco reproduz a planilha? aba por aba
 python dev/limpar_rodadas_de_teste.py # o que o histórico herdou de teste (só mostra)
 ```
 
@@ -94,9 +93,9 @@ Para navegar com uma simulação DE VERDADE:
 python dev/rodar_simulacao_real.py uA1 90
 ```
 
-Carrega a planilha do pacote em `input.*`, roda o motor (OR-Tools) sobre a unidade
-e publica o resultado em `public.otim_*` — é o mesmo caminho do Colab. Precisa de
-`ortools`, `openpyxl` e `psycopg2-binary` no host, e do pacote em
-`.../Otimizador_CAPEX_v62_pacote_rev11/`.
+Lê `input.*` do Postgres, roda o motor (OR-Tools) sobre a unidade e publica o
+resultado em `public.otim_*`. **Não escreve no cadastro.** Precisa de `ortools` e
+`psycopg2-binary` no host, e do pacote do motor em layout plano — por padrão
+`projetos/pacote-motor-main`, ou o que `OTIMIZADOR_PACOTE` apontar.
 
 Unidades: `uA1` (5 cidades, 142 sub-bacias — a mais rápida) até `uB2` (27/1116).
