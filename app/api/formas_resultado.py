@@ -2,11 +2,13 @@
 
 ## Por que estes modelos existem
 
-Até 29/08/2026 toda rota deste serviço devolvia `dict[str, Any]`. Funciona, e
-esconde uma classe inteira de defeito: o front declara `elementosPorAno` como
-campo OBRIGATÓRIO em quatro interfaces, o backend não mandava em nenhuma, e as
-quatro telas quebravam com `undefined.map`. Nada acusou — `test_contrato.py`
-confere QUAIS rotas existem, não o que elas devolvem.
+Um `dict[str, Any]` de retorno funciona e esconde uma classe inteira de defeito:
+um campo que o front declara OBRIGATÓRIO e o backend não manda só aparece como
+`undefined.map` na tela do usuário. Nada acusa antes — `test_contrato.py` confere
+QUAIS rotas existem, não o que elas devolvem.
+
+Declarar a forma faz o próprio FastAPI validar a resposta contra o modelo: o
+campo que faltar quebra o teste da rota, e não o navegador.
 
 Com um modelo por payload, o mesmo erro vira erro de servidor no primeiro pedido
 em vez de tela branca semanas depois, o `/api/openapi.json` passa a descrever o
@@ -30,7 +32,8 @@ lista de chave e valor.
 
 ## `| None` é parte do contrato, não descuido
 
-A regra do serviço é que `null` significa "não existe", nunca 0 (`niveis.py`).
+A regra do serviço é que `null` significa "não existe", nunca 0
+(`infra/repositorios/cascata.py`).
 Um campo opcional aqui é afirmação: ocupação de ETE com capacidade zero é `null`
 porque a conta não existe, e um `0.0` afirmaria ETE vazia.
 """
@@ -160,9 +163,23 @@ class KpisDaRodada(BaseModel):
     subbaciasTotal: int
 
 
+class VariacaoDe(BaseModel):
+    """De qual rodada esta aqui e uma variacao de orcamento."""
+
+    runId: str
+    #: O rotulo da BASE. O rotulo desta rodada diz "+10%" e nao diz de que.
+    nome: str | None
+    degrau: int
+    estimativa: bool
+
+
 class RunMeta(BaseModel):
     runId: str
     nome: str | None
+    #: AUSENTE quando a rodada nao e variacao de ninguem — a maioria. Presente,
+    #: ela e ponto da curva de sensibilidade de outra: a tela nao oferece analisar
+    #: a sensibilidade DELA, e diz de onde ela veio.
+    variacaoDe: VariacaoDe | None = None
     unidadeId: str
     unidadeNome: str
     dataHora: str | None
@@ -256,8 +273,6 @@ class CidadeLinha(BaseModel):
     metasAtingidas: int
     metasTotal: int
     sistemas: int
-    cobertura: list[PontoDeCobertura]
-    metas: list[MetaDeCobertura]
 
 
 class FaixaDeParidade(BaseModel):
@@ -340,6 +355,61 @@ class ExplicabilidadeGlobal(BaseModel):
 
 
 # ===========================================================================
+#  Sensibilidade — a curva e o teto
+# ===========================================================================
+class DegrauDoTeto(BaseModel):
+    degrau: int
+    folga: float
+    subbaciasNoMaximo: int
+    vazaoNoMaximo: float
+
+
+class TetoDeSensibilidade(BaseModel):
+    #: A SOMA DOS ANOS, e nao o valor anual — ver `dominio/teto.py`.
+    orcamentoTotal: float
+    #: Quantos anos tem orcamento maior que zero. A tela usa para dizer sobre
+    #: quantos anos o acrescimo em reais esta somado.
+    anosDoPlano: int
+    subbaciasFora: int
+    subbaciasSemCapexProprio: int
+    capexParaTodas: float
+    vazaoTotalPresa: float
+    degraus: list[DegrauDoTeto]
+
+
+class ObrasDoComponente(BaseModel):
+    componente: str
+    nome: str
+    construidas: int
+
+
+class PontoDaCurva(BaseModel):
+    degrau: int
+    runId: str
+    status: str
+    #: `True` para a estimativa rapida (solver de 60s). A tela DEVE dizer isto:
+    #: e a diferenca entre um numero para orientar e um numero para decidir.
+    estimativa: bool
+    vpl: float | None = None
+    coberturaFimPct: float | None = None
+    metasAtingidas: int | None = None
+    metasTotal: int | None = None
+    capexTotal: float | None = None
+    tempoS: float | None = None
+    #: O motivo da falha, quando `status` e ERRO. A tela mostra a frase inteira:
+    #: ela costuma dizer o que fazer ("tente com MAX_TIME_S maior").
+    erro: str | None = None
+    #: Vazia enquanto a rodada nao publicou — nao ha plano ainda, e uma lista de
+    #: zeros seria lida como "nao construiu nada".
+    obras: list[ObrasDoComponente] = []
+
+
+class Sensibilidade(BaseModel):
+    teto: TetoDeSensibilidade | None
+    pontos: list[PontoDaCurva]
+
+
+# ===========================================================================
 #  Plano de obras
 # ===========================================================================
 class ObraLinha(BaseModel):
@@ -353,7 +423,13 @@ class ObraLinha(BaseModel):
     capex: float | None
     quantidade: float | None
     unidade: str | None
+    #: POR QUE a obra está no plano: `terceiro` | `obrigatoria` | `escolhida`.
+    #: A mesma partição do cronograma, e disjunta pela mesma razão.
+    recorte: str
     anoInicio: int | None
+    #: Ano de CONCLUSÃO, 'AAAA-MM'. Para obra de terceiro é a única data que o
+    #: motor calcula — e é por ela que a lista de um ano a inclui.
+    dataPronta: str | None
     prazoMeses: int | None
 
 
@@ -369,12 +445,31 @@ class ComponenteDoCronograma(BaseModel):
     capex: float
 
 
-class AnoDeObras(BaseModel):
-    ano: int
+class RecorteDoAno(BaseModel):
+    """Um dos três recortes de um ano — as parcelas que somadas dão "todas"."""
+
     obras: int
     capex: float
-    obrasTerceiro: int
     porComponente: list[ComponenteDoCronograma]
+
+
+class AnoDeObras(BaseModel):
+    """Um ano do cronograma, particionado por POR QUE a obra está no plano.
+
+    Os três recortes são disjuntos e exaustivos por construção (ver
+    `RECORTE_SQL` em `nivel_global`), então "todas as obras" é a soma deles — e
+    o cliente a calcula, em vez de recebê-la pronta e poder divergir das
+    parcelas sem nada acusar.
+
+    O ANO NÃO SIGNIFICA O MESMO PARA TODO RECORTE: obra da Aegea entra pelo ano
+    em que COMEÇA, obra de terceiro pelo ano em que fica PRONTA — que é a única
+    data que o motor calcula para ela. Ver `ANO_SQL` em `nivel_global`.
+    """
+
+    ano: int
+    terceiro: RecorteDoAno
+    obrigatoria: RecorteDoAno
+    escolhida: RecorteDoAno
 
 
 class CronogramaDeObras(BaseModel):

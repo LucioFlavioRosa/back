@@ -17,6 +17,16 @@ capaz de garantir.
    que alguem aprovou em reuniao.
 """
 
+#: A INTERFACE PÚBLICA deste módulo. Tudo o que não está aqui é implementação,
+#: e pode mudar sem aviso — a lista é o contrato com quem importa.
+__all__ = [
+    "FORMA",
+    "novo",
+    "valido",
+    "RunIdInvalido",
+    "exigir_valido",
+]
+
 import re
 import uuid
 from datetime import datetime, timezone

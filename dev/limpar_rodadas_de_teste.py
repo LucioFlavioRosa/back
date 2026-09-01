@@ -51,7 +51,7 @@ Sem `--apagar` ele não escreve nada. A ordem de exclusão é a mesma do
 `resultado.excluir` (`otim_meta` primeiro, que cascateia para as 13 tabelas de
 resultado, depois a fila), para não haver dois jeitos de apagar uma rodada.
 
-**Rode depois dos smokes.** O `dev/smoke.py` termina com um `POST /runs` que, sem
+**Rode depois dos smokes.** O `testes_de_integracao/smoke.py` termina com um `POST /runs` que, sem
 Service Bus configurado, responde 503 — e deixa uma rodada em `ERRO` para trás, a
 cada execução. É comportamento correto do serviço (o pedido foi registrado antes
 de a fila falhar), mas significa que o histórico ganha uma linha inútil toda vez

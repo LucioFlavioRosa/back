@@ -34,6 +34,14 @@ class Config(BaseSettings):
     schema_resultado: str = "public"
     pool_min: int = 2
     pool_max: int = 10
+    #: Teto de UMA consulta dentro de transacao de escrita, em milissegundos.
+    #:
+    #: O `command_timeout` do pool cancela do lado do cliente e ja cobre a tela
+    #: travada. Este e o do SERVIDOR, e existe por causa das transacoes que
+    #: seguram advisory lock de varios sistemas: enquanto uma delas espera, todo
+    #: mundo que grava naqueles sistemas espera junto. Abortar por conta propria
+    #: devolve os locks; esperar o cliente desistir os segura ate la.
+    statement_timeout_ms: int = 15_000
 
     # ---------------------------------------------------------------- fila
     service_bus_conn: str = Field(

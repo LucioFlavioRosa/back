@@ -98,4 +98,10 @@ async def main():
             print(f"    {rot:22} {list(v[0].values())[0] if v else '(vazio)'}")
     print("\nFALHAS:", falhas or "nenhuma")
 
-asyncio.run(main())
+# RODA COMO SCRIPT, e só como script.
+#
+# Sem este guarda, importar o arquivo — o que o pytest faz ao COLETAR — dispara
+# a bateria inteira contra a API e termina o processo num `SystemExit`. Eles não
+# são testes de pytest: são programas que falam com um serviço de pé.
+if __name__ == "__main__":
+    asyncio.run(main())

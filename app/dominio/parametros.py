@@ -37,7 +37,25 @@ como chave desconhecida — e a rodada iria a ERRO com uma mensagem sobre `param
 sem relacao visivel com o botao que o usuario apertou.
 """
 
+#: A INTERFACE PÚBLICA deste módulo. Tudo o que não está aqui é implementação,
+#: e pode mudar sem aviso — a lista é o contrato com quem importa.
+__all__ = [
+    "CHAVES_DO_JOB",
+    "CHAVES_ACEITAS",
+    "ParametrosInvalidos",
+    "montar_params",
+    "mes_ano",
+]
+
 from typing import Any
+
+#: DE EXECUCAO, e nao do pedido — nao vao para o `ler_banco`, ficam com o job.
+#:
+#: Era um comentario dentro de `CHAVES_ACEITAS`, e virou constante quando algo
+#: passou a precisar da distincao: `controle.parametros` devolve os parametros de
+#: uma rodada para que o front possa CLONA-LA, e mandar de volta o `USUARIO`
+#: original faria a rodada nova nascer assinada por outra pessoa.
+CHAVES_DO_JOB = frozenset({"USUARIO", "MAX_TIME_S", "WORKERS"})
 
 # Espelha `job_databricks.MAPA_PARAMS` + `CHAVES_DO_JOB`. Se o job ganhar um
 # parametro novo e este conjunto nao acompanhar, o backend simplesmente nao
@@ -62,11 +80,8 @@ CHAVES_ACEITAS = frozenset(
         "USAR_CTS",
         "ANOS_EXTRA_CONCLUSAO",
         "COBERTURA_SO_RESIDENCIAL",
-        # CHAVES_DO_JOB — nao vao para o `ler_banco`, ficam com o job
-        "USUARIO",
-        "MAX_TIME_S",
-        "WORKERS",
     }
+    | CHAVES_DO_JOB
 )
 
 

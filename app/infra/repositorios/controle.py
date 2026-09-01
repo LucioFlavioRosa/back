@@ -9,6 +9,7 @@ import json
 from typing import Any
 
 from app.config import config
+from app.dominio.parametros import CHAVES_DO_JOB
 from app.dominio.status import Status
 from app.infra import db
 from app.infra.repositorios import pendencias
@@ -52,7 +53,10 @@ async def unidades_da_regional(regional_id: str) -> list[str]:
 
 
 async def de_quem(run_id: str) -> dict[str, Any] | None:
-    """Dono E unidade da rodada — as duas coisas que decidem quem pode ve-la.
+    """Dono, unidade e linhagem da rodada.
+
+    As duas primeiras decidem quem pode ve-la; a terceira (`base_run_id`) diz se
+    ela e um ponto da curva de outra — o que muda o que se pode PEDIR sobre ela.
 
     Vinham separadas, e a unidade nao vinha: o guarda conferia so o dono. Um
     `admin` de uma regional abria rodada de outra, e qualquer pessoa abria uma
@@ -60,7 +64,15 @@ async def de_quem(run_id: str) -> dict[str, Any] | None:
     """
     linha = await db.buscar_um(
         f"""SELECT coalesce(r.solicitado_por, m.usuario) AS dono,
-                   coalesce(r.unidade, u.unidade_id)     AS unidade
+                   coalesce(r.unidade, u.unidade_id)     AS unidade,
+                   -- DE QUEM ESTA RODADA E VARIACAO, se for de alguem.
+                   --
+                   -- Vem junto porque quem pergunta "de quem e esta rodada?" e
+                   -- exatamente quem precisa saber disso: `POST /variacao` recusa
+                   -- variar uma variacao, e o dado ja estava na linha que a
+                   -- consulta buscava. Uma segunda ida ao banco pela coluna
+                   -- vizinha seria custo por nada.
+                   r.base_run_id
               FROM (SELECT $1::text AS run_id) x
               LEFT JOIN {_c()}.run_request r USING (run_id)
               LEFT JOIN {config().schema_resultado}.otim_meta m USING (run_id)
@@ -155,8 +167,8 @@ def digest(params: dict[str, Any]) -> str:
 _CADASTRO_ALTERADO_EM = """
 WITH cidades AS (
     SELECT c.cidade_id
-      FROM {i}.superintendencia_cidade c
-      JOIN {i}.regional_superintendencia s USING (superintendencia_id)
+      FROM {i}.cidade_empresa c
+      JOIN {i}.empresa s USING (emp_codigo)
      WHERE s.unidade_id = $1
 ),
 comps AS (
@@ -256,6 +268,9 @@ async def abrir_rodada(
     params: dict[str, Any],
     usuario: str,
     rotulo: str | None,
+    base_run_id: str | None = None,
+    variacao_fator: float | None = None,
+    estimativa: bool = False,
 ) -> dict[str, Any]:
     """`run_request` + `run_status` PENDENTE numa transacao so.
 
@@ -286,8 +301,9 @@ async def abrir_rodada(
 
         await con.execute(
             f"""INSERT INTO {_c()}.run_request
-                    (run_id, unidade, params, solicitado_por, rotulo)
-                VALUES ($1, $2, $3, $4, $5)""",
+                    (run_id, unidade, params, solicitado_por, rotulo,
+                     base_run_id, variacao_fator, estimativa)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)""",
             run_id,
             unidade_id,
             # O dict vai CRU. O pool registra um codec de json/jsonb (ver
@@ -298,6 +314,13 @@ async def abrir_rodada(
             params,
             usuario,
             rotulo,
+            # A LINHAGEM DA CURVA, em coluna e nao no nome. Ver
+            # `migracoes/013_estimativa_de_sensibilidade.sql`: o rotulo e livre e
+            # editavel, e ler o degrau de volta dele desmanchava a analise em
+            # silencio no dia em que alguem renomeasse a rodada.
+            base_run_id,
+            variacao_fator,
+            estimativa,
         )
         await con.execute(
             f"""INSERT INTO {_c()}.run_status (run_id, status) VALUES ($1, $2)""",
@@ -318,6 +341,111 @@ async def abrir_rodada(
         # nome durante toda a execucao, justamente quando ha varias ao mesmo tempo
         # e o nome e a unica coisa que as distingue.
     return {"run_id": run_id, "status": Status.PENDENTE.value, "ja_existia": False}
+
+
+async def adotar_variacao(
+    run_id: str, *, base_run_id: str, fator: float
+) -> bool:
+    """Liga uma rodada JA EXISTENTE a curva desta base. Devolve se ligou.
+
+    Existe por causa do encontro de duas regras que nao se conheciam. A dedupe de
+    `abrir_rodada` compara PARAMETROS: pedir uma variacao cujo orcamento ja foi
+    simulado devolve a rodada existente e nao grava linha nova — logo, nao grava
+    linhagem. A curva, por sua vez, procura os pontos por `base_run_id`. Juntas,
+    as duas produziam o pior desfecho possivel: o `POST /variacao` respondia 200,
+    a tela dizia que deu certo, e o ponto continuava faltando no grafico, para
+    sempre, sem nada na tela explicando por que.
+
+    A condicao `IS NULL OR = $2` tem as duas metades, e cada uma responde a um
+    caso diferente:
+
+    **`IS NULL`** e a adocao propriamente dita. **`= $2`** e o caso NORMAL e
+    frequente: pedir de novo um degrau que ja esta na curva — um clique repetido,
+    a varredura reencontrando o que ja rodou. Sem esta metade o `UPDATE` nao
+    casava, a rota respondia `naCurva: false`, e a tela dizia "essa variacao
+    pertence a outra rodada" sobre um ponto que esta ali no proprio grafico. Pior:
+    a varredura automatica parava de vez, esperando um ponto que ja existia.
+
+    O que fica de FORA e so o que deve ficar: rodada que ja e ponto da curva de
+    OUTRA base nao e roubada. Duas bases com o mesmo orcamento escalado sao raras,
+    mas mover a rodada apagaria um ponto de um grafico para preencher outro — e o
+    dono do primeiro nunca saberia.
+
+    O `UPDATE` condicional e atomico, entao duas requisicoes simultaneas nao
+    disputam: as duas veem a mesma verdade sobre a mesma linha.
+    """
+    linha = await db.buscar_um(
+        f"""UPDATE {_c()}.run_request
+               SET base_run_id = $2, variacao_fator = $3
+             WHERE run_id = $1
+               AND (base_run_id IS NULL OR base_run_id = $2)
+         RETURNING run_id""",
+        run_id,
+        base_run_id,
+        fator,
+    )
+    return linha is not None
+
+
+async def varredura(run_id: str) -> list[dict[str, Any]]:
+    """As variacoes de orcamento DESTA rodada — os pontos da curva de sensibilidade.
+
+    Traz as duas metades de uma vez: a linhagem (`controle.*`, que existe desde o
+    disparo) e os KPIs publicados (`public.otim_meta`, que so existem no fim). O
+    LEFT JOIN e o que deixa a mesma consulta responder "esta rodando" e "deu isto"
+    — sem ele a tela precisaria de duas rotas e teria de decidir sozinha o que
+    significa uma variacao presente numa e ausente na outra.
+
+    Ordenada pelo FATOR, e nao pela data: a curva se le da esquerda para a
+    direita, e disparar os degraus fora de ordem e o uso normal (rodar +50%
+    primeiro para ver se vale a pena continuar).
+
+    Inclui as ESTIMATIVAS, ao contrario de `GET /runs`. Aqui elas sao o assunto;
+    la elas seriam ruido que parece simulacao.
+    """
+    linhas = await db.buscar(
+        f"""SELECT r.run_id, r.variacao_fator, r.estimativa, r.rotulo,
+                   s.status, s.progresso,
+                   -- O MOTIVO DA FALHA VIAJA COM O PONTO.
+                   --
+                   -- Sem ele o degrau aparecia como "erro" e mais nada, e quem
+                   -- olhava não tinha como saber se valia tentar de novo, mudar
+                   -- de modo ou desistir. A resposta estava gravada e a tela não
+                   -- a pedia — o que transforma uma explicação em pergunta para
+                   -- outra pessoa.
+                   s.erro,
+                   m.vpl, m.vp_efeito_base, m.cobertura_final_pct, m.metas_total, m.metas_nao_atingidas,
+                   m.capex_total, m.orcamento_total, m.tempo_s, m.milp_status
+              FROM {_c()}.run_request r
+              JOIN {_c()}.run_status  s USING (run_id)
+              LEFT JOIN {_p()}.otim_meta m ON m.run_id = r.run_id
+             WHERE r.base_run_id = $1
+             ORDER BY r.variacao_fator, r.solicitado_em DESC""",
+        run_id,
+    )
+    return [dict(l) for l in linhas]
+
+
+async def parametros(run_id: str) -> dict[str, Any] | None:
+    """Os parametros COM QUE a rodada foi disparada, como ficaram gravados.
+
+    Existe para CLONAR uma rodada mexendo em um parametro so — a analise de
+    sensibilidade do front dispara a mesma simulacao com o orcamento escalado, e
+    para isso precisa do resto identico. `GET /runs/{id}/meta` nao serve: ele
+    resume os parametros para exibicao (o `ORCAMENTO` por ano vira a SOMA), e
+    clonar a partir do resumo mudaria mais que o orcamento — o que faria a
+    comparacao deixar de ser sensibilidade e virar duas rodadas diferentes.
+
+    As chaves do JOB (`USUARIO`, `MAX_TIME_S`, `WORKERS`) NAO saem: sao de
+    execucao, nao do pedido. O usuario e de quem clona, e mandar de volta o
+    usuario original faria a rodada nova nascer assinada por outra pessoa.
+    """
+    linha = await db.buscar_um(
+        f"SELECT params FROM {_c()}.run_request WHERE run_id = $1", run_id
+    )
+    if not linha:
+        return None
+    return {k: v for k, v in (linha["params"] or {}).items() if k not in CHAVES_DO_JOB}
 
 
 async def status(run_id: str) -> dict[str, Any] | None:

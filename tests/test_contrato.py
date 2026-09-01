@@ -44,6 +44,7 @@ FORMAS_DO_CONTRATO = {
     # fatura?"), respondida antes de escolher a sub-bacia. Duas rotas e nao uma
     # com `?cidade=`: a URL da cidade ja e `/cidades/{}`, e o recorte cola nela.
     "GET /runs/{}/explicabilidade",
+    "GET /runs/{}/sensibilidade",
     "GET /runs/{}/cidades/{}/explicabilidade",
     # A LISTA e o CRONOGRAMA vem antes de `/obras/{}` na declaracao, e a ordem e
     # parte do contrato: o FastAPI casa por ordem, e `/obras/{}` engoliria
@@ -58,6 +59,13 @@ FORMAS_DO_CONTRATO = {
     "POST /runs",
     "GET /runs/{}/status",
     "POST /runs/{}/cancelar",
+    # A MESMA SIMULACAO COM O ORCAMENTO ESCALADO — a analise de sensibilidade.
+    # `{"fator": 1.1}` = +10% de CAPEX em cada ano, tudo o mais identico. Clona no
+    # SERVIDOR de proposito: `POST /runs` recebe o corpo do front e o traduz para
+    # as chaves do job, e reconstruir esse corpo a partir dos parametros gravados
+    # poria a traducao inversa no cliente. Idempotente pelo `abrir_rodada`, entao
+    # repetir a varredura nao gasta cluster.
+    "POST /runs/{}/variacao",
     "POST /runs/{}/reexecutar",
     # DEPLOY.md §3 — cadastro. `input.override` ja existe e os PUT estao listados
     # abaixo. NAO ha POST nem DELETE de CTS: colocar e tirar CTS e mudanca de
@@ -80,6 +88,9 @@ FORMAS_DO_CONTRATO = {
     #
     "PUT /unidades/{}/sub-bacias/{}",
     "PUT /unidades/{}/cts/{}",
+    # A concessao e da EMPRESA desde 31/08; esta e a rota que a grava, e o
+    # gatilho do banco a desce para os municipios dela.
+    "PUT /unidades/{}/empresas/{}",
     "PUT /unidades/{}/contrato/{}",
     "PUT /unidades/{}/etes/{}",
     # A TOPOLOGIA — em que sistema o componente entra, e para onde ele escoa. Ela
@@ -92,6 +103,14 @@ FORMAS_DO_CONTRATO = {
     # nome, que so existe em `sistema_topologia`.
     "PUT /unidades/{}/topologia/{}",
     "DELETE /unidades/{}/topologia/{}",
+    # E A MESMA TOPOLOGIA GRAVADA DE OUTRO JEITO: o sistema INTEIRO numa
+    # transacao, com `componentes` sendo a lista completa (quem nao vem, sai). As
+    # duas rotas acima validam cada mudanca contra o que esta gravado, e por isso
+    # cobram do cliente uma ordem de envio que as vezes NAO EXISTE — tirar uma CTS
+    # e reapontar quem escoava para ela e recusado nas duas ordens possiveis. Esta
+    # confere o desenho final, com as mesmas regras. As de um componente por vez
+    # ficam: sao o caminho certo para mexer numa linha so.
+    "PUT /unidades/{}/topologia",
     # O que o SISTEMA declara sobre si — hoje so `usaCts`: marcado, ele aceita uma
     # CTS; desmarcado, varias. E regra de cadastro, e nao de simulacao (o motor
     # nunca contou CTS por sistema). O NOME do sistema nao entra: vem do
@@ -135,7 +154,7 @@ def test_nenhum_endpoint_a_mais():
 def test_a_lista_nao_esta_vazia():
     # Guarda contra o teste passar por não encontrar rota nenhuma — se `_expostas`
     # quebrar com uma mudança do FastAPI, os dois testes acima passariam vazios.
-    assert len(_expostas()) == len(FORMAS_DO_CONTRATO) == 39
+    assert len(_expostas()) == len(FORMAS_DO_CONTRATO) == 43
 
 
 @pytest.mark.parametrize("run_id", ["r1' OR 1=1", "../etc", "com espaco", ""])

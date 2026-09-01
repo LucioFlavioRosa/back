@@ -15,6 +15,7 @@ from typing import Any
 
 from app.config import config
 from app.infra import db
+from app.infra.repositorios import cascata
 
 
 def _p() -> str:
@@ -61,6 +62,7 @@ async def historico(
         f"""SELECT h.run_id, h.rotulo, h.usuario, h.data_hora, h.milp_status,
                    h.anos_capex, h.orcamento_total, h.vpl, h.capex_total,
                    h.obras_construidas, h.obras_total, h.cobertura_final_pct,
+                   h.vp_efeito_base,
                    h.metas_total, h.metas_nao_atingidas, h.tempo_s,
                    m.receita_total, m.opex_total,
                    m.regional, m.unidade_id, m.base_receita_param, m.usar_cts,
@@ -93,6 +95,10 @@ async def historico(
              -- operacao provavelmente manda o nome, que e o que esta na coluna.
              WHERE ($1::text IS NULL OR m.unidade_id = $1 OR m.regional = $1)
                AND ($2::text IS NULL OR h.usuario  = $2)
+               -- Mesma regra de `em_voo`, agora do lado publicado. `COALESCE`
+               -- porque o JOIN com `run_request` e LEFT: rodada publicada direto
+               -- pelo pacote nao tem pedido, e ausencia nao pode virar exclusao.
+               AND NOT COALESCE(rq.estimativa, false)
              ORDER BY h.data_hora DESC""",
         unidade,
         usuario,
@@ -143,6 +149,12 @@ async def em_voo(
               LEFT JOIN {_c()}.run_comentario c ON c.run_id = r.run_id
              WHERE NOT EXISTS (
                    SELECT 1 FROM {_p()}.otim_meta m WHERE m.run_id = r.run_id)
+               -- ESTIMATIVA DE SENSIBILIDADE NAO E LINHA DO HISTORICO.
+               -- Ela roda de verdade e ocupa o executor, mas parou no relogio
+               -- (60s) em vez de provar otimalidade. Ao lado de uma simulacao,
+               -- com o mesmo orcamento e VPL diferente, ela nao seria comparavel
+               -- e nada na linha diria isso. Ver a migracao 013.
+               AND NOT r.estimativa
                AND ($1::text IS NULL OR r.unidade = $1)
                AND ($2::text IS NULL OR r.solicitado_por = $2)
              ORDER BY r.solicitado_em DESC""",
@@ -274,7 +286,7 @@ def _resumo(l: dict[str, Any], favoritas: set[str]) -> dict[str, Any]:
     if not inviavel:
         atingidas = (l.get("metas_total") or 0) - (l.get("metas_nao_atingidas") or 0)
         resumo["metricas"] = {
-            "vpl": l.get("vpl"),
+            "vpl": cascata.vpl_do_produto(l.get("vpl"), l.get("vp_efeito_base")),
             "capex": l.get("capex_total"),
             "usoOrcamentoPct": _pct(l.get("capex_total"), l.get("orcamento_total")),
             "obrasConstruidas": l.get("obras_construidas"),
@@ -314,11 +326,50 @@ def _pct(parte: float | None, total: float | None) -> float | None:
     return round(parte / total * 100, 1)
 
 
+async def tamanho_do_modelo(run_id: str) -> int | None:
+    """`obras_total × anos_capex` da rodada — o tamanho do MILP, em colunas.
+
+    E a medida que decide quanto tempo de solver uma ESTIMATIVA daquela rodada
+    precisa. Uma consulta minima e propria, e nao `meta()`: quem pergunta isto
+    esta abrindo uma variacao, e nao precisa dos trinta campos do cabecalho.
+
+    `None` para rodada sem os dois numeros publicados — e o chamador cai no piso,
+    que e o comportamento de antes.
+    """
+    linha = await db.buscar_um(
+        f"""SELECT obras_total, anos_capex FROM {_p()}.otim_meta WHERE run_id = $1""",
+        run_id,
+    )
+    if not linha or not linha["obras_total"] or not linha["anos_capex"]:
+        return None
+    return int(linha["obras_total"]) * int(linha["anos_capex"])
+
+
 async def meta(run_id: str) -> dict[str, Any] | None:
     linha = await db.buscar_um(
-        f"""SELECT m.*, u.unidade_id
+        f"""SELECT m.*, u.unidade_id,
+                   -- ESTA RODADA É PONTO DA ANÁLISE DE OUTRA?
+                   --
+                   -- A tela precisa saber, e não tinha como. Uma variação é uma
+                   -- rodada completa — abre em `/resultados/{{id}}`, tem plano,
+                   -- obras e explicabilidade —, então ela ganhava também a aba
+                   -- de Sensibilidade, com o teto e o botão de rodar. Ou seja:
+                   -- a tela oferecia analisar a sensibilidade de um ponto de
+                   -- sensibilidade, e aceitar a oferta gravaria variações de
+                   -- variação, com linhagem apontando para o meio da curva.
+                   --
+                   -- O rótulo dela ("simulação +10% de CAPEX") diz +10% e não
+                   -- diz DE QUÊ. Por isso vem também o nome da base: sem ele,
+                   -- quem abre a rodada pelo histórico não tem como saber de
+                   -- qual plano aquilo é uma variação.
+                   r.base_run_id,
+                   r.variacao_fator,
+                   r.estimativa,
+                   b.rotulo AS base_rotulo
               FROM {_p()}.otim_meta m
               {_ID_DA_UNIDADE.format(i=_i())}
+              LEFT JOIN {_c()}.run_request r ON r.run_id = m.run_id
+              LEFT JOIN {_c()}.run_request b ON b.run_id = r.base_run_id
              WHERE m.run_id = $1""",
         run_id,
     )
@@ -327,6 +378,21 @@ async def meta(run_id: str) -> dict[str, Any] | None:
     return {
         "runId": linha["run_id"],
         "nome": linha.get("rotulo"),
+        # AUSENTE quando a rodada é dela mesma — e ausente, não `null` com campos
+        # vazios: "não é variação de ninguém" tem uma representação só.
+        **(
+            {
+                "variacaoDe": {
+                    "runId": linha["base_run_id"],
+                    "nome": linha.get("base_rotulo"),
+                    # 1.1 -> 10. `round` porque o fator é ponto flutuante.
+                    "degrau": round((linha["variacao_fator"] - 1) * 100),
+                    "estimativa": bool(linha.get("estimativa")),
+                }
+            }
+            if linha.get("base_run_id") and linha.get("variacao_fator")
+            else {}
+        ),
         "unidadeId": linha.get("unidade_id") or linha.get("regional"),
         "unidadeNome": linha.get("regional"),
         "dataHora": linha["data_hora"].isoformat() if linha.get("data_hora") else None,
@@ -336,7 +402,8 @@ async def meta(run_id: str) -> dict[str, Any] | None:
         # `kpis` alimenta a faixa de numeros do nivel global. O contrato exige o
         # bloco inteiro; faltando um campo, a tela mostra "—" onde ha dado.
         "kpis": {
-            "vpl": linha.get("vpl"),
+            # SEM O EFEITO-BASE — ver `cascata.SEM_EFEITO_BASE`.
+            "vpl": cascata.vpl_do_produto(linha.get("vpl"), linha.get("vp_efeito_base")),
             "capexTotal": linha.get("capex_total"),
             "opexTotal": linha.get("opex_total"),
             "receitaTotal": linha.get("receita_total"),

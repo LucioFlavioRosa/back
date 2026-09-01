@@ -21,6 +21,9 @@ resultado que o job publicou. O motor vive noutro repositório
 
 ```
 main.py              ponto de entrada (FastAPI + lifespan do pool e da fila)
+pyproject.toml       metadados do pacote e configuração do pytest. As
+                     dependências continuam em `requirements.txt` — é dele que
+                     a imagem instala. `pip install -e .` é opcional.
 app/
   config.py          tudo que vem do ambiente, lido uma vez
   api/               ── OS ENDPOINTS ──
@@ -31,16 +34,32 @@ app/
     erros.py         todo erro sai como {"erro": "mensagem"} CONTRATO.md §1.1
     deps.py          usuário do token — quem assina a simulação
   dominio/           ── AS REGRAS, sem framework ──
+                     Cada módulo declara sua interface em `__all__`; o resto é
+                     implementação. `tests/test_interface_do_dominio.py` impede
+                     que a declaração descole do código.
     run_id.py        gramática do id e por que ele congela
     status.py        ciclo de vida da rodada e quem pode reexecutar
     parametros.py    corpo do front → params do run_request
+    variacao.py      a variação de orçamento e os dois modos (60s × 1000s)
+    teto.py          o limite superior da sensibilidade, sem solver
+    campos.py        que coluna do banco alimenta que campo da ficha
+    ficha.py         a ficha da unidade: obras, ETE, o que é obrigatório
+    topologia.py     ciclos, jusante e as regras do desenho do sistema
+    trilha.py        o diff que vira auditoria do cadastro
+    formato.py       números e textos em pt-BR, na entrada e na saída
+    erros.py         as recusas do domínio, que a API traduz em 4xx
   infra/             ── O MUNDO DE FORA ──
     db.py            pool asyncpg
     fila.py          Service Bus
     repositorios/    controle.py (run_request/status) · resultado.py (histórico
-                     e meta) · niveis.py (a cascata) · cadastro.py (leitura) ·
-                     cadastro_escrita.py (ficha + trilha) ·
-                     pendencias.py (a mesma conta que a tela faz)
+                     e meta) · cadastro.py (leitura) · cadastro_escrita.py
+                     (ficha + trilha) · pendencias.py (a mesma conta que a tela
+                     faz)
+                     A CASCATA, que era um `niveis.py` de 1.357 linhas:
+                       cascata.py           o vocabulário comum aos três abaixo
+                       nivel_global.py      painel, EBITDA, cidades, cronograma
+                       nivel_detalhe.py     cidade, sistema, sub-bacia, obra
+                       explicabilidade.py   o que ficou de fora, e o teto
 migracoes/           001_override.sql — a trilha de auditoria do cadastro
                      007_trilha_do_cadastro.sql — ela passa a cobrir a ficha
                      inteira, e quem calcula o diff é o servidor
@@ -49,10 +68,21 @@ migracoes/           001_override.sql — a trilha de auditoria do cadastro
                      006_auditoria_cadastro.sql — última alteração e autor por
                      ficha
 tests/               a superfície da API não pode derivar do contrato do front
+                     (sem banco: rodam com `python -m pytest`)
+testes_de_integracao/
+                     SCRIPTS que exigem serviço e banco DE PÉ — contrato de
+                     payload, escrita, concorrência, fila. Ficavam misturados em
+                     `dev/`, onde `formas.py` parecia um módulo de formas e era
+                     um teste de contrato. Nenhum se chama `test_*.py`: o
+                     prefixo é do pytest, e eles rodam com `python`.
+dev/                 ferramenta de desenvolvimento: o executor local
+                     (`worker.py`), carga de banco, scripts de conferência
 ```
 
-Para entender o serviço, leia `app/dominio/` primeiro: são três arquivos sem
+Para entender o serviço, leia `app/dominio/` primeiro: são onze módulos sem
 dependência de framework e é onde estão as decisões que custam caro se erradas.
+O `__all__` de cada um diz o que ele oferece — é o índice mais curto que existe
+desta camada.
 
 ## Rodar
 
@@ -239,7 +269,7 @@ pelo antigo `POST /cts`, que gravava ficha e par sem tocar na topologia. É
 resíduo de teste, não defeito do cadastro de origem. Ver `dev/conferir_planilha.py`.
 
 Isso não diminui a denúncia: ela é o que tornou os dois visíveis, e o mesmo
-estado pode ser produzido por qualquer carga parcial. `dev/smoke_incons.py` cobre isso perguntando ao banco quais
+estado pode ser produzido por qualquer carga parcial. `testes_de_integracao/smoke_incons.py` cobre isso perguntando ao banco quais
 deveriam aparecer e conferindo que a API disse exatamente aquilo — sem fixar ids,
 para não falhar no dia em que o cadastro for corrigido.
 

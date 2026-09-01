@@ -21,14 +21,23 @@ O front cacheia tudo isto com `staleTime: Infinity` — o que so e correto porqu
 `app/dominio/status.py`).
 """
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 
 from app.api.deps import Usuario, Quem, guarda_de_rota
 from app.dominio import run_id as rid
+from app.dominio import teto as teto_dom
+from app.dominio.teto import DEGRAUS as DEGRAUS_DA_CURVA
 from app.api import formas_resultado as formas
-from app.infra.repositorios import niveis, resultado
+from app.infra.repositorios import (
+    cascata,
+    controle,
+    explicabilidade as explic,
+    nivel_detalhe,
+    nivel_global,
+    resultado,
+)
 
 #: PREFIXO E GUARDA MORAM NO ROTEADOR, e nao no `include_router`. Assim quem
 #: le este arquivo ve sob que caminho as rotas abaixo vivem e que elas ja
@@ -252,7 +261,7 @@ async def _run_publicado(run_id: str) -> str:
     dele: `_ou_404` ja nao acha o registro quando a rodada nao existe.
     """
     rid.exigir_valido(run_id)
-    if not await niveis.existe(run_id):
+    if not await nivel_global.existe(run_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Rodada não encontrada.")
     return run_id
 
@@ -276,37 +285,37 @@ async def painel(run_id: RunPublicado) -> dict[str, Any]:
     `/subbacias/histograma` separados: sao quadros que aparecem sempre juntos, e o
     backend le as tabelas da mesma rodada de qualquer jeito.
     """
-    return await niveis.painel(run_id)
+    return await nivel_global.painel(run_id)
 
 
 @router.get("/runs/{run_id}/ebitda", response_model=formas.PainelEbitda)
 async def ebitda(
     run_id: RunPublicado, cidade: Annotated[str | None, Query()] = None
 ) -> dict[str, Any]:
-    return await niveis.ebitda(run_id, cidade=cidade)
+    return await nivel_global.ebitda(run_id, cidade=cidade)
 
 
 @router.get("/runs/{run_id}/cidades", response_model=list[formas.CidadeLinha])
 async def cidades(run_id: RunPublicado) -> list[dict[str, Any]]:
-    return await niveis.cidades(run_id)
+    return await nivel_global.cidades(run_id)
 
 
 @router.get("/runs/{run_id}/cidades/{cidade_id}", response_model=formas.CidadeDetalhe)
 async def cidade(run_id: str, cidade_id: str) -> dict[str, Any]:
     rid.exigir_valido(run_id)
-    return await _ou_404(await niveis.cidade(run_id, cidade_id), "Cidade")
+    return await _ou_404(await nivel_detalhe.cidade(run_id, cidade_id), "Cidade")
 
 
 @router.get("/runs/{run_id}/sistemas/{sistema_id}/topologia", response_model=formas.Fluxo)
 async def topologia(run_id: str, sistema_id: str) -> dict[str, Any]:
     rid.exigir_valido(run_id)
-    return await _ou_404(await niveis.topologia(run_id, sistema_id), "Sistema")
+    return await _ou_404(await nivel_detalhe.topologia(run_id, sistema_id), "Sistema")
 
 
 @router.get("/runs/{run_id}/subbacias/{sub_id}", response_model=formas.SubBaciaDetalhe)
 async def subbacia(run_id: str, sub_id: str) -> dict[str, Any]:
     rid.exigir_valido(run_id)
-    return await _ou_404(await niveis.subbacia(run_id, sub_id), "Sub-bacia")
+    return await _ou_404(await nivel_detalhe.subbacia(run_id, sub_id), "Sub-bacia")
 
 
 @router.get("/runs/{run_id}/explicabilidade", response_model=formas.ExplicabilidadeGlobal)
@@ -317,7 +326,125 @@ async def explicabilidade(run_id: RunPublicado) -> dict[str, Any]:
     (`naoFaturando: 0`), e a tela a trata como "nada a explicar". 404 aqui diria
     que a rodada nao existe.
     """
-    return await niveis.explicabilidade(run_id)
+    return await explic.explicabilidade(run_id)
+
+
+@router.get("/runs/{run_id}/sensibilidade", response_model=formas.Sensibilidade)
+async def sensibilidade(
+    run_id: RunPublicado,
+    de: Annotated[int, Query(ge=1)] = DEGRAUS_DA_CURVA[0],
+    ate: Annotated[int, Query(ge=1)] = DEGRAUS_DA_CURVA[-1],
+    pontos_pedidos: Annotated[int, Query(alias="pontos", ge=1, le=20)] = len(DEGRAUS_DA_CURVA),
+) -> dict[str, Any]:
+    """A curva de "e se o CAPEX anual fosse maior?" — o teto e os pontos ja rodados.
+
+    UMA ROTA PARA AS DUAS METADES, porque a tela nao consegue usar uma sem a
+    outra. O teto responde na hora, sem solver nenhum, e serve para decidir se
+    vale disparar alguma coisa; os pontos sao as variacoes que ja rodaram.
+    Separar em duas rotas obrigaria a tela a decidir o que significa ter uma e
+    nao ter a outra — que e decisao de dominio, e ela nao pertence ao cliente.
+
+    A RODADA BASE VEM COMO `degrau: 0`, e nao fica por conta do cliente montar.
+    Ela e um ponto da curva como os outros — o de partida — e precisa das mesmas
+    grandezas, inclusive a contagem de obras por componente, que o `meta` nao
+    tem. Montar meio ponto no front a partir de `meta` e a outra metade aqui
+    criava duas definicoes do mesmo objeto, e a diferenca aparecia justamente na
+    comparacao "quanto muda em relacao a hoje".
+
+    OS PONTOS SAEM DA LINHAGEM (`run_request.base_run_id`), e nao do nome da
+    rodada. O rotulo e livre: le-lo com expressao regular faz renomear a rodada
+    desmanchar a curva em silencio, e uma variacao deduplicada sob outro nome
+    nunca e encontrada. Ver `migracoes/013_estimativa_de_sensibilidade.sql`.
+
+    A FAIXA E DE QUEM PERGUNTA (`?de=&ate=&pontos=`), e o padrao e +10% a +50% em
+    cinco. "Quanto a mais e plausivel" e decisao de negocio e muda por unidade:
+    uma concessao em fim de ciclo discute +5% a +15%, e uma curva de +10% a +50%
+    ali gasta cinco execucoes para responder fora do intervalo que importa.
+
+    O TETO E CALCULADO PARA OS PONTOS PEDIDOS, e nao para a lista fixa: ele e a
+    resposta previa da mesma pergunta, e responder sobre outros degraus seria
+    responder outra.
+
+    `teto: null` quando a rodada nao publicou orcamento — nao ha o que escalar, e
+    zeros aqui seriam lidos como "nao ha nada a ganhar".
+    """
+    try:
+        degraus = teto_dom.pontos_da_faixa(de, ate, pontos_pedidos)
+    except teto_dom.FaixaInvalida as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from e
+
+    dados = await explic.candidatas_do_teto(run_id)
+    variacoes = await controle.varredura(run_id)
+    base = await resultado.meta(run_id)
+
+    # TODAS as variacoes, e nao so as que tem `vpl`. Publicar e um passo com
+    # partes: uma rodada pode ter obras gravadas e o `vpl` ainda nulo, e filtrar
+    # por `vpl` fazia o ponto aparecer sem obras — a aba de obras ficava com uma
+    # coluna a menos sem nada dizer que ela existia.
+    ids = [run_id] + [v["run_id"] for v in variacoes]
+    obras = await explic.obras_por_componente(ids)
+
+    pontos: list[dict[str, Any]] = []
+    if base and base.get("kpis"):
+        k = base["kpis"]
+        pontos.append(
+            {
+                "degrau": 0,
+                "runId": run_id,
+                "status": "SUCESSO",
+                "estimativa": False,
+                "vpl": k.get("vpl"),
+                "coberturaFimPct": k.get("coberturaFimPct"),
+                "metasAtingidas": k.get("metasAtingidas"),
+                "metasTotal": k.get("metasTotal"),
+                "capexTotal": k.get("capexTotal"),
+                "tempoS": None,
+                "obras": obras.get(run_id, []),
+            }
+        )
+
+    for p in variacoes:
+        if not p["variacao_fator"]:
+            continue
+        pontos.append(
+            {
+                # O degrau vem do FATOR gravado: 1.1 -> 10. `round` porque o
+                # fator e ponto flutuante e `(1.1 - 1) * 100` da
+                # 10.000000000000009.
+                "degrau": round((p["variacao_fator"] - 1) * 100),
+                "runId": p["run_id"],
+                "status": p["status"],
+                "estimativa": p["estimativa"],
+                # SEM O EFEITO-BASE, como todo VPL do produto.
+                "vpl": (
+                    None
+                    if p["vpl"] is None
+                    else cascata.vpl_do_produto(p["vpl"], p["vp_efeito_base"])
+                ),
+                "coberturaFimPct": p["cobertura_final_pct"],
+                # `metas_nao_atingidas` e o que o motor grava; a tela conta as
+                # CUMPRIDAS. A subtracao mora aqui e nao la: e a mesma conversao
+                # que `resultado.meta` ja faz, e duplica-la no cliente criaria um
+                # segundo lugar para ela errar.
+                "metasAtingidas": (
+                    None
+                    if p["metas_total"] is None
+                    else p["metas_total"] - (p["metas_nao_atingidas"] or 0)
+                ),
+                "metasTotal": p["metas_total"],
+                "capexTotal": p["capex_total"],
+                "tempoS": p["tempo_s"],
+                "erro": p["erro"],
+                "obras": obras.get(p["run_id"], []),
+            }
+        )
+
+    return {
+        "teto": (
+            teto_dom.teto(dados[0], dados[1], degraus, dados[2]) if dados else None
+        ),
+        "pontos": pontos,
+    }
 
 
 @router.get("/runs/{run_id}/cidades/{cidade_id}/explicabilidade", response_model=formas.ExplicabilidadeGlobal)
@@ -328,7 +455,7 @@ async def explicabilidade_da_cidade(run_id: RunPublicado, cidade_id: str) -> dic
     `/cidades/{id}`, e colar o recorte nela segue o padrao de `/cidades/{id}`.
     Aqui o 404 vale — cidade que nao pertence a rodada nao tem explicacao nenhuma.
     """
-    return await _ou_404(await niveis.explicabilidade(run_id, cidade_id), "Cidade")
+    return await _ou_404(await explic.explicabilidade(run_id, cidade_id), "Cidade")
 
 
 # As duas rotas de obra abaixo vem ANTES de `/obras/{obra_id}`, e a ordem e o que
@@ -337,7 +464,7 @@ async def explicabilidade_da_cidade(run_id: RunPublicado, cidade_id: str) -> dic
 # para um endpoint que existe.
 @router.get("/runs/{run_id}/obras/cronograma", response_model=formas.CronogramaDeObras)
 async def cronograma_de_obras(run_id: RunPublicado) -> dict[str, Any]:
-    return await niveis.cronograma_de_obras(run_id)
+    return await nivel_global.cronograma_de_obras(run_id)
 
 
 @router.get("/runs/{run_id}/obras", response_model=formas.ObrasPagina)
@@ -346,16 +473,24 @@ async def obras(
     situacao: Annotated[str | None, Query()] = None,
     cidade: Annotated[str | None, Query()] = None,
     ano: Annotated[int | None, Query()] = None,
+    # `Literal` E NAO `str`: o valor invalido passa a ser recusado com 422 na
+    # borda, e os quatro validos aparecem no OpenAPI. Antes o repositorio
+    # ignorava em silencio o que nao reconhecia — um `?recorte=terceiros` (com s)
+    # devolvia a lista inteira como se nenhum filtro tivesse sido pedido.
+    recorte: Annotated[
+        Literal["todas", "terceiro", "obrigatoria", "escolhida"] | None, Query()
+    ] = None,
     pagina: Annotated[int, Query(ge=1)] = 1,
     tamanho: Annotated[int, Query(ge=1, le=500)] = 50,
     ordenar: Annotated[str, Query()] = "inicio",
 ) -> dict[str, Any]:
     """A lista de obras do plano, paginada. `total` e o do resultado FILTRADO."""
-    return await niveis.obras(
+    return await nivel_detalhe.obras(
         run_id,
         situacao=situacao,
         cidade=cidade,
         ano=ano,
+        recorte=recorte,
         pagina=pagina,
         tamanho=tamanho,
         ordenar=ordenar,
@@ -365,4 +500,4 @@ async def obras(
 @router.get("/runs/{run_id}/obras/{obra_id}", response_model=formas.ObraDetalhe)
 async def obra(run_id: str, obra_id: str) -> dict[str, Any]:
     rid.exigir_valido(run_id)
-    return await _ou_404(await niveis.obra(run_id, obra_id), "Obra")
+    return await _ou_404(await nivel_detalhe.obra(run_id, obra_id), "Obra")

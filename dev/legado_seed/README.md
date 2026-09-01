@@ -24,7 +24,7 @@ Suba um banco **separado**, aplique o seed e aponte `POSTGRES_URL` para ele:
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.e2e.yml exec -T db \
   psql -U otim -d otimizador_seed -f /dev/legado_seed/seed.sql
-POSTGRES_URL=postgresql://otim:otim@localhost:55432/otimizador_seed python dev/legado_seed/smoke_seguranca.py
+POSTGRES_URL=postgresql://otim:otim@localhost:55432/otimizador_seed python testes_de_integracao/smoke_seguranca.py
 ```
 
 Não rode contra o banco real: vários deles fazem `UPDATE` e `DELETE` diretos, e

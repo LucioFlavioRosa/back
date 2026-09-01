@@ -52,4 +52,10 @@ async def main():
             p=(await c.get("/api/unidades/u1/prontidao")).json()
             ck("obra com 7 campos vazios soma 7", p["pendencias"]==9, str(p))
     print("\nFALHAS:", falhas or "nenhuma"); raise SystemExit(1 if falhas else 0)
-asyncio.run(main())
+# RODA COMO SCRIPT, e só como script.
+#
+# Sem este guarda, importar o arquivo — o que o pytest faz ao COLETAR — dispara
+# a bateria inteira contra a API e termina o processo num `SystemExit`. Eles não
+# são testes de pytest: são programas que falam com um serviço de pé.
+if __name__ == "__main__":
+    asyncio.run(main())

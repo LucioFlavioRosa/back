@@ -7,3 +7,6 @@ venv/
 !.env.example
 .pytest_cache/
 .ruff_cache/
+
+# Artefatos de build do `pip install -e .` (o pyproject passou a existir).
+*.egg-info/

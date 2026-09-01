@@ -1,6 +1,6 @@
 """Os payloads do CADASTRO contra os tipos do front, campo a campo.
 
-`dev/formas.py` fazia isso só para os endpoints de RESULTADO. Foi essa lacuna que
+`contrato_de_resultado.py` fazia isso só para os endpoints de RESULTADO. Foi essa lacuna que
 deixou passar dois defeitos que derrubam a tela inteira, os dois achados por gente
 usando o produto e não por teste:
 
@@ -27,8 +27,8 @@ ESPERADO = {
     "db":      ["fat","arr","ligU","ligA","ligN","ligUInd","ligAInd","fatInd","arrInd",
                 "ecoU","ecoA","ecoN","ticket"],
     "unidReg": ["rid","rnome","uid","unome","waccMedio"],
-    "supH":    ["id","nome"],
-    "cidadeH": ["id","nome","supId"],
+    "empH":    ["id","nome"],
+    "cidadeH": ["id","nome","empId"],
     "sistemaH":["id","nome","cidId"],
     "topo":    ["sis","id","nome","jus"],
     # `atualizadoEm`/`atualizadoPor` estao nas QUATRO fichas: e a auditoria que
@@ -93,7 +93,7 @@ async def main():
             h = (await c.get(f"/api/unidades/{U}/hierarquia")).json()
             falta = [k for k in ESPERADO["unidReg"] if k not in h["unidReg"]]
             ck("unidReg tem os campos do front", falta==[], f"faltam {falta} — tem {sorted(h['unidReg'])}")
-            for rot, chave in (("supH","superintendencias"),("cidadeH","cidades"),
+            for rot, chave in (("empH","empresas"),("cidadeH","cidades"),
                                ("sistemaH","sistemas"),("topo","topo")):
                 if not h[chave]:
                     ck(f"{chave}: ha ao menos um", False, "vazio"); continue
@@ -157,4 +157,13 @@ async def main():
                all({"tipo", "id", "detalhe"} <= set(x) for x in d.get("inconsistencias", [])),
                "falta tipo/id/detalhe")
     print("\nFALHAS:", f or "nenhuma"); raise SystemExit(1 if f else 0)
-asyncio.run(main())
+
+
+# RODA COMO SCRIPT, e só como script.
+#
+# Sem este guarda, importar o arquivo — o que o pytest faz ao COLETAR —
+# dispara a bateria inteira contra a API e termina o processo num
+# `SystemExit`. Eles não são testes de pytest: são programas que falam com
+# um serviço de pé.
+if __name__ == "__main__":
+    asyncio.run(main())

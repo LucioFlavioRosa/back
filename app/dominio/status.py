@@ -13,6 +13,19 @@ usuario veria "cancelado" e a rodada continuaria consumindo cluster.
 cancelar de verdade.
 """
 
+#: A INTERFACE PÚBLICA deste módulo. Tudo o que não está aqui é implementação,
+#: e pode mudar sem aviso — a lista é o contrato com quem importa.
+__all__ = [
+    "Status",
+    "TERMINAIS",
+    "EM_VOO",
+    "congelada",
+    "pode_reexecutar",
+    "motivo_para_recusar_reexecucao",
+    "pode_cancelar",
+    "motivo_para_recusar_cancelamento",
+]
+
 from enum import StrEnum
 
 

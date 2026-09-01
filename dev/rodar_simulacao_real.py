@@ -43,8 +43,8 @@ MAX_TIME_S = int(sys.argv[2]) if len(sys.argv) > 2 else 90
 # `carregar_postgres.ABAS_INPUT` no pacote de producao.
 ABAS = {
     "unidade-regional": "unidade_regional",
-    "regional-superintendencia": "regional_superintendencia",
-    "superintendencia-cidade": "superintendencia_cidade",
+    "empresa": "empresa",
+    "cidade-empresa": "cidade_empresa",
     "cidade-sistema": "cidade_sistema",
     "sistema-topologia": "sistema_topologia",
     "cidade-operacional": "cidade_operacional",
@@ -65,8 +65,8 @@ ABAS = {
 # `subbacia_cts` referencia `cts_operacional`, entao a CTS vem primeiro.
 ORDEM = [
     "unidade_regional",
-    "regional_superintendencia",
-    "superintendencia_cidade",
+    "empresa",
+    "cidade_empresa",
     "cidade_sistema",
     "sistema_topologia",
     "cidade_operacional",

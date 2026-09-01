@@ -63,9 +63,7 @@ class Identidade:
     def ve_rodada_de(self, dono: str | None) -> bool:
         """A POSSE de uma rodada, que e mais estreita que o escopo.
 
-        `dono` ausente e SO DO ADMIN. A primeira versao deixava passar para todo
-        mundo, com o argumento de nao esconder dado anterior ao recorte — o
-        argumento e razoavel e a consequencia nao: `otim_meta.usuario` aceita
+        `dono` ausente e SO DO ADMIN, e nao de todo mundo: `otim_meta.usuario` aceita
         NULL, entao bastava um script publicar sem autor para a rodada ficar
         legivel por qualquer um que soubesse o `run_id`. Uma brecha que se abre
         sozinha, por descuido de carga, e pior que uma que exige ataque.
