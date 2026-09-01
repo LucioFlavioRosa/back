@@ -104,10 +104,10 @@ docker compose exec -T db psql -U otim -d otimizador -c \
 curl http://localhost:8000/readyz          # migracoesFaltando: []
 ```
 
-> **Por que um dump, e não os DDLs.** O cadastro nasce de uma planilha que não está no
-> repositório (2 MB, no OneDrive do time). O dump é o mesmo dado, com as migrações já
-> aplicadas, em 712 KB. Quem for **regenerar da planilha** usa `dev/recarregar_tudo.py` — leva
-> ~20 min porque também roda as 5 unidades.
+> **Por que um dump, e não os DDLs.** O dump traz o cadastro com as migrações já
+> aplicadas, em 712 KB — os DDLs sozinhos dariam um banco vazio. Para refazer só as
+> RODADAS sobre esse cadastro, `dev/recarregar_tudo.py` leva ~20 min (ele não toca no
+> cadastro; roda as 5 unidades).
 >
 > **Por que o `public` vem vazio, mas vem.** Sem as 17 tabelas de resultado, `GET /runs`
 > responderia 500 e a publicação não teria onde gravar. Sem os dados, cada um gera as próprias
@@ -119,8 +119,8 @@ O executor não importa o motor do repositório: ele carrega um **pacote plano**
 usa imports de pacote (`from otimizador.dominio import ...`) que não resolvem nesse formato.
 
 ```bash
-# 1. copie o pacote-base (planilha, leitor, dashboard) que o time compartilha
-#    para uma pasta sua, por exemplo ~/pacote-otimizador
+# 1. exporte o pacote do motor em layout PLANO (os modulos no topo) para uma pasta
+#    sua, por exemplo ~/pacote-otimizador
 
 # 2. por cima dele, os arquivos do motor, do repositório:
 cp otimzador_capex/otimizador/dominio/otimizador_capex_v62.py      ~/pacote-otimizador/
@@ -153,7 +153,7 @@ Databricks; aqui é este processo.
 
 ```bash
 cd otimizador-backend
-pip install -r requirements.txt ortools openpyxl psycopg2-binary
+pip install -r requirements.txt ortools psycopg2-binary
 
 OTIMIZADOR_PACOTE="$HOME/pacote-otimizador" python -u dev/worker.py --tempo 1000
 ```
@@ -220,5 +220,5 @@ navegador :8080
                     o motor (pacote plano) -> publica em public.otim_*
 ```
 
-O executor lê a **planilha** do pacote, não o Postgres — é a diferença mais fácil de esquecer
-quando alguém muda o cadastro no banco e não vê efeito na rodada.
+O executor lê `input.*` do **Postgres** — o mesmo cadastro que as telas gravam. Mudou o
+cadastro, a próxima rodada já sai com ele.
