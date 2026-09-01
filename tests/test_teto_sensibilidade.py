@@ -154,12 +154,25 @@ class TestOsPontosDaFaixa:
             p = pontos_da_faixa(a, b, n)
             assert p == sorted(p)
 
-    @pytest.mark.parametrize("quantos", [0, 1, 6, 10])
-    def test_recusa_menos_de_dois_e_mais_de_cinco(self, quantos):
-        # Dois é o mínimo que desenha uma reta; cinco é onde o custo deixa de se
-        # pagar em leitura.
+    @pytest.mark.parametrize("quantos", [0, 6, 10])
+    def test_recusa_zero_e_mais_de_cinco(self, quantos):
+        # Cinco é onde o custo (cinco execuções) deixa de se pagar em leitura.
         with pytest.raises(FaixaInvalida):
             pontos_da_faixa(10, 50, quantos)
+
+    def test_um_ponto_e_o_pedido_mais_comum(self):
+        """A pessoa escolhe UM acréscimo, roda e lê o gráfico. A curva se forma
+        ponto a ponto, e cada um custa uma execução de solver.
+
+        `fim` é ignorado de propósito: um ponto não tem fim, e exigir `fim > início`
+        recusaria justamente o pedido mais comum."""
+        assert pontos_da_faixa(25, 25, 1) == [25]
+        assert pontos_da_faixa(25, 99, 1) == [25]
+
+    def test_um_ponto_continua_sujeito_aos_limites(self):
+        for inicio in (0, MAIOR_DEGRAU + 1):
+            with pytest.raises(FaixaInvalida):
+                pontos_da_faixa(inicio, inicio, 1)
 
     def test_recusa_faixa_que_nao_sobe(self):
         with pytest.raises(FaixaInvalida):

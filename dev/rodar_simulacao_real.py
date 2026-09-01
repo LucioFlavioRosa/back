@@ -27,6 +27,16 @@ sys.path.insert(0, str(PACOTE))
 from sqlalchemy import create_engine, text  # noqa: E402
 
 PG = "postgresql://otim:otim@localhost:55432/otimizador"
+
+#: O teto de CAPEX por ano da rodada de desenvolvimento.
+#:
+#: CONSTANTE DE MODULO, e nao um literal dentro de `ler_banco`: ele precisa ir
+#: TAMBEM para `controle.run_request.params`, porque e de la que a analise de
+#: sensibilidade escala o orcamento. Sem isso a rodada nasce sem `ORCAMENTO` no
+#: pedido, e pedir uma variacao dela responde 422 — "a rodada de origem nao tem
+#: orcamento gravado" — com o resultado publicado e correto no banco.
+ORCAMENTO = {2026: 60e6, 2027: 60e6, 2028: 50e6, 2029: 50e6, 2030: 40e6,
+             2031: 40e6, 2032: 30e6, 2033: 30e6}
 UNIDADE = sys.argv[1] if len(sys.argv) > 1 else "uA1"
 MAX_TIME_S = int(sys.argv[2]) if len(sys.argv) > 2 else 90
 
@@ -59,8 +69,7 @@ def rodar_e_publicar() -> str:
     cen = M.ler_banco(
         abas,
         unidade=UNIDADE,
-        orcamento={2026: 60e6, 2027: 60e6, 2028: 50e6, 2029: 50e6, 2030: 40e6,
-                   2031: 40e6, 2032: 30e6, 2033: 30e6},
+        orcamento=ORCAMENTO,
         base_receita="arrecadada",
         usar_cts=True,
         cobertura_so_residencial=False,
@@ -117,7 +126,19 @@ def registrar_no_controle(run_id: str) -> None:
             {
                 "r": run_id,
                 "u": UNIDADE,
-                "p": json.dumps({"UNIDADE": UNIDADE, "origem": "dev/rodar_simulacao_real.py"}),
+                "p": json.dumps(
+                    {
+                        "UNIDADE": UNIDADE,
+                        # As chaves que `POST /runs/{id}/variacao` reconstroi para
+                        # montar a rodada escalada. `ORCAMENTO` com a chave em texto:
+                        # JSON nao tem chave inteira, e o servidor le assim.
+                        "ORCAMENTO": {str(a): v for a, v in ORCAMENTO.items()},
+                        "BASE_RECEITA": "arrecadada",
+                        "USAR_CTS": True,
+                        "FOCO_COBERTURA": 1.0,
+                        "MAX_TIME_S": MAX_TIME_S,
+                    }
+                ),
                 "q": "lucio.rosa",
             },
         )
