@@ -780,9 +780,33 @@ async def _travar_sistemas(con: Any, *sistemas: str | None) -> None:
     e duas requisições que trancassem o mesmo par em ordens opostas travariam uma
     na outra. `sorted` dá a ordem global que evita isso. O lock é `xact`: sai
     sozinho no fim da transação, com commit ou rollback.
+
+    SEMPRE DEPOIS de `_travar_unidade`, quando os dois entram na mesma transação:
+    é a ordem global que impede o abraço entre uma gravação de topologia e a
+    marcação da unidade.
     """
     for sistema in sorted({s for s in sistemas if s}):
         await con.execute("SELECT pg_advisory_xact_lock(hashtext($1))", sistema)
+
+
+async def _travar_unidade(con: Any, unidade_id: str) -> None:
+    """Serializa a POLÍTICA DE CTS da unidade contra as gravações de topologia.
+
+    A regra "uma CTS por sistema" passou a ser da unidade, e com isso ela deixou
+    de caber num lock de sistema: marcar a unidade precisa saber que NENHUM
+    sistema dela ganhou uma segunda CTS no meio do caminho, e travar os 474
+    sistemas de uma unidade grande um a um seria pagar 474 idas ao banco por um
+    clique numa caixa.
+
+    Então o lock é da UNIDADE, e quem grava topologia toma os dois: a unidade
+    primeiro, os sistemas depois. É uma ordem global — nenhuma transação toma um
+    sistema antes da unidade —, e é ela que impede o abraço.
+
+    O espaço de hash é o mesmo dos sistemas, e uma colisão entre um id de unidade
+    e um de sistema é possível. O efeito de uma colisão aqui é serialização a
+    mais, nunca resultado errado.
+    """
+    await con.execute("SELECT pg_advisory_xact_lock(hashtext($1))", unidade_id)
 
 
 async def _unidade_do_sistema(con: Any, sistema_id: str) -> str | None:
@@ -811,12 +835,17 @@ async def _cts_do_sistema(con: Any, sistema_id: str, exceto: str = "") -> list[s
     return [l["id"] for l in linhas]
 
 
-async def _usa_sistema_cts(con: Any, sistema_id: str) -> bool:
+async def _unidade_usa_cts(con: Any, unidade_id: str) -> bool:
+    """A unidade usa MACRORREGIÃO DE CTS — e com isso cada sistema dela aceita uma?
+
+    A pergunta era do sistema e passou a ser da unidade: a política é uma, e vale
+    para todos os sistemas dentro dela.
+    """
     linha = await con.fetchrow(
-        f"SELECT usa_sistema_cts FROM {_i()}.cidade_sistema WHERE sistema_id = $1",
-        sistema_id,
+        f"SELECT usa_macrorregiao_cts FROM {_i()}.unidade_regional WHERE unidade_id = $1",
+        unidade_id,
     )
-    return bool(linha and linha["usa_sistema_cts"])
+    return bool(linha and linha["usa_macrorregiao_cts"])
 
 
 async def _e_ete(con: Any, componente_id: str) -> bool:
@@ -917,6 +946,9 @@ async def salvar_topologia(
                  WHERE componente_sistema_id = $1""",
             componente_id,
         )
+        # A UNIDADE PRIMEIRO: ver `_travar_unidade`. A politica de CTS e dela, e
+        # so essa ordem impede o abraco com quem esta marcando a caixa.
+        await _travar_unidade(con, unidade_id)
         await _travar_sistemas(
             con, sistema_id, espiada["sistema_id"] if espiada else None
         )
@@ -987,17 +1019,18 @@ async def salvar_topologia(
                     "Um sistema tem uma ETE só."
                 )
 
-        # UMA CTS POR SISTEMA, quando o sistema declara usar sistema de CTS.
+        # UMA CTS POR SISTEMA, quando a UNIDADE usa MACRORREGIAO DE CTS.
         # A regra e do CADASTRO, e nao do motor — para ele uma ou duas CTS sao nos
         # como quaisquer outros. Fica no servidor mesmo assim: a tela ja esconde o
         # seletor, mas quem desmarcar a caixa, adicionar duas e marcar de volta
         # passaria pela tela sem passar por aqui.
-        if await _e_cts(con, componente_id) and await _usa_sistema_cts(con, sistema_id):
+        if await _e_cts(con, componente_id) and await _unidade_usa_cts(con, unidade_id):
             if ja := await _cts_do_sistema(con, sistema_id, exceto=componente_id):
                 raise TopologiaInvalida(
-                    f"O sistema {sistema_id!r} está marcado como sistema de CTS, e já tem "
+                    f"A unidade {unidade_id!r} usa macrorregião de CTS, e o sistema "
+                    f"{sistema_id!r} já tem "
                     + ", ".join(repr(c) for c in ja)
-                    + ". Desmarque a opção no sistema para ter mais de uma CTS."
+                    + ". Desmarque a opção na unidade para ter mais de uma CTS por sistema."
                 )
 
         await _exigir_caminho_coerente(
@@ -1033,63 +1066,129 @@ async def salvar_topologia(
     return {"id": componente_id, "alteracoesGravadas": n}
 
 
-async def salvar_sistema(
-    *, unidade_id: str, sistema_id: str, corpo: dict[str, Any], autor: str
+async def _sistemas_com_varias_cts(con: Any, unidade_id: str) -> dict[str, list[str]]:
+    """Os sistemas da unidade que hoje têm mais de uma CTS, e quais são elas.
+
+    É o que impede marcar a unidade: marcada, ela usa macrorregião de CTS e cada
+    sistema daqui tem uma CTS só — e um sistema com duas torna a afirmação falsa
+    no instante em que ela é gravada.
+
+    Uma consulta para a unidade inteira. Perguntar sistema a sistema seriam 474
+    idas ao banco na unidade maior — por um clique numa caixa.
+    """
+    linhas = await con.fetch(
+        f"""SELECT t.sistema_id AS sis, array_agg(t.componente_sistema_id ORDER BY 1) AS cts
+              FROM {_i()}.sistema_topologia t
+              JOIN {_i()}.cts_operacional o ON o.cts = t.componente_sistema_id
+              JOIN {_i()}.cidade_sistema cs ON cs.sistema_id = t.sistema_id
+              JOIN {_i()}.cidade_empresa c ON c.cidade_id = cs.cidade_id
+              JOIN {_i()}.empresa e USING (emp_codigo)
+             WHERE e.unidade_id = $1
+             GROUP BY t.sistema_id
+            HAVING count(*) > 1
+             ORDER BY 1""",
+        unidade_id,
+    )
+    return {l["sis"]: list(l["cts"]) for l in linhas}
+
+
+async def salvar_unidade(
+    *, unidade_id: str, corpo: dict[str, Any], autor: str
 ) -> dict[str, Any]:
-    """O que o SISTEMA declara sobre si — hoje, se ele usa sistema de CTS.
+    """O que a UNIDADE declara sobre si: se usa macrorregião de CTS, e o WACC médio.
 
-    Marcado, o sistema aceita UMA CTS; desmarcado, aceita várias. É regra de
-    cadastro: o motor não conta CTS por sistema, e para ele elas são nós como
-    quaisquer outros.
+    São os dois campos da unidade que ninguém importa do Databricks — quem os
+    informa é gente, e por isso os dois têm de voltar para o banco.
 
-    Marcar com mais de uma CTS já colocada é RECUSADO, e nomeia as que estão lá.
-    A alternativa seria aceitar e deixar o sistema num estado que ele próprio
+    `usaCts` — MARCADA, a unidade usa MACRORREGIÃO DE CTS: um coletor de tempo
+    seco atende a região, e cada sistema dela aceita UMA CTS. Desmarcada, aceitam
+    várias. É regra de cadastro: o motor não conta CTS por sistema, e para ele
+    elas são nós como quaisquer outros.
+
+    A DECISÃO É DA UNIDADE, e não de cada sistema. Quem opera decide uma vez e
+    vale para todos — é a regra de negócio, e é também o que torna a caixa
+    respondível: "este sistema usa CTS?" é uma pergunta que quem cadastra não
+    tinha como responder 997 vezes.
+
+    Marcar com algum sistema de duas CTS é RECUSADO, e nomeia quais são. A
+    alternativa seria aceitar e deixar a unidade num estado que ela própria
     declara impossível — e a recusa da próxima gravação de topologia apareceria
     depois, longe daqui, parecendo defeito.
+
+    `waccMedio` — o custo médio de capital da unidade, de onde toda obra sem WACC
+    próprio herda a taxa de desconto. Vazio vira NULL: no contrato, campo em
+    branco é ausência, e zero seria outra coisa (uma unidade que desconta a nada).
+
+    CHAVE AUSENTE NÃO É APAGAMENTO. Só o que vem no corpo é escrito, e é de
+    propósito: um `UPDATE` de ficha inteira faria um pedido que só mexe na caixa
+    zerar o WACC de quem não mandou o campo — sem erro, e sem ninguém ter tocado
+    nele. Corpo sem nenhuma das duas chaves é 422, e não um `UPDATE` vazio.
     """
+    tem_cts = "usaCts" in corpo
+    tem_wacc = "waccMedio" in corpo
+    if not tem_cts and not tem_wacc:
+        raise FichaIncompleta("O corpo precisa trazer `usaCts` e/ou `waccMedio`.")
+
     usa = corpo.get("usaCts")
-    if not isinstance(usa, bool):
+    if tem_cts and not isinstance(usa, bool):
         raise FichaIncompleta("O corpo precisa trazer `usaCts` como true ou false.")
+    wacc = numerico(corpo.get("waccMedio"), "unidade.waccMedio") if tem_wacc else None
 
     async with db.transacao() as con:
-        # O MESMO lock que a topologia usa, e e isso que serializa as duas: marcar
-        # "usa sistema de CTS" e adicionar a segunda CTS sao a mesma regra vista de
-        # dois lados, e travando chaves diferentes as duas passavam juntas.
-        await _travar_sistemas(con, sistema_id)
-        if await _unidade_do_sistema(con, sistema_id) != unidade_id:
-            raise FichaDeOutraUnidade(
-                f"sistema {sistema_id!r} nao pertence a unidade {unidade_id!r}"
-            )
+        # O MESMO lock que a topologia toma primeiro, e e isso que serializa as
+        # duas: marcar "usa macrorregiao de CTS" e adicionar a segunda CTS sao a
+        # mesma regra vista de dois lados, e travando chaves diferentes as duas
+        # passavam juntas. Ver `_travar_unidade` para por que o lock e da unidade.
+        await _travar_unidade(con, unidade_id)
         antes = await con.fetchrow(
-            f"SELECT usa_sistema_cts FROM {_i()}.cidade_sistema WHERE sistema_id = $1",
-            sistema_id,
+            f"""SELECT usa_macrorregiao_cts, wacc_medio
+                  FROM {_i()}.unidade_regional WHERE unidade_id = $1""",
+            unidade_id,
         )
-        if usa and (cts := await _cts_do_sistema(con, sistema_id)) and len(cts) > 1:
+        if antes is None:
+            raise FichaDeOutraUnidade(f"unidade {unidade_id!r} nao existe")
+        if usa and (cheios := await _sistemas_com_varias_cts(con, unidade_id)):
             raise TopologiaInvalida(
-                f"O sistema {sistema_id!r} tem {len(cts)} CTS ("
-                + ", ".join(repr(c) for c in cts)
-                + "). Tire as excedentes antes de marcar que ele usa sistema de CTS."
+                f"{len(cheios)} sistema(s) da unidade têm mais de uma CTS: "
+                + "; ".join(
+                    f"{sis!r} tem " + ", ".join(repr(c) for c in cts)
+                    for sis, cts in cheios.items()
+                )
+                + ". Tire as excedentes antes de marcar que a unidade usa macrorregião de CTS."
             )
 
-        mudancas = diferencas(
-            {"usaCts": bool(antes and antes["usa_sistema_cts"])},
-            {"usaCts": usa},
-            origem=REGIONAL,
-        )
+        # SO AS CHAVES ENVIADAS entram no diff e no UPDATE — ver o docstring.
+        de: dict[str, Any] = {}
+        para: dict[str, Any] = {}
+        colunas: list[str] = []
+        valores: list[Any] = []
+        if tem_cts:
+            de["usaCts"] = bool(antes["usa_macrorregiao_cts"])
+            para["usaCts"] = usa
+            colunas.append("usa_macrorregiao_cts")
+            valores.append(usa)
+        if tem_wacc:
+            de["waccMedio"] = antes["wacc_medio"]
+            para["waccMedio"] = wacc
+            colunas.append("wacc_medio")
+            valores.append(wacc)
+
+        mudancas = diferencas(de, para, origem=REGIONAL)
+        atribui = ", ".join(f"{c} = ${i + 2}" for i, c in enumerate(colunas))
         await con.execute(
-            f"UPDATE {_i()}.cidade_sistema SET usa_sistema_cts = $2 WHERE sistema_id = $1",
-            sistema_id,
-            usa,
+            f"UPDATE {_i()}.unidade_regional SET {atribui} WHERE unidade_id = $1",
+            unidade_id,
+            *valores,
         )
         n = await _registrar(
             con,
-            tipo="sistema",
-            ficha_id=sistema_id,
+            tipo="unidade",
+            ficha_id=unidade_id,
             unidade_id=unidade_id,
             autor=autor,
             mudancas=mudancas,
         )
-    return {"id": sistema_id, "alteracoesGravadas": n}
+    return {"id": unidade_id, "alteracoesGravadas": n}
 
 
 async def remover_da_topologia(
@@ -1111,6 +1210,7 @@ async def remover_da_topologia(
                  WHERE componente_sistema_id = $1""",
             componente_id,
         )
+        await _travar_unidade(con, unidade_id)
         await _travar_sistemas(con, espiada["sistema_id"] if espiada else None)
         antes = await con.fetchrow(
             f"""SELECT sistema_id, componente_sistema_id_jusante AS jus
@@ -1205,18 +1305,6 @@ async def _unidades_dos_sistemas(con: Any, ids: list[str]) -> dict[str, str]:
         ids,
     )
     return {l["sis"]: l["uni"] for l in linhas}
-
-
-async def _sistemas_de_cts(con: Any, ids: list[str]) -> set[str]:
-    """Quais destes sistemas declaram usar sistema de CTS."""
-    if not ids:
-        return set()
-    linhas = await con.fetch(
-        f"""SELECT sistema_id AS sis FROM {_i()}.cidade_sistema
-             WHERE sistema_id = ANY($1::text[]) AND usa_sistema_cts""",
-        ids,
-    )
-    return {l["sis"] for l in linhas}
 
 
 async def _quem_aponta_para_varios(con: Any, ids: list[str]) -> dict[str, list[str]]:
@@ -1329,6 +1417,7 @@ async def salvar_topologia_em_lote(
         # componente de outro sistema toca os DOIS, e o de origem so se sabe lendo.
         # Os sistemas do corpo ja sao conhecidos e entram na trava direto.
         espiada = await _sistema_de_cada(con, enviados)
+        await _travar_unidade(con, unidade_id)
         await _travar_sistemas(con, *pedido, *espiada.values())
         if await _sistema_de_cada(con, enviados) != espiada:
             raise TopologiaInvalida(
@@ -1395,14 +1484,17 @@ async def salvar_topologia_em_lote(
             if sistema_id in pedido and componente_id not in depois:
                 depois[componente_id] = (None, None)
 
-        # QUEM E ETE, QUEM E CTS e QUAIS SISTEMAS SAO DE CTS: tres consultas no
-        # total. Eram tres POR SISTEMA — e `_quais_sao` ja aceitava lista, entao
-        # o laco pagava N vezes por uma consulta que sempre soube responder de
-        # uma vez. Os conjuntos sao de todos os componentes enviados; a regra de
-        # cada sistema olha so a fronteira dele (`set(escoa)`).
+        # QUEM E ETE e QUEM E CTS: duas consultas no total. Eram duas POR SISTEMA
+        # — e `_quais_sao` ja aceitava lista, entao o laco pagava N vezes por uma
+        # consulta que sempre soube responder de uma vez. Os conjuntos sao de
+        # todos os componentes enviados; a regra de cada sistema olha so a
+        # fronteira dele (`set(escoa)`).
+        #
+        # A TERCEIRA consulta sumiu junto com a coluna do sistema: "quais destes
+        # sistemas sao de CTS" virou uma pergunta so, feita a unidade.
         etes = await _quais_sao(con, "ete_capex", "ete_id", enviados)
         ctss = await _quais_sao(con, "cts_operacional", "cts", enviados)
-        de_cts = await _sistemas_de_cts(con, list(pedido))
+        usa_cts = await _unidade_usa_cts(con, unidade_id)
 
         problemas: list[str] = []
         for sistema_id, mapa in pedido.items():
@@ -1411,7 +1503,7 @@ async def salvar_topologia_em_lote(
                 sistema_id=sistema_id,
                 etes=etes,
                 ctss=ctss,
-                usa_cts=sistema_id in de_cts,
+                usa_cts=usa_cts,
             )
         if problemas:
             raise TopologiaInvalida(" ".join(problemas))

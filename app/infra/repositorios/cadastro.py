@@ -228,8 +228,13 @@ async def hierarquia(unidade_id: str) -> dict[str, Any]:
 
     Tudo string: o front trata como texto e chama `.trim()`.
     """
+    # `usaCts` sai como `'true'`/`'false'` MINUSCULO, e a conversao e feita aqui,
+    # no SQL. O contrato do Grupo 01 e "tudo string" (`txt()` abaixo converte a
+    # resposta inteira), e `str(True)` em Python daria `'True'` — o front
+    # compararia com `'true'` e acharia que a unidade nao usa CTS, calado.
     u = await db.buscar_um(
-        f"""SELECT regional_id, regional_name, unidade_id, unidade_name, wacc_medio
+        f"""SELECT regional_id, regional_name, unidade_id, unidade_name, wacc_medio,
+                   CASE WHEN usa_macrorregiao_cts THEN 'true' ELSE 'false' END AS usa_cts
               FROM {_i()}.unidade_regional WHERE unidade_id = $1""",
         unidade_id,
     ) or {}
@@ -239,6 +244,11 @@ async def hierarquia(unidade_id: str) -> dict[str, Any]:
         "uid": u.get("unidade_id") or "",
         "unome": u.get("unidade_name") or "",
         "waccMedio": pt_br(u.get("wacc_medio")),
+        # A POLITICA DE CTS DA UNIDADE, e nao mais de cada sistema: marcada, ela
+        # usa MACRORREGIAO DE CTS e cada sistema daqui aceita UMA. Vem na
+        # hierarquia porque e la que a tela monta a aba da unidade, junto do WACC
+        # — e e logo abaixo dele que a caixa aparece.
+        "usaCts": u.get("usa_cts") or "false",
     }
     empresas = await db.buscar(
         f"""SELECT emp_codigo AS id, empresa AS nome,
@@ -253,13 +263,11 @@ async def hierarquia(unidade_id: str) -> dict[str, Any]:
               FROM ({_cidades_cte()}) c ORDER BY cidade_name""",
         unidade_id,
     )
-    # `usaCts` sai como `'true'`/`'false'` MINUSCULO, e a conversao e feita aqui,
-    # no SQL. O contrato do Grupo 01 e "tudo string" (`txt()` abaixo converte a
-    # resposta inteira), e `str(True)` em Python daria `'True'` — o front
-    # compararia com `'true'` e acharia que nenhum sistema usa CTS, calado.
+    # O SISTEMA NAO DECLARA MAIS SE USA CTS: a politica passou a ser da unidade,
+    # e vem em `unid.usaCts` acima. Um `usaCts` por sistema aqui seria a mesma
+    # resposta repetida N vezes, e daria a entender que ainda da para divergir.
     sistemas = await db.buscar(
-        f"""SELECT s.sistema_id AS id, s.sistema_name AS nome, s.cidade_id AS "cidId",
-                   CASE WHEN s.usa_sistema_cts THEN 'true' ELSE 'false' END AS "usaCts"
+        f"""SELECT s.sistema_id AS id, s.sistema_name AS nome, s.cidade_id AS "cidId"
               FROM {_i()}.cidade_sistema s
               JOIN ({_cidades_cte()}) c ON c.cidade_id = s.cidade_id
              ORDER BY s.sistema_name""",

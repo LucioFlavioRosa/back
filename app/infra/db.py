@@ -177,12 +177,13 @@ _EXIGIDO_NULAVEL = [
      "ddl_input_migracao_05.sql (repositorio do motor)"),
 ]
 
-#: Mesma razao de `_EXIGIDO_NULAVEL`: tabela do Databricks, DDL no repositorio do
-#: motor, e o servico depende dela — a leitura do Grupo 01 seleciona a coluna, e
-#: sem ela `GET /hierarquia` responde 500.
+#: Diferente de `_EXIGIDO_NULAVEL`, esta coluna e NOSSA: a politica de CTS passou
+#: a ser da unidade (migracao 016) e saiu de `cidade_sistema`, que era tabela do
+#: Databricks. A checagem fica porque a leitura do Grupo 01 seleciona a coluna, e
+#: sem ela `GET /hierarquia` responde 500 — num banco onde a 016 nao rodou, o
+#: erro precisa dizer isso em vez de aparecer no meio de um 500.
 _EXIGIDO_COLUNA = [
-    ("input", "cidade_sistema", "usa_sistema_cts",
-     "ddl_input_migracao_06.sql (repositorio do motor)"),
+    ("input", "unidade_regional", "usa_macrorregiao_cts", "016_cts_por_unidade.sql"),
 ]
 
 
