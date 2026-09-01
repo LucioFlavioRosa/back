@@ -78,9 +78,16 @@ from typing import Any
 #: mais espera. Ver `pontos_da_faixa`.
 DEGRAUS = (10, 20, 30, 40, 50)
 
-#: Quantos pontos uma varredura pode ter. Dois e o minimo que desenha uma reta;
-#: cinco e onde o custo (cinco execucoes) deixa de se pagar em leitura.
-MINIMO_DE_PONTOS = 2
+#: Quantos pontos uma analise pode pedir de uma vez.
+#:
+#: UM e o minimo, e e o caso comum: a pessoa escolhe um acrescimo, roda, le o
+#: resultado no grafico e decide se quer outro. A curva se forma ponto a ponto, e
+#: cada um custa uma execucao de solver — pedir varios de uma vez e a excecao, nao
+#: o padrao.
+#:
+#: Cinco continua sendo o teto pelo mesmo motivo de sempre: acima disso o custo
+#: (cinco execucoes) deixa de se pagar em leitura.
+MINIMO_DE_PONTOS = 1
 MAXIMO_DE_PONTOS = 5
 
 #: O maior degrau aceito. Acima disso a pergunta deixa de ser sensibilidade e
@@ -119,6 +126,12 @@ def pontos_da_faixa(inicio: int, fim: int, quantos: int) -> list[int]:
         )
     if inicio < 1 or fim < 1:
         raise FaixaInvalida("Os degraus são acréscimos de CAPEX: precisam ser maiores que zero.")
+    # UM PONTO NAO TEM FIM: `inicio` e a resposta inteira, e exigir `fim > inicio`
+    # recusaria justamente o pedido mais comum — "rode +25% e me mostre".
+    if quantos == 1:
+        if inicio > MAIOR_DEGRAU:
+            raise FaixaInvalida(f"O maior acréscimo aceito é {MAIOR_DEGRAU}%.")
+        return [inicio]
     if fim <= inicio:
         raise FaixaInvalida("O fim da faixa precisa ser maior que o início.")
     if fim > MAIOR_DEGRAU:
