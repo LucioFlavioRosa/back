@@ -166,15 +166,18 @@ def test_o_front_nao_tem_mais_base_literal_de_obra():
 # --------------------------------------- 4. o banco confirma a cardinalidade
 #: Os nomes de cada tabela, como estão no banco carregado da planilha. Não são
 #: rótulo de tela: são a IDENTIDADE que o motor casa com o componente.
+#: OS NOMES SAO OS DO BANCO, com underscore antes de `capex`. Colados, a consulta
+#: quebra com `UndefinedTableError` — e o teste so nao acusava porque roda pulado
+#: sem `POSTGRES_URL`.
 NOMES = {
-    "componentes_subbaciascapex": {
+    "componentes_subbacias_capex": {
         "Ligacao de esgoto",
         "Rede coletora",
         "Coletor tronco",
         "Estacao elevatoria (EEE)",
         "Linha de recalque (LR)",
     },
-    "componentes_ctscapex": {
+    "componentes_cts_capex": {
         "Coletor de tempo seco",
         "Tronco",
         "EEE",
@@ -191,8 +194,8 @@ def _banco_disponivel() -> bool:
 @pytest.mark.parametrize(
     "tabela,chave,esperadas",
     [
-        ("componentes_subbaciascapex", "sub_bacia", OBRAS_SUBBACIA),
-        ("componentes_ctscapex", "cts", OBRAS_CTS),
+        ("componentes_subbacias_capex", "sub_bacia", OBRAS_SUBBACIA),
+        ("componentes_cts_capex", "cts", OBRAS_CTS),
     ],
 )
 def test_toda_ficha_do_banco_tem_a_cardinalidade_da_regua(tabela, chave, esperadas):

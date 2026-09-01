@@ -142,7 +142,11 @@ INTEIROS = {
     #: era a ETE que tinha ficado de fora.
     "ete.tExec", "ete.modulos", "ete.tPred", "ete.anoObrig", "ete.proibAte",
     # contrato
-    "cidade.fim", "meta.ano",
+    #: `empresa.fim` E NAO `cidade.fim`: a concessao e da empresa, e o unico
+    #: caminho de escrita e `PUT /empresas/{emp_codigo}` (ver `salvar_empresa`).
+    #: A coluna da cidade continua `integer` e continua sendo o que o motor le,
+    #: mas nenhuma requisicao a envia — quem a preenche e o gatilho do banco.
+    "empresa.fim", "meta.ano",
 }
 
 

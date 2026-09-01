@@ -35,7 +35,7 @@ DECIMAIS_RECUSADOS = [
     ("obra.dur", "2,5"),
     ("obra.anoObrig", "2030,5"),
     ("ete.modulos", "1,5"),
-    ("cidade.fim", "2045,9"),
+    ("empresa.fim", "2045,9"),
     ("meta.ano", "2030,2"),
 ]
 
@@ -110,10 +110,15 @@ INTEIRO = {"integer", "bigint", "smallint"}
 #: teste abaixo confere os DOIS sentidos contra o banco.
 DE_PARA = {
     **{campo: ("subbacia_operacional", coluna) for coluna, campo in COLETA.items()},
-    **{f"obra.{campo}": ("componentes_subbaciascapex", coluna)
+    # OS NOMES SAO OS DO BANCO, com underscore: `componentes_subbacias_capex` e
+    # `ete_capex`. Escritos colados, `_tipos` devolve `{}` — a tabela nao existe
+    # —, nenhum campo de obra ou de ETE entra em `inteiros_no_banco`, e o teste
+    # reprova por "sobrando" mesmo com o codigo certo. Ele so nao acusava porque
+    # roda pulado sem `POSTGRES_URL`.
+    **{f"obra.{campo}": ("componentes_subbacias_capex", coluna)
        for campo, coluna in OBRA.items()},
-    **{f"ete.{campo}": ("etecapex", coluna) for campo, coluna in ETE.items()},
-    "cidade.fim": ("cidade_operacional", "data_fim_concessao"),
+    **{f"ete.{campo}": ("ete_capex", coluna) for campo, coluna in ETE.items()},
+    "empresa.fim": ("empresa", "data_fim_concessao"),
     "meta.ano": ("metas_cobertura", "ano"),
 }
 
