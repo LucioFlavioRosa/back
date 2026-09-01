@@ -137,7 +137,6 @@ def registrar_no_controle(run_id: str) -> None:
                         "USAR_CTS": True,
                         "FOCO_COBERTURA": 1.0,
                         "MAX_TIME_S": MAX_TIME_S,
-                        "origem": "dev/rodar_simulacao_real.py",
                     }
                 ),
                 "q": "lucio.rosa",
