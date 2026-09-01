@@ -42,7 +42,6 @@ python testes_de_integracao/contrato_de_resultado.py            # respostas de R
 UNIDADE=uA1 python testes_de_integracao/contrato_de_cadastro.py  # respostas de CADASTRO vs os tipos do front
 python testes_de_integracao/smoke_incons.py      # as CTS que existem pela metade
 python testes_de_integracao/smoke_ida_e_volta.py # ler a ficha e salvá-la de volta, sem tradução
-python dev/conferir_planilha.py # o banco reproduz a planilha? aba por aba
 python dev/limpar_rodadas_de_teste.py # o que o histórico herdou de teste (só mostra)
 ```
 

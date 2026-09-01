@@ -266,7 +266,7 @@ No banco há 2 casos (`cts_b2b80_1_3` em uA2, `cts_c2b12_3_1` em uA3), ambos
 `ficha-sem-no` e sem componente nenhum. **Eles não vieram da planilha**: ela tem
 337 CTS e o banco tem 339, e a diferença é exatamente esses dois — foram criados
 pelo antigo `POST /cts`, que gravava ficha e par sem tocar na topologia. É
-resíduo de teste, não defeito do cadastro de origem. Ver `dev/conferir_planilha.py`.
+resíduo de teste, não defeito do cadastro de origem.
 
 Isso não diminui a denúncia: ela é o que tornou os dois visíveis, e o mesmo
 estado pode ser produzido por qualquer carga parcial. `testes_de_integracao/smoke_incons.py` cobre isso perguntando ao banco quais
