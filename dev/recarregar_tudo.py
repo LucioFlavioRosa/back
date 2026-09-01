@@ -1,15 +1,10 @@
-"""Apaga o banco e reconstroi tudo a partir da planilha: input + as 5 rodadas.
+"""Refaz as 5 rodadas sobre o cadastro atual, do zero.
 
-Existe porque `rodar_simulacao_real.py` recarrega a planilha inteira a cada
-execucao (ele trunca `input` no comeco). Rodar as 5 unidades chamando-o cinco
-vezes carregaria 4850 sub-bacias e 24250 componentes cinco vezes, sem motivo:
-o `input` e o MESMO para todas — o que muda por unidade e so o recorte que o
-motor le.
-
-Tambem limpa o que ele NAO limpa: as tabelas de resultado (`public.otim_*`), a
-fila (`controle.run_*`) e a trilha de override. Sem isso sobram rodadas apontando
-para um `input` que nao existe mais, e o historico do front mostra numero de um
-cadastro que foi substituido.
+NAO TOCA EM `input`. O cadastro e a fonte de verdade e e preenchido pela tela; o que
+este script apaga e o que a RODADA produziu — as tabelas de resultado
+(`public.otim_*`), a fila (`controle.run_*`) e a trilha de override. Sem isso sobram
+rodadas apontando para um cadastro que ja mudou, e o historico do front mostra numero
+de uma base que nao existe mais.
 
   python dev/recarregar_tudo.py            # as 5 unidades
   python dev/recarregar_tudo.py uA1 uB2    # so essas
@@ -48,17 +43,13 @@ def main() -> None:
     with eng.begin() as con:
         con.execute(text(RESULTADO))
 
-    print("\ncarregando a planilha (uma vez)...")
-    t0 = time.time()
-    R.carregar_input()
-    print(f"  {time.time() - t0:.0f}s")
 
     # Cada unidade roda em processo PROPRIO: o motor guarda estado de modulo
     # entre execucoes (engine, caches), e reaproveitar o processo ja misturou
     # cenario de uma unidade com o de outra. Processo novo nao tem esse risco.
     #
-    # `--sem-carga` nao existe no script original — por isso o subprocesso roda
-    # `rodar_e_publicar` direto, e nao o `__main__` dele (que recarregaria).
+    # O subprocesso chama `rodar_e_publicar` direto: cada rodada le `input.*` como
+    # esta, e nenhuma delas escreve la.
     for i, u in enumerate(UNIDADES, 1):
         print(f"\n{'=' * 60}\n[{i}/{len(UNIDADES)}] {u}\n{'=' * 60}")
         t0 = time.time()
