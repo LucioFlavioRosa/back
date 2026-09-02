@@ -88,7 +88,14 @@ async def historico(
                           params_extra->>'BASE_RECEITA'      AS base_receita_param,
                           (params_extra->>'USAR_CTS')::bool  AS usar_cts,
                           (params_extra->>'FOCO_COBERTURA')::float AS foco_cobertura,
-                          (params_extra->>'COBERTURA_SO_RESIDENCIAL')::bool AS cobertura_so_residencial
+                          (params_extra->>'COBERTURA_SO_RESIDENCIAL')::bool AS cobertura_so_residencial,
+                          -- COALESCE porque a rodada pode ser ANTERIOR ao parametro
+                          -- (a regua era coluna de cadastro ate a migracao 019), e
+                          -- `ligacoes` e o que o motor usava por padrao — e o que
+                          -- 140 das 141 cidades tinham. Nulo aqui viraria "—" na
+                          -- tela para rodadas que sabidamente mediram em ligacoes.
+                          COALESCE(params_extra->>'UNIDADE_COBERTURA', 'ligacoes')
+                            AS unidade_cobertura
                      FROM {_p()}.otim_meta WHERE run_id = h.run_id
               ) m ON true
              -- casa por id OU por nome: o front manda o id, mas um script de
@@ -281,6 +288,7 @@ def _resumo(l: dict[str, Any], favoritas: set[str]) -> dict[str, Any]:
             "orcamento": l.get("orcamento_total"),
             "focoCobertura": l.get("foco_cobertura"),
             "coberturaSoResidencial": l.get("cobertura_so_residencial"),
+            "unidadeCobertura": l.get("unidade_cobertura"),
         },
     }
     if not inviavel:
@@ -425,6 +433,10 @@ async def meta(run_id: str) -> dict[str, Any] | None:
             "orcamento": linha.get("orcamento_total"),
             "focoCobertura": linha.get("foco_cobertura"),
             "coberturaSoResidencial": (linha.get("params_extra") or {}).get("COBERTURA_SO_RESIDENCIAL"),
+            # MESMO DEFAULT DA OUTRA LEITURA: rodada anterior a migracao 019 nao
+            # tem a chave, e mediu em `ligacoes` — que era o padrao do motor.
+            "unidadeCobertura": (linha.get("params_extra") or {}).get("UNIDADE_COBERTURA")
+            or "ligacoes",
         },
     }
 

@@ -80,6 +80,7 @@ CHAVES_ACEITAS = frozenset(
         "USAR_CTS",
         "ANOS_EXTRA_CONCLUSAO",
         "COBERTURA_SO_RESIDENCIAL",
+        "UNIDADE_COBERTURA",
     }
     | CHAVES_DO_JOB
 )
@@ -206,6 +207,12 @@ def montar_params(corpo: dict[str, Any], unidade_id: str, usuario: str) -> dict[
         "curva_adocao": "CURVA_ADOCAO",
         "usar_cts": "USAR_CTS",
         "cobertura_so_residencial": "COBERTURA_SO_RESIDENCIAL",
+        # A REGUA DA COBERTURA — ligacoes | economias | populacao. Era coluna de
+        # cadastro POR CIDADE ate a migracao 019, e nao era dado: e a lente com
+        # que se olha o mesmo cadastro. Vale para a unidade inteira, porque
+        # comparar dois planos da mesma unidade medidos em reguas diferentes por
+        # cidade nao respondia pergunta nenhuma.
+        "unidade_cobertura": "UNIDADE_COBERTURA",
         "data_inicio": "DATA_INICIO",
     }
     for origem, destino in DIRETO.items():

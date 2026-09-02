@@ -14,11 +14,9 @@ e não uma releitura do que "faz sentido cobrar". As regras, como estão lá:
                         operadora, e o ano desce dela para as cidades. Cobrar por
                         município pediria 141 preenchimentos para o que se
                         resolve em 48.
-            cidade      `unidade_cobertura`
             meta        `ano` e `cobertura_pct`
             faixa       `cobertura_pct` e `paridade`
   grupo 3 · sub-bacia   5 params (preço, tarr, ramp, vazão, potencial)
-                        + 2 de população SE a cidade mede a meta por população
                         + 5 obras × 7 campos
   grupo 4 · ETE         6 campos-base + 2 (terreno, módulos) se for nova
   grupo 5 · CTS         igual à sub-bacia, com 4 obras
@@ -66,8 +64,6 @@ _PARAMS = [
     "vazao_contribuicao",
     "potencial_crescimento",
 ]
-#: Só quando a cidade mede a meta por população.
-_PARAMS_POP = ["universo_populacao", "populacao_atual"]
 
 
 _OBRA = [
@@ -116,15 +112,22 @@ async def contar(unidade_id: str) -> dict[str, Any]:
     cada tecla digitada seria custo sem ganho — e o `prontidao` é chamado no
     momento em que o usuário clica Iniciar, quando a espera é visível.
     """
+    # A CIDADE NAO TEM MAIS CAMPO COBRADO NENHUM, e a CTE fica so como RECORTE —
+    # `comps`, `mt` e `fx` se apoiam nela para saber o que e desta unidade.
+    #
+    # Tinha dois, e os dois sairam por serem de outro dono: o fim da concessao e
+    # da EMPRESA (migracao 015) e virou a CTE `empresas`; a regua da cobertura
+    # (`unidade_cobertura`) virou PARAMETRO DE RODADA (migracao 019), porque nao
+    # e dado do cadastro — e a lente com que se olha o cadastro.
+    #
+    # COM ELA SAIU A COBRANCA CONDICIONAL DE POPULACAO nas sub-bacias e CTS:
+    # "2 campos a mais SE a cidade mede por populacao" dependia de uma escolha
+    # que o cadastro nao conhece mais. Nao muda numero nenhum hoje — nenhuma
+    # cidade da base media por populacao, entao a condicao ja valia zero.
     cidades = f"""
-        SELECT c.cidade_id,
-               COALESCE(o.unidade_cobertura, '') = 'populacao' AS por_pop,
-               -- SÓ a régua de cobertura. O fim da concessão saiu daqui e virou
-               -- a CTE `empresas` abaixo: ele é da operadora.
-               (o.unidade_cobertura IS NULL)::int AS pend
+        SELECT c.cidade_id
           FROM {_i()}.cidade_empresa c
           JOIN {_i()}.empresa s USING (emp_codigo)
-          LEFT JOIN {_i()}.cidade_operacional o USING (cidade_id)
          WHERE s.unidade_id = $1
     """
     empresas = f"""
@@ -135,7 +138,7 @@ async def contar(unidade_id: str) -> dict[str, Any]:
     # A sub-bacia herda a régua da cidade do seu sistema — é por isso que a conta
     # dela não sai só da própria tabela.
     subs = f"""
-        SELECT t.componente_sistema_id AS id, cid.por_pop
+        SELECT t.componente_sistema_id AS id
           FROM {_i()}.sistema_topologia t
           JOIN {_i()}.cidade_sistema cs USING (sistema_id)
           JOIN cidades cid ON cid.cidade_id = cs.cidade_id
@@ -147,10 +150,8 @@ async def contar(unidade_id: str) -> dict[str, Any]:
              empresas AS ({empresas}),
              comps AS ({subs}),
              sb AS (
-                SELECT c.id, c.por_pop,
-                       {_vazios(_PARAMS, "b")} AS pend_params,
-                       CASE WHEN c.por_pop
-                            THEN {_vazios(_PARAMS_POP, "b")} ELSE 0 END AS pend_pop
+                SELECT c.id,
+                       {_vazios(_PARAMS, "b")} AS pend_params
                   FROM comps c
                   JOIN {_i()}.subbacia_operacional b ON b.sub_bacia = c.id
              ),
@@ -174,10 +175,8 @@ async def contar(unidade_id: str) -> dict[str, Any]:
              -- IRMA, mesmo estando num sistema de outra. CTS ainda nao colocada
              -- nao aparece aqui, e nao deve: ela nao entra na simulacao.
              ct AS (
-                SELECT c.id, c.por_pop,
-                       {_vazios(_PARAMS, "o")} AS pend_params,
-                       CASE WHEN c.por_pop
-                            THEN {_vazios(_PARAMS_POP, "o")} ELSE 0 END AS pend_pop
+                SELECT c.id,
+                       {_vazios(_PARAMS, "o")} AS pend_params
                   FROM comps c
                   JOIN {_i()}.cts_operacional o ON o.cts = c.id
              ),
@@ -206,27 +205,24 @@ async def contar(unidade_id: str) -> dict[str, Any]:
              )
         SELECT
           (SELECT COALESCE(SUM(pend), 0) FROM empresas)
-            + (SELECT COALESCE(SUM(pend), 0) FROM cidades)
             + (SELECT COALESCE(SUM(pend), 0) FROM mt)
             + (SELECT COALESCE(SUM(pend), 0) FROM fx)                       AS g2,
-          (SELECT COALESCE(SUM(pend_params + pend_pop), 0) FROM sb)
+          (SELECT COALESCE(SUM(pend_params), 0) FROM sb)
             + (SELECT COALESCE(SUM(pend), 0) FROM sb_obras)                 AS g3,
           (SELECT COALESCE(SUM(pend_base + CASE WHEN nova THEN pend_nova ELSE 0 END), 0)
              FROM et)                                                       AS g4,
-          (SELECT COALESCE(SUM(pend_params + pend_pop), 0) FROM ct)
+          (SELECT COALESCE(SUM(pend_params), 0) FROM ct)
             + (SELECT COALESCE(SUM(pend), 0) FROM ct_obras)                 AS g5,
-          -- A cidade tem UM campo cobrado (a régua); a empresa tem o outro.
+          -- A EMPRESA e a unica ficha de cidade com campo cobrado: o fim da
+          -- concessao. A cidade em si deixou de ter (ver a CTE `cidades`).
           (SELECT count(*) FROM empresas)
-            + (SELECT count(*) FROM cidades)
             + (SELECT count(*) * {_CAMPOS_META} FROM mt)
             + (SELECT count(*) * {_CAMPOS_FAIXA} FROM fx)                   AS t2,
-          (SELECT COALESCE(SUM({len(_PARAMS)} + CASE WHEN por_pop THEN {len(_PARAMS_POP)}
-                                                     ELSE 0 END + 5 * {len(_OBRA)}), 0)
+          (SELECT COALESCE(SUM({len(_PARAMS)} + 5 * {len(_OBRA)}), 0)
              FROM sb)                                                       AS t3,
           (SELECT COALESCE(SUM({len(_ETE)} + CASE WHEN nova THEN {len(_ETE_NOVA)}
                                                   ELSE 0 END), 0) FROM et)  AS t4,
-          (SELECT COALESCE(SUM({len(_PARAMS)} + CASE WHEN por_pop THEN {len(_PARAMS_POP)}
-                                                     ELSE 0 END + 4 * {len(_OBRA)}), 0)
+          (SELECT COALESCE(SUM({len(_PARAMS)} + 4 * {len(_OBRA)}), 0)
              FROM ct)                                                       AS t5
         """,
         unidade_id,

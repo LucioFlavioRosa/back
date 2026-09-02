@@ -171,10 +171,11 @@ class CidadeDoContrato(BaseModel):
     empId: str
     empNome: str
     #: Fim da concessão. LEITURA: quem o define é a empresa, e o banco o desce
-    #: para as cidades dela. Continua no payload porque a régua de cobertura
-    #: divide a ficha com ele.
+    #: para as cidades dela. Continua no payload porque a tela do município o
+    #: mostra — mas não o grava.
     fim: str
-    cob: str
+    #: `cob` (a régua da cobertura) SAIU: virou parâmetro de rodada na migração
+    #: 019. A ficha da cidade ficou sem campo que a unidade preencha.
     atualizadoEm: str
     atualizadoPor: str
 

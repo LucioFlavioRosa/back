@@ -109,6 +109,11 @@ class ParametrosRodada(BaseModel):
     usarCts: bool
     baseReceita: str
     coberturaSoResidencial: bool | None = None
+    #: A regua da cobertura: 'ligacoes' | 'economias' | 'populacao'. Era coluna de
+    #: cadastro por cidade ate a migracao 019 — hoje e parametro da rodada, e a
+    #: tela precisa dele para nao comparar dois planos medidos em moedas
+    #: diferentes como se fossem o mesmo numero.
+    unidadeCobertura: str | None = None
 
 
 class MetricasCapa(BaseModel):

@@ -425,7 +425,6 @@ async def contrato(unidade_id: str) -> dict[str, Any]:
                    -- mostrava as duas colunas vazias.
                    c.emp_codigo AS "empId", emp.empresa AS "empNome",
                    o.data_fim_concessao AS fim,
-                   o.unidade_cobertura AS cob,
                    o.atualizado_em, o.atualizado_por
               FROM ({_cidades_cte()}) c
               JOIN {_i()}.empresa emp ON emp.emp_codigo = c.emp_codigo
