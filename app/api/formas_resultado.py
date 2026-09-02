@@ -381,6 +381,65 @@ class EloQueTrava(BaseModel):
     vazaoLiberada: float
 
 
+class AnoDoCenario(BaseModel):
+    """Um ano da janela: o que o plano faz nele, e o que faltaria investir."""
+
+    ano: int
+    orcado: float
+    noPlano: float
+    obrasNoPlano: int
+    #: O que falta, rateado pelo PESO deste ano no orcamento atual — mesma forma,
+    #: escala maior. Nao e otimizacao, e a tela diz isso.
+    faltaQueSePaga: float
+    faltaTodas: float
+
+
+class EscopoDoCenario(BaseModel):
+    """Quanto falta, em tres reguas da mesma coisa.
+
+    `fator` responde "de quantas vezes teria de ser o orcamento"; `anos` responde
+    "quantos anos ao ritmo de hoje". Sao o mesmo numero — e ter os dois e o que
+    faz a ideia atravessar para quem nao lida com orcamento todo dia.
+    """
+
+    obras: int
+    capex: float
+    fator: float
+    anosAoRitmoDeHoje: float
+
+
+class PodemComecarCedo(BaseModel):
+    """Quantas das obras que ficaram fora poderiam comecar JA no primeiro ano.
+
+    E o que sobrou da pergunta "sem teto, o que entra em cada ano?": a resposta
+    nao dava grafico (quase tudo no primeiro ano, e tres anos vazios), mas da
+    frase — e a frase e o achado. Tirado o dinheiro, nao ha nada segurando obra
+    nenhuma: o cronograma do plano e artefato de orcamento, nao de engenharia.
+    """
+
+    obras: int
+    de: int
+
+
+class CenarioAnual(BaseModel):
+    """DE QUANTO TERIA DE SER O ORCAMENTO ANUAL para fazer tudo na MESMA janela.
+
+    Substitui duas perguntas que os dados recusaram: "sem teto, o que entra em
+    cada ano" (6.645 das 7.325 obras podem comecar no primeiro — vira uma torre)
+    e "quantos anos ao ritmo de hoje" (64 — setenta barras nao sao um grafico).
+    Fixada a janela, a resposta cabe em seis barras.
+    """
+
+    anos: list[AnoDoCenario]
+    podemComecarCedo: PodemComecarCedo
+    anosDaJanela: int
+    orcamentoAnualDeHoje: float
+    obrasNoPlano: int
+    capexNoPlano: float
+    queSePaga: EscopoDoCenario
+    todas: EscopoDoCenario
+
+
 class ExplicabilidadeGlobal(BaseModel):
     """As OBRAS que ficaram fora do plano, em três tópicos.
 

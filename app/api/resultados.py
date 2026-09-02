@@ -329,6 +329,17 @@ async def explicabilidade(run_id: RunPublicado) -> dict[str, Any]:
     return await explic.explicabilidade(run_id)
 
 
+@router.get("/runs/{run_id}/cenario-anual", response_model=formas.CenarioAnual)
+async def cenario_anual(run_id: RunPublicado) -> dict[str, Any]:
+    """De quanto teria de ser o orcamento anual para fazer tudo na mesma janela.
+
+    Rota propria, e nao um campo da explicabilidade: a explicabilidade responde
+    "o que ficou fora e por que"; esta responde "quanto custaria nao deixar". A
+    tela do nivel 1 usa as duas juntas, e o nivel 2 e 3 so a primeira.
+    """
+    return await _ou_404(await explic.cenario_anual(run_id), "Rodada")
+
+
 @router.get("/runs/{run_id}/sensibilidade", response_model=formas.Sensibilidade)
 async def sensibilidade(
     run_id: RunPublicado,

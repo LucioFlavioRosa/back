@@ -266,6 +266,196 @@ async def explicabilidade(
     }
 
 
+async def cenario_anual(run_id: str) -> dict[str, Any] | None:
+    """DE QUANTO TERIA DE SER O ORÇAMENTO ANUAL para fazer tudo na MESMA janela.
+
+    A pergunta veio depois de duas tentativas que os dados recusaram, e as duas
+    recusas estão registradas porque elas explicam por que esta é a certa:
+
+      "sem limite de CAPEX, o que entraria em cada ano?"  —  6.645 das 7.325
+      obras podem começar no primeiro ano. Tirado o dinheiro, não sobra nada
+      segurando obra nenhuma: o gráfico é uma torre e três anos vazios.
+
+      "quantos anos, ao orçamento de hoje, para fazer tudo que se paga?"  —  64.
+      Setenta barras não são um gráfico.
+
+    A saída é fixar a JANELA e perguntar do orçamento. Mesmos anos, mesma régua
+    do gráfico de obras por ano, e a resposta vira um fator: 11,7x para tudo que
+    se paga, 18,4x para todas as obras.
+
+    ## A distribuição segue o PERFIL do plano, e não é escalonamento novo
+
+    O que falta é rateado entre os anos na proporção do orçamento que a rodada já
+    tem (`otim_meta.orcamento_por_ano`). Não é uma otimização — é a mesma forma,
+    numa escala maior, e a tela diz isso.
+
+    Distribuir pelo `inicio_min_mes` de cada obra seria mais sofisticado e MENOS
+    verdadeiro: 91% delas podem começar no primeiro ano, então o resultado seria
+    a mesma torre que motivou a troca de pergunta.
+
+    ## `noPlano` sai do ano em que a obra COMEÇA
+
+    É a régua do gráfico de obras por ano, e mantê-la é o que deixa os dois
+    gráficos comparáveis lado a lado.
+    """
+    esq = casc.esquema()
+    meta = await db.buscar_um(
+        f"""SELECT orcamento_por_ano::jsonb AS orc FROM {esq}.otim_meta WHERE run_id = $1""",
+        run_id,
+    )
+    if not meta or not meta["orc"]:
+        return None
+
+    import json
+
+    orc = meta["orc"] if isinstance(meta["orc"], dict) else json.loads(meta["orc"])
+    #: ANO COM ORÇAMENTO ZERO NÃO É ANO DA JANELA. O ano-base vem com 0.0, e
+    #: incluí-lo daria uma barra que promete investimento onde não há nenhum.
+    janela = sorted(
+        (int(a), float(v))
+        for a, v in orc.items()
+        if isinstance(v, (int, float)) and float(v) > 0
+    )
+    if not janela:
+        return None
+    total_orcado = sum(v for _, v in janela)
+
+    linhas = await db.buscar(
+        f"""WITH o AS (
+                -- MESMO RECORTE DA EXPLICABILIDADE, e nao "todas as necessarias":
+                -- obra de terceiro ACONTECE e outro paga, entao ela nao entra em
+                -- "quanto custaria". Sao 560 obras de CAPEX zero — o dinheiro nao
+                -- mudava, mas a CONTAGEM mudava, e duas telas da mesma rodada
+                -- diriam numeros diferentes para a mesma pergunta.
+                SELECT obra_id, no, sistema, capex, construida, elo_que_trava, mes_inicio
+                  FROM {esq}.otim_obra
+                 WHERE run_id = $1 AND necessaria
+                   AND (construida OR categoria_motivo <> 'Terceiro (pre-requisito)')
+            ),
+            todas AS (
+                SELECT obra_id, no, elo_que_trava FROM {esq}.otim_obra WHERE run_id = $1
+            ),
+            sb AS (
+                SELECT sub_bacia, sistema, pot_saldo_rateado
+                  FROM {esq}.otim_subbacia
+                 WHERE run_id = $1 AND NOT faturando
+            ),
+            -- QUEM A OBRA SERVE: o próprio nó, todo nó que ela destrava, e — na
+            -- ponta da cadeia — o sistema inteiro. A ETE não tem nó próprio: ela
+            -- É o fim do caminho, e sem esta terceira via os 844 módulos ficariam
+            -- sem classificação, que é R$ 947 Mi somindo da conta.
+            serve AS (
+                SELECT f.obra_id, f.no AS sub_bacia FROM o f
+                 WHERE NOT f.construida AND f.no IS NOT NULL AND f.no <> ''
+                UNION
+                SELECT f.obra_id, t.no FROM o f
+                  JOIN todas t ON t.elo_que_trava = f.obra_id
+                                AND t.no IS NOT NULL AND t.no <> ''
+                 WHERE NOT f.construida
+                UNION
+                SELECT f.obra_id, s2.sub_bacia FROM o f
+                  JOIN sb s2 ON s2.sistema = f.sistema
+                 WHERE NOT f.construida AND (f.no IS NULL OR f.no = '')
+            )
+            SELECT
+              (SELECT COALESCE(SUM(capex), 0) FROM o WHERE construida) AS capex_plano,
+              (SELECT COUNT(*) FROM o WHERE construida)                AS obras_plano,
+              f.positivo, COUNT(*) AS obras, COALESCE(SUM(f.capex), 0) AS capex
+              FROM (
+                SELECT f.obra_id, f.capex,
+                       COALESCE(BOOL_OR(sb.pot_saldo_rateado > 0), FALSE) AS positivo
+                  FROM o f
+                  LEFT JOIN serve s ON s.obra_id = f.obra_id
+                  LEFT JOIN sb ON sb.sub_bacia = s.sub_bacia
+                 WHERE NOT f.construida
+                 GROUP BY f.obra_id, f.capex
+              ) f
+             GROUP BY f.positivo""",
+        run_id,
+    )
+
+    capex_plano = float(linhas[0]["capex_plano"]) if linhas else 0.0
+    obras_plano = int(linhas[0]["obras_plano"]) if linhas else 0
+    falta_paga = sum(float(l["capex"]) for l in linhas if l["positivo"])
+    falta_toda = sum(float(l["capex"]) for l in linhas)
+    obras_paga = sum(int(l["obras"]) for l in linhas if l["positivo"])
+    obras_toda = sum(int(l["obras"]) for l in linhas)
+
+    por_ano = await db.buscar(
+        f"""SELECT FLOOR(mes_inicio / 12)::int AS ano_rel,
+                   COUNT(*) AS obras, COALESCE(SUM(capex), 0) AS capex
+              FROM {esq}.otim_obra
+             WHERE run_id = $1 AND necessaria AND construida AND mes_inicio IS NOT NULL
+             GROUP BY 1""",
+        run_id,
+    )
+    ano0 = janela[0][0]
+    plano_do_ano = {ano0 + int(l["ano_rel"]) - 1: l for l in por_ano}
+
+    anos = []
+    for ano, orcado in janela:
+        peso = orcado / total_orcado
+        no_plano = plano_do_ano.get(ano)
+        anos.append(
+            {
+                "ano": ano,
+                "orcado": orcado,
+                "noPlano": float(no_plano["capex"]) if no_plano else 0.0,
+                "obrasNoPlano": int(no_plano["obras"]) if no_plano else 0,
+                # O RATEIO É PELO PESO DO ANO no orçamento atual: mesma forma,
+                # escala maior. Ver o docstring para por que não é por obra.
+                "faltaQueSePaga": falta_paga * peso,
+                "faltaTodas": falta_toda * peso,
+            }
+        )
+
+    #: A NOTA: quantas das que ficaram fora poderiam comecar JA no primeiro ano.
+    #:
+    #: E o resto da primeira pergunta que os dados recusaram ("sem teto, o que
+    #: entra em cada ano?"). A resposta nao dava grafico, mas da FRASE — e a
+    #: frase e forte: tirado o dinheiro, nao sobra nada segurando obra nenhuma.
+    #: O cronograma do plano e artefato de orcamento, nao de engenharia.
+    cedo = await db.buscar_um(
+        f"""SELECT COUNT(*) FILTER (WHERE inicio_min_mes < 12) AS podem, COUNT(*) AS de
+              FROM {esq}.otim_obra
+             WHERE run_id = $1 AND necessaria AND NOT construida
+               AND categoria_motivo <> 'Terceiro (pre-requisito)'""",
+        run_id,
+    ) or {}
+
+    def fator(falta: float) -> float:
+        return (capex_plano + falta) / capex_plano if capex_plano else 0.0
+
+    #: O MESMO NUMERO PELA OUTRA REGUA: em vez de "quanto por ano", "quantos
+    #: anos". Um fator de 11,7x e abstrato para quem nao lida com orcamento
+    #: todo dia; "mais 64 anos ao ritmo de hoje" nao e. As duas frases dizem a
+    #: mesma coisa, e ter as duas e o que faz a ideia atravessar.
+    anual = total_orcado / len(janela)
+
+    def anos_ao_ritmo(falta: float) -> float:
+        return falta / anual if anual else 0.0
+
+    return {
+        "anos": anos,
+        "podemComecarCedo": {
+            "obras": int(cedo.get("podem") or 0),
+            "de": int(cedo.get("de") or 0),
+        },
+        "anosDaJanela": len(janela),
+        "orcamentoAnualDeHoje": anual,
+        "obrasNoPlano": obras_plano,
+        "capexNoPlano": capex_plano,
+        "queSePaga": {
+            "obras": obras_paga, "capex": falta_paga,
+            "fator": fator(falta_paga), "anosAoRitmoDeHoje": anos_ao_ritmo(falta_paga),
+        },
+        "todas": {
+            "obras": obras_toda, "capex": falta_toda,
+            "fator": fator(falta_toda), "anosAoRitmoDeHoje": anos_ao_ritmo(falta_toda),
+        },
+    }
+
+
 async def candidatas_do_teto(
     run_id: str,
 ) -> tuple[list[teto_dom.Candidata], float, int] | None:
