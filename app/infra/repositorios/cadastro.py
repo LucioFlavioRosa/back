@@ -78,15 +78,38 @@ def _cidades_cte() -> str:
 
 # ---------------------------------------------------------------- organização
 async def regionais() -> list[dict[str, Any]]:
-    """As regionais, deduzidas de `unidade_regional`.
+    """As regionais que TÊM unidade, deduzidas de `unidade_regional`.
 
-    Não há tabela de regional: a coluna `regional_id`/`regional_name` vive junto da
-    unidade. `DISTINCT` em vez de uma tabela própria é o que o esquema permite.
+    Existe `input.regional`, e mesmo assim a lista sai daqui: uma regional sem
+    unidade nenhuma não é escolhível — a tela seguinte abriria vazia, e a pessoa
+    voltaria sem saber o que fez de errado. `DISTINCT` na unidade responde
+    "regionais em que há o que abrir", que é a pergunta da tela.
     """
     linhas = await db.buscar(
         f"""SELECT DISTINCT regional_id AS id, regional_name AS nome
               FROM {_i()}.unidade_regional
              WHERE regional_id IS NOT NULL ORDER BY 2"""
+    )
+    return [dict(l) for l in linhas]
+
+
+async def diretorias(regional_id: str) -> list[dict[str, Any]]:
+    """As diretorias da regional que têm unidade — mesma regra de `regionais`.
+
+    A DIRETORIA É O NÍVEL ENTRE A REGIONAL E A UNIDADE (migração 017):
+    regional → diretoria → unidade → empresa → cidade → sistema.
+
+    Sai de `unidade_regional`, e não de `input.diretoria`, pela razão de
+    `regionais`: uma diretoria sem unidade abriria uma tela vazia. E o `JOIN` na
+    unidade é o que faz o recorte por concessão da rota funcionar sem uma
+    segunda regra — quem enxerga a unidade enxerga a diretoria dela.
+    """
+    linhas = await db.buscar(
+        f"""SELECT DISTINCT diretoria_id AS id, diretoria_name AS nome
+              FROM {_i()}.unidade_regional
+             WHERE regional_id = $1 AND diretoria_id IS NOT NULL
+             ORDER BY 2""",
+        regional_id,
     )
     return [dict(l) for l in linhas]
 
@@ -156,7 +179,8 @@ def _resumo(c: dict[str, Any]) -> dict[str, int]:
 
 async def unidade(unidade_id: str) -> dict[str, Any] | None:
     base = await db.buscar_um(
-        f"""SELECT unidade_id, unidade_name, regional_id, regional_name, wacc_medio
+        f"""SELECT unidade_id, unidade_name, regional_id, regional_name,
+                   diretoria_id, diretoria_name, wacc_medio
               FROM {_i()}.unidade_regional WHERE unidade_id = $1""",
         unidade_id,
     )
@@ -209,6 +233,10 @@ async def unidade(unidade_id: str) -> dict[str, Any] | None:
     return {
         "id": base["unidade_id"],
         "regionalId": base["regional_id"],
+        # NULO ATRAVESSA em vez de virar texto vazio: a diretoria pode ainda não
+        # ter chegado na carga, e `""` diria que ela existe e não tem nome.
+        "diretoriaId": base["diretoria_id"],
+        "diretoriaNome": base["diretoria_name"],
         "nome": base["unidade_name"],
         "waccMedio": base["wacc_medio"],
         "resumo": _resumo(c),
@@ -233,7 +261,8 @@ async def hierarquia(unidade_id: str) -> dict[str, Any]:
     # resposta inteira), e `str(True)` em Python daria `'True'` — o front
     # compararia com `'true'` e acharia que a unidade nao usa CTS, calado.
     u = await db.buscar_um(
-        f"""SELECT regional_id, regional_name, unidade_id, unidade_name, wacc_medio,
+        f"""SELECT regional_id, regional_name, diretoria_id, diretoria_name,
+                   unidade_id, unidade_name, wacc_medio,
                    CASE WHEN usa_macrorregiao_cts THEN 'true' ELSE 'false' END AS usa_cts
               FROM {_i()}.unidade_regional WHERE unidade_id = $1""",
         unidade_id,
@@ -241,6 +270,11 @@ async def hierarquia(unidade_id: str) -> dict[str, Any]:
     unid = {
         "rid": u.get("regional_id") or "",
         "rnome": u.get("regional_name") or "",
+        # A DIRETORIA entre a regional e a unidade (migração 017). Aqui vazio, e
+        # não nulo: o contrato do Grupo 01 é "tudo string", e a tela chama
+        # `.trim()` no que recebe.
+        "did": u.get("diretoria_id") or "",
+        "dnome": u.get("diretoria_name") or "",
         "uid": u.get("unidade_id") or "",
         "unome": u.get("unidade_name") or "",
         "waccMedio": pt_br(u.get("wacc_medio")),

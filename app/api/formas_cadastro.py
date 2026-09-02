@@ -30,6 +30,17 @@ class Regional(BaseModel):
     nome: str
 
 
+class Diretoria(BaseModel):
+    """O nível entre a regional e a unidade.
+
+    `nome` é `| None` porque a carga pode trazer a diretoria sem nome — mesma
+    tolerância de `regional_name`.
+    """
+
+    id: str
+    nome: str | None
+
+
 class ResumoDaUnidade(BaseModel):
     cidades: int
     sistemas: int
@@ -46,6 +57,10 @@ class Unidade(BaseModel):
     id: str
     nome: str
     regionalId: str
+    #: `| None` enquanto a carga não trouxer a diretoria da unidade. A tela cai
+    #: para "sem diretoria" em vez de esconder a unidade.
+    diretoriaId: str | None
+    diretoriaNome: str | None
     waccMedio: float | None
     completude: int
     #: Falso quando a carga do Databricks não chegou — a tela avisa em vez de
@@ -60,6 +75,10 @@ class Unidade(BaseModel):
 class UnidadeERegional(BaseModel):
     rid: str
     rnome: str
+    #: A diretoria, entre a regional e a unidade. Vazio enquanto a carga não a
+    #: trouxer — `""`, e não nulo, como todo campo do Grupo 01.
+    did: str
+    dnome: str
     uid: str
     unome: str
     waccMedio: str
