@@ -466,16 +466,9 @@ async def _diff_da_cidade(
     # (`2045 -> NULL`) a cada gravacao de cidade — enquanto o upsert abaixo
     # preserva o valor. Trilha que afirma o que nao aconteceu e pior que trilha
     # que nao afirma nada.
-    linha = await con.fetchrow(
-        f"""SELECT unidade_cobertura
-              FROM {_i()}.cidade_operacional WHERE cidade_id = $1""",
-        cidade_id,
-    )
-    mudancas += diferencas(
-        {"cob": linha["unidade_cobertura"] if linha else None},
-        {"cob": cidade.get("cob")},
-        origem=REGIONAL,
-    )
+    # A CIDADE NAO TEM MAIS CAMPO PROPRIO NESTA FICHA. `unidade_cobertura` saiu
+    # (migracao 019): a regua da cobertura virou parametro de rodada. O que sobra
+    # aqui sao as metas e as faixas, comparadas logo abaixo.
 
     if "metas" in corpo:
         antes = {
@@ -541,16 +534,14 @@ async def salvar_contrato(
         # de reescreve-lo com o que veio no corpo.
         await con.execute(
             f"""INSERT INTO {_i()}.cidade_operacional
-                    (cidade_id, data_fim_concessao, unidade_cobertura)
-                VALUES ($1, $2, $3)
+                    (cidade_id, data_fim_concessao)
+                VALUES ($1, $2)
                 ON CONFLICT (cidade_id) DO UPDATE
                   SET data_fim_concessao =
                         COALESCE({_i()}.cidade_operacional.data_fim_concessao,
-                                 EXCLUDED.data_fim_concessao),
-                      unidade_cobertura  = EXCLUDED.unidade_cobertura""",
+                                 EXCLUDED.data_fim_concessao)""",
             cidade_id,
             None,
-            cidade.get("cob"),
         )
         if "metas" in corpo:
             await con.execute(

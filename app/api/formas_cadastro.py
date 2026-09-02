@@ -171,10 +171,11 @@ class CidadeDoContrato(BaseModel):
     empId: str
     empNome: str
     #: Fim da concessão. LEITURA: quem o define é a empresa, e o banco o desce
-    #: para as cidades dela. Continua no payload porque a régua de cobertura
-    #: divide a ficha com ele.
+    #: para as cidades dela. Continua no payload porque a tela do município o
+    #: mostra — mas não o grava.
     fim: str
-    cob: str
+    #: `cob` (a régua da cobertura) SAIU: virou parâmetro de rodada na migração
+    #: 019. A ficha da cidade ficou sem campo que a unidade preencha.
     atualizadoEm: str
     atualizadoPor: str
 
@@ -332,10 +333,28 @@ class Gravacao(BaseModel):
 # ===========================================================================
 #  Simulação
 # ===========================================================================
+class CoberturaPorPopulacao(BaseModel):
+    """Quantos elementos da unidade têm população informada — e quantos existem.
+
+    NÃO É PENDÊNCIA. A régua da cobertura é parâmetro de rodada (migração 019), e
+    nada no cadastro obriga a preencher população. Isto existe para a tela de
+    Simular poder dizer se escolher POPULAÇÃO mede o que promete: sem
+    `universo_populacao` e `populacao_atual`, o motor converte pela densidade 1,0
+    — ou seja, mede em ligações e segue, avisando só no log do job.
+
+    `elementos` conta sub-bacias e CTS que estão em algum sistema da unidade: são
+    os que entram na simulação, e portanto os que a régua alcança.
+    """
+
+    elementos: int
+    completos: int
+
+
 class Prontidao(BaseModel):
     unidadeId: str
     unidadeNome: str
     pendencias: int
+    populacao: CoberturaPorPopulacao
     porGrupo: dict[str, int]
     faltando: list[Inconsistencia]
 

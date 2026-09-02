@@ -18,6 +18,38 @@ def montar(**extra):
     return montar_params({**BASE, **extra}, unidade_id="uA3", usuario="ana@aegea")
 
 
+class TestReguaDaCobertura:
+    """A regua da cobertura viaja como `UNIDADE_COBERTURA`, e nao vem mais do banco.
+
+    Era `cidade_operacional.unidade_cobertura`, preenchida CIDADE A CIDADE no
+    cadastro (migracao 019 a removeu). Nao e dado: e a lente com que se olha o
+    mesmo cadastro. E vale para a unidade inteira — duas cidades da mesma unidade
+    medidas em moedas diferentes davam uma cobertura que nao soma.
+
+    O SILENCIO QUE ESTES TESTES GUARDAM e o do arquivo inteiro: se a chave nao
+    chegasse ao motor, a pessoa trocaria o controle na tela, veria a cobertura
+    mudar por outro motivo, e aprenderia uma relacao que nao existe.
+    """
+
+    def test_a_chave_viaja_com_o_valor_escolhido(self):
+        for valor in ("ligacoes", "economias", "populacao"):
+            assert montar(unidade_cobertura=valor)["UNIDADE_COBERTURA"] == valor
+
+    def test_ausente_nao_produz_a_chave(self):
+        # Sem a chave o motor usa o proprio default (`ligacoes`) — que e o que
+        # 140 das 141 cidades da base tinham. Corpo antigo continua rodando igual.
+        assert "UNIDADE_COBERTURA" not in montar()
+
+    @pytest.mark.parametrize("acentuado", ["ligações", "população"])
+    def test_o_valor_acentuado_atravessa_e_o_motor_o_normaliza(self, acentuado):
+        # O BACKEND NAO NORMALIZA, e e proposital: quem compara e o motor, por
+        # PREFIXO (`startswith("pop")`), e duplicar a regra aqui criaria dois
+        # lugares para ela divergir. O teste existe para registrar que o valor
+        # atravessa inteiro — foi assim que um 'ligações' com acento ficou anos
+        # gravado no banco sem nada acusar, quando isto era campo de cadastro.
+        assert montar(unidade_cobertura=acentuado)["UNIDADE_COBERTURA"] == acentuado
+
+
 class TestMetasDeCobertura:
     """A fonte das metas NAO e parametro da rodada: e sempre a base.
 

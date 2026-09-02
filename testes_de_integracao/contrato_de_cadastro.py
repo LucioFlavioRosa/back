@@ -37,7 +37,9 @@ ESPERADO = {
     "ete":     ["id","sub","cidId","nova","capMod","capexMod","opexMod","tExec",
                 "capNom","vazOp","terreno","modulos","wacc",
                 "atualizadoEm","atualizadoPor"],
-    "cidade": ["id","nome","fim","cob","atualizadoEm","atualizadoPor"],
+    # `cob` (a regua da cobertura) saiu na migracao 019: virou parametro de
+    # rodada. `fator.cob` e outra coisa — o percentual da faixa de paridade.
+    "cidade": ["id","nome","fim","atualizadoEm","atualizadoPor"],
     "meta":   ["cid","ano","pct"],
     "fator":  ["cid","cob","par"],
     "sub":    ["id","nome","sisId","sistema","jusante","db","params","obrasOverride",
@@ -48,7 +50,7 @@ ESPERADO = {
 }
 # Campos que o front trata como TEXTO editavel (chama .trim()).
 TEXTO = {
-    "cidade": ["fim","cob"], "meta": ["ano","pct"], "fator": ["cob","par"],
+    "cidade": ["fim"], "meta": ["ano","pct"], "fator": ["cob","par"],
 }
 f=[]
 def ck(n,c,d=""):

@@ -41,16 +41,21 @@ async def main():
             ck("um campo vazio = uma pendencia", p["pendencias"]==1, str(p))
             ck("e volta a bloquear",
                (await c.post("/api/runs", json={"unidade_id":"u1","orcamento":{"2026":1e6}})).status_code==422)
-            # a REGUA da cidade muda a conta da sub-bacia na hora
+            # preencher o campo TIRA a pendencia — a conta e ao vivo
+            #
+            # ERA AQUI que a regua da cidade entrava: virava 'populacao' e cobrava
+            # dois campos a mais da sub-bacia. A regua saiu do cadastro na
+            # migracao 019 (virou parametro de rodada), e com ela essa cobranca
+            # condicional. O passo que sobra e o que sempre foi o assunto: campo
+            # preenchido some da conta.
             await db.buscar("UPDATE input.subbacia_operacional SET tempo_ramp_up=6 WHERE sub_bacia='b38_1'")
-            await db.buscar("UPDATE input.cidade_operacional SET unidade_cobertura='populacao' WHERE cidade_id='c_rio'")
             p=(await c.get("/api/unidades/u1/prontidao")).json()
-            ck("regua populacao cobra os 2 campos de populacao", p["pendencias"]==2, str(p))
+            ck("campo preenchido zera a pendencia", p["pendencias"]==0, str(p))
             # obra com campo vazio conta
             await db.buscar("""INSERT INTO input.componentes_subbacias_capex
                 (sub_bacia, componente, quantidade) VALUES ('b38_1','Tronco',NULL)""")
             p=(await c.get("/api/unidades/u1/prontidao")).json()
-            ck("obra com 7 campos vazios soma 7", p["pendencias"]==9, str(p))
+            ck("obra com 7 campos vazios soma 7", p["pendencias"]==7, str(p))
     print("\nFALHAS:", falhas or "nenhuma"); raise SystemExit(1 if falhas else 0)
 # RODA COMO SCRIPT, e só como script.
 #

@@ -405,7 +405,7 @@ async def hierarquia(unidade_id: str) -> dict[str, Any]:
 async def contrato(unidade_id: str) -> dict[str, Any]:
     """Grupo 02 — cidades, metas e as faixas de paridade.
 
-    Os nomes aqui são CURTOS (`fim`, `cob`, `cid`, `par`) porque são os do front
+    Os nomes aqui são CURTOS (`fim`, `cid`, `par`) porque são os do front
     (`Cidade`, `Meta`, `Fator` em `cadastro/domain/contrato.ts`). A grafia é
     contrato: o front lê cada campo pelo nome, sem guarda de ausência, e um campo
     rebatizado aqui chega `undefined` do outro lado.
@@ -425,7 +425,6 @@ async def contrato(unidade_id: str) -> dict[str, Any]:
                    -- mostrava as duas colunas vazias.
                    c.emp_codigo AS "empId", emp.empresa AS "empNome",
                    o.data_fim_concessao AS fim,
-                   o.unidade_cobertura AS cob,
                    o.atualizado_em, o.atualizado_por
               FROM ({_cidades_cte()}) c
               JOIN {_i()}.empresa emp ON emp.emp_codigo = c.emp_codigo

@@ -135,8 +135,6 @@ def derive_like_front(state: dict[str, Any]) -> dict[str, Any]:
     for i, c in enumerate(cidades):
         if js_trim(c.get("fim"), f"cidades[{i}].fim") == "":
             g2 += 1
-        if js_trim(c.get("cob"), f"cidades[{i}].cob") == "":
-            g2 += 1
     for i, m in enumerate(state["metas"]):
         for k in ("cid", "ano", "pct"):
             if js_trim(m.get(k), f"metas[{i}].{k}") == "":
@@ -208,7 +206,7 @@ def validate_payloads(payloads: dict[str, Any]) -> list[Issue]:
 
     cont = payloads["contrato"]
     for i, c in enumerate(cont.get("cidades", [])):
-        validate_obj(c, ["id", "nome", "fim", "cob"], f"cidades[{i}]", issues)
+        validate_obj(c, ["id", "nome", "fim"], f"cidades[{i}]", issues)
     for i, m in enumerate(cont.get("metas", [])):
         validate_obj(m, ["cid", "ano", "pct"], f"metas[{i}]", issues)
     for i, f in enumerate(cont.get("fator", [])):

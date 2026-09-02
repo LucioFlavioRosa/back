@@ -1,0 +1,24 @@
+-- A REGUA DA COBERTURA SAI DO CADASTRO E VIRA PARAMETRO DE RODADA.
+--
+-- `cidade_operacional.unidade_cobertura` (ligacoes | economias | populacao) era
+-- preenchida cidade a cidade no cadastro. Nao e dado de cadastro: e a LENTE com
+-- que se olha o mesmo cadastro. Trocar a regua nao corrige informacao nenhuma —
+-- muda a pergunta que se faz aos numeros que ja estao la.
+--
+-- E VALE PARA A UNIDADE INTEIRA, nao mais por municipio. Um plano em que Belford
+-- Roxo e medida em economias e a cidade vizinha em ligacoes nao responde pergunta
+-- nenhuma: os dois numeros nao somam, e a cobertura da unidade seria a media de
+-- duas moedas diferentes.
+--
+-- O motor passa a receber `UNIDADE_COBERTURA` em `run_request.params`, com o
+-- mesmo default de sempre (`ligacoes`) quando a chave nao vier.
+--
+-- O QUE SE PERDE, e por que nao e perda: das 141 cidades da base, 140 estavam em
+-- `ligacoes` e UMA tinha o texto 'ligações' — o ROTULO da tela gravado no lugar
+-- do valor. Nenhuma media por economias ou populacao. Ou seja: nao ha escolha
+-- por cidade para preservar, so um campo que quase ninguem mexeu e que ja tinha
+-- produzido um valor invalido. O motor, por sinal, tratava 'ligações' como
+-- `ligacoes` (ele compara por prefixo), entao o defeito nunca mudou resultado —
+-- ficou anos ali sem que nada acusasse.
+ALTER TABLE input.cidade_operacional
+  DROP COLUMN IF EXISTS unidade_cobertura;
