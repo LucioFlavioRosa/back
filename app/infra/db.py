@@ -187,6 +187,9 @@ _EXIGIDO_COLUNA = [
     #: Mesma razao: a leitura do Grupo 01 seleciona a coluna, e num banco onde a
     #: 017 nao rodou o erro precisa dizer isso.
     ("input", "unidade_regional", "diretoria_id", "017_diretoria.sql"),
+    #: E a 018: sem `cidade_id` a lista de CTS sem sistema nao tem como ser
+    #: recortada, e `GET /hierarquia` responde 500 na consulta.
+    ("input", "cts_operacional", "cidade_id", "018_onde_a_cts_esta.sql"),
 ]
 
 

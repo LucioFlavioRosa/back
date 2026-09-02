@@ -49,6 +49,32 @@ CREATE INDEX IF NOT EXISTS ix_cts_cidade ON input.cts_operacional (cidade_id);
 -- uma escolha que alguem fez, por causa de uma regra que so passa a valer
 -- agora, seria mudar o plano de quem cadastrou sem avisar; o lugar de corrigir
 -- e a tela, com a pessoa vendo.
+-- E A AMBIGUIDADE PARA A MIGRACAO, em vez de ser resolvida no escuro.
+--
+-- `SELECT DISTINCT` seguido de UPDATE escolheria UMA das cidades sem avisar se
+-- uma CTS se sobrepusesse a sub-bacias de municipios diferentes. Conferi que
+-- hoje nao acontece com nenhuma das 337 — e e justamente por isso que o guard
+-- entra: a checagem que passou vira invariante verificada, e nao suposicao
+-- registrada num comentario. Num banco onde o caso exista, esta migracao para e
+-- diz quais CTS sao, em vez de gravar uma cidade tirada por sorteio.
+DO $$
+DECLARE ambiguas text;
+BEGIN
+    SELECT string_agg(cts, ', ' ORDER BY cts) INTO ambiguas
+      FROM (SELECT sc.cts
+              FROM input.subbacia_cts sc
+              JOIN input.sistema_topologia st
+                ON st.componente_sistema_id = sc.sub_bacia
+              JOIN input.cidade_sistema cs ON cs.sistema_id = st.sistema_id
+             GROUP BY sc.cts
+            HAVING count(DISTINCT cs.cidade_id) > 1) x;
+    IF ambiguas IS NOT NULL THEN
+        RAISE EXCEPTION
+            'CTS sobrepostas a sub-bacias de cidades diferentes: %. '
+            'Decida a cidade de cada uma antes de rodar esta migracao.', ambiguas;
+    END IF;
+END $$;
+
 UPDATE input.cts_operacional o
    SET cidade_id = loc.cidade_id
   FROM (SELECT DISTINCT sc.cts, cs.cidade_id

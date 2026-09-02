@@ -354,6 +354,15 @@ async def hierarquia(unidade_id: str) -> dict[str, Any]:
     # nenhuma de ser colocada. Ela vem, com `cidId` vazio, e a tela a mostra
     # separada — o mesmo tratamento das unidades sem diretoria.
     #
+    # O RECORTE SO ALCANCA CTS, e o `c.cts IS NULL` diz isso em vez de deixar
+    # acontecer. Sub-bacia e ETE nao tem coluna de cidade em lugar nenhum: se um
+    # dia uma ficar sem sistema, nao ha por onde recorta-la, e ela aparece para
+    # todas as unidades. Sem esta linha o efeito era o mesmo, mas POR ACIDENTE —
+    # `c.cidade_id IS NULL` e verdadeiro para quem nem esta em `cts_operacional`,
+    # e a consulta parecia recortar o que nao recortava. Hoje a lista e 100% CTS,
+    # entao isto e sobre a proxima pessoa a ler a consulta, nao sobre um defeito
+    # visivel.
+    #
     # `tipo` viaja junto porque a tela precisa rotular a lista, e a natureza do
     # componente nao esta na topologia: ela e a tabela em que ele tem ficha.
     # `cidId` viaja junto porque e por ele que a tela recorta o seletor para a
@@ -373,7 +382,8 @@ async def hierarquia(unidade_id: str) -> dict[str, Any]:
               LEFT JOIN {_i()}.subbacia_operacional b
                      ON b.sub_bacia = t.componente_sistema_id
              WHERE t.sistema_id IS NULL
-               AND (c.cidade_id IS NULL
+               AND (c.cts IS NULL
+                    OR c.cidade_id IS NULL
                     OR c.cidade_id IN (SELECT cidade_id FROM cid))
              ORDER BY 3, 2, 1""",
         unidade_id,
