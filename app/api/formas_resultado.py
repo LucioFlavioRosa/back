@@ -328,18 +328,47 @@ class CidadeDetalhe(BaseModel):
 # ===========================================================================
 #  Explicabilidade — "por que o plano não fatura 100%"
 # ===========================================================================
-class SubBaciaPresa(BaseModel):
-    subBaciaId: str
-    cidadeId: str
+class ObraForaDoPlano(BaseModel):
+    """Uma obra que não entrou — as maiores de cada tópico, por CAPEX."""
+
+    obraId: str
+    componente: str
+    cidadeId: str | None
     sistemaId: str | None
-    vazaoPresa: float
+    #: O nó que a obra atende. Vazio nas de transporte, que não têm nó próprio.
+    subBaciaId: str | None
+    capex: float
+    #: Ligações que a obra traria. ZERO em obra de transporte — é a regra do
+    #: domínio: só ligação e CTS faturam, o resto é CAPEX e OPEX que existe para
+    #: o esgoto chegar à ETE.
+    ligacoes: float
 
 
-class CategoriaDaExplicabilidade(BaseModel):
-    categoria: str
-    subbacias: int
-    vazaoPresa: float
-    itens: list[SubBaciaPresa]
+class ComponenteDoTopico(BaseModel):
+    """Quantas obras de cada TIPO o tópico tem — a leitura de dentro dele."""
+
+    componente: str
+    obras: int
+    capex: float
+
+
+class TopicoDaExplicabilidade(BaseModel):
+    """Um dos três motivos de uma obra não entrar, agrupado pelo que se faz nele.
+
+    `topico` é o CÓDIGO (`orcamento` | `nao_se_paga` | `depende` | `outros`), e
+    não o rótulo: a tela escreve a frase em português, e mudar texto de tela não
+    pode mudar contrato. `outros` é válvula — categoria nova do motor aparece
+    nele em vez de sumir do agregado.
+    """
+
+    topico: str
+    obras: int
+    capex: float
+    ligacoes: float
+    porComponente: list[ComponenteDoTopico]
+    #: As dez de maior CAPEX. NÃO é a lista completa, e a tela diz isso: mandar
+    #: as 6.765 trocaria uma tela pesada por uma ilegível.
+    maiores: list[ObraForaDoPlano]
 
 
 class EloQueTrava(BaseModel):
@@ -353,9 +382,24 @@ class EloQueTrava(BaseModel):
 
 
 class ExplicabilidadeGlobal(BaseModel):
-    naoFaturando: int
-    totalSubbacias: int
-    categorias: list[CategoriaDaExplicabilidade]
+    """As OBRAS que ficaram fora do plano, em três tópicos.
+
+    Era por SUB-BACIA, e a troca não é de rótulo: obra de transporte não tem
+    sub-bacia própria, então 85% do CAPEX que ficou de fora não cabia na lista
+    antiga — 4.531 obras e R$ 4,4 bi invisíveis no maior run publicado.
+
+    `obrasCandidatas` é o denominador (o que o motor considerou), `obrasNoPlano`
+    o que entrou, e `deTerceiros` fica FORA dos tópicos: é obra que acontece e
+    outro paga — não é decisão de investimento do plano.
+    """
+
+    obrasFora: int
+    obrasCandidatas: int
+    obrasNoPlano: int
+    capexFora: float
+    ligacoesFora: float
+    deTerceiros: int
+    topicos: list[TopicoDaExplicabilidade]
     elos: list[EloQueTrava]
 
 

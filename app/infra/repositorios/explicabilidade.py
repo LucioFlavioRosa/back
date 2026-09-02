@@ -26,126 +26,231 @@ from app.dominio import teto as teto_dom
 # `explicacao`). O que faltava era chegar nela SEM já saber qual sub-bacia abrir.
 
 
-async def explicabilidade(run_id: str, cidade: str | None = None) -> dict[str, Any] | None:
-    """Por que as sub-bacias que não faturam não faturam, agregado por motivo.
+async def explicabilidade(
+    run_id: str, cidade: str | None = None, sistema: str | None = None
+) -> dict[str, Any] | None:
+    """As OBRAS que não entraram no plano, em três tópicos — e o que elas custariam.
 
-    Com `cidade`, o mesmo recorte dentro de uma cidade — é o bloco "sub-bacias
-    fora do plano" do nível 2. Devolve `None` quando a cidade não existe naquela
-    rodada, para o endpoint responder 404 em vez de zeros que parecem dado.
+    Com `cidade` ou `sistema`, o mesmo recorte dentro de um deles. Devolve `None`
+    quando o recorte não existe naquela rodada, para o endpoint responder 404 em
+    vez de zeros que parecem dado.
 
-    ## A categoria de uma sub-bacia é a da sua OBRA DE COLETA
+    ## A unidade é a OBRA, e não a sub-bacia
 
-    Um nó tem várias obras (ligação, rede, tronco, EEE...) e elas discordam de
-    categoria com frequência — em `run_20260812_000112_0ba066`, 2065 dos 2269 nós
-    que não faturam têm obras de categorias diferentes. "A primeira que aparecer"
-    daria uma resposta que muda entre duas execuções da mesma consulta.
+    Era a sub-bacia que não fatura. A troca não é de rótulo: **a lista antiga não
+    tinha onde pôr 85% do dinheiro que ficou de fora**. Obra de transporte —
+    tronco, elevatória, módulo de ETE — não tem sub-bacia própria, então não cabia
+    numa lista cuja linha é uma sub-bacia. No maior run publicado eram 4.531
+    obras e R$ 4,4 bi invisíveis, contra R$ 773 Mi que a tela mostrava.
 
-    `otim_subbacia.obra_coleta` nomeia A obra que coleta daquele nó, e é ela que
-    decide se a sub-bacia entra ou não no plano. A regra é determinística e
-    completa: no run acima ela classifica exatamente as 2269, sem sobra.
+    E a pergunta do produto é sobre obra: uma sub-bacia não "entra no plano" —
+    quem entra ou não é a obra que a atende.
 
-    ## Por que a lista de sub-bacias vem inteira
+    ## Por que TRÊS tópicos, e por que estes
 
-    Cada categoria carrega TODAS as suas sub-bacias, não uma amostra. O total de
-    itens é exatamente `naoFaturando` — no maior run publicado, 2269 objetos
-    pequenos. Uma amostra silenciosa seria pior que o peso: a tela mostra a
-    contagem verdadeira no cabeçalho e a lista logo abaixo, e quem abrisse uma
-    lista de 20 sob um título de "1142 sub-bacias" leria uma como a outra.
+    O agrupamento é pelo que a pessoa pode FAZER a respeito, que é o que separa
+    três tópicos úteis de três rótulos:
+
+      orcamento    o plano quis e o teto acabou. É o único que mais dinheiro
+                   compra — e é o que a análise de sensibilidade precifica.
+      nao_se_paga  a receita própria não cobre, sozinha ou em conjunto. Mais
+                   orçamento NÃO compra; preço, custo ou meta compram.
+      depende      infraestrutura compartilhada que ninguém acionou, porque o
+                   que ela serviria não entrou. É consequência, não decisão.
+
+    A LINHA CAI NA RECEITA, e é isso que faz os três tópicos serem do domínio e
+    não da tela: só ligação e CTS faturam. Os dois primeiros tópicos são 100%
+    obras com receita própria; o terceiro é 99,5% sem — só CAPEX e OPEX, e existe
+    para o esgoto chegar à ETE. Medido no maior run: 1.142 de 1.142, 1.070 de
+    1.070, e 22 de 4.553.
+
+    `outros` é válvula de segurança, não quarto tópico: categoria nova que o
+    motor invente cai nele e APARECE, em vez de sumir do agregado e fazer as
+    parcelas não fecharem com o cabeçalho. Hoje vem vazio.
+
+    ## O que fica de fora da conta, e por quê
+
+    `necessaria` já exclui o que nunca foi obra (CAPEX e prazo zero: o elemento
+    existe na ficha e não gera obra nenhuma). Sobra `Terceiro (pre-requisito)`,
+    que é obra que ACONTECE — só que outro paga. Não é decisão de investimento
+    do plano, e somá-la ao "ficou de fora" inflaria a conta com linhas que
+    ninguém pode acionar. Vem no cabeçalho, contada à parte.
+
+    OBRA CONSTRUÍDA NÃO ENTRA AQUI, por definição: a pergunta é o que ficou fora.
+
+    ## Por que agregado, e não a lista inteira
+
+    A lista antiga vinha completa — 2.269 sub-bacias, 247 KB. Em obras seriam
+    6.765, e mandar tudo trocaria uma tela pesada por uma tela ilegível. O
+    agregado por COMPONENTE responde melhor à mesma pergunta (são seis tipos de
+    obra na base inteira), e `maiores` traz as dez de maior CAPEX de cada tópico
+    — rotuladas como tal na tela, nunca como se fossem a lista toda.
     """
-    filtro_cidade = " AND s.cidade = $2" if cidade else ""
-    args: tuple = (run_id, cidade) if cidade else (run_id,)
+    esq = casc.esquema()
 
+    # O SISTEMA DE UMA OBRA DE TRANSPORTE VEM VAZIO (6.695 das 8.079 do maior
+    # run): o motor só preenche `otim_obra.sistema` onde a obra pertence a um
+    # sistema por si. Quem sabe o sistema é a sub-bacia do nó dela — o mesmo
+    # `COALESCE` que a consulta de elos já fazia. Sem isto, o recorte do nível 3
+    # perderia justamente as obras de transporte, que são o assunto.
+    de_obras = f"""
+        FROM {esq}.otim_obra o
+        LEFT JOIN {esq}.otim_subbacia sn
+               ON sn.run_id = o.run_id AND sn.sub_bacia = o.no
+    """
+    onde = ["o.run_id = $1", "o.necessaria", "NOT o.construida"]
+    args: list = [run_id]
     if cidade:
+        args.append(cidade)
+        onde.append(f"o.cidade = ${len(args)}")
+    if sistema:
+        args.append(sistema)
+        onde.append(f"COALESCE(NULLIF(o.sistema, ''), sn.sistema) = ${len(args)}")
+    filtro = " AND ".join(onde)
+
+    if cidade or sistema:
+        col, val = ("cidade", cidade) if cidade else ("sistema", sistema)
         existe = await db.buscar_um(
-            f"SELECT 1 FROM {casc.esquema()}.otim_cidade WHERE run_id = $1 AND cidade = $2",
+            f"SELECT 1 FROM {esq}.otim_subbacia WHERE run_id = $1 AND {col} = $2 LIMIT 1",
             run_id,
-            cidade,
+            val,
         )
         if not existe:
             return None
 
-    totais = await db.buscar_um(
-        f"""SELECT COUNT(*) AS total,
-                   COUNT(*) FILTER (WHERE NOT s.faturando) AS nao_fatura
-              FROM {casc.esquema()}.otim_subbacia s
-             WHERE s.run_id = $1{filtro_cidade}""",
+    #: O motor nomeia o motivo; a tela pergunta o que fazer. Este mapa é a
+    #: tradução, e mora aqui porque é regra de domínio — a tela não pode
+    #: reagrupar sem mudar o significado.
+    topico_sql = """
+        CASE
+          WHEN o.categoria_motivo = 'Perdeu a disputa pelo orcamento' THEN 'orcamento'
+          WHEN o.categoria_motivo IN ('Nao se paga', 'So se paga em conjunto')
+               THEN 'nao_se_paga'
+          WHEN o.categoria_motivo IN ('Compartilhada nao acionada',
+                                      'Travada por obra da cadeia') THEN 'depende'
+          WHEN o.categoria_motivo = 'Terceiro (pre-requisito)' THEN 'terceiro'
+          ELSE 'outros'
+        END
+    """
+
+    por_componente = await db.buscar(
+        f"""SELECT {topico_sql} AS topico, o.componente,
+                   COUNT(*) AS obras,
+                   COALESCE(SUM(o.capex), 0) AS capex,
+                   COALESCE(SUM(o.ligacoes), 0) AS ligacoes
+            {de_obras}
+             WHERE {filtro}
+             GROUP BY 1, 2
+             ORDER BY 1, capex DESC""",
         *args,
     )
 
-    presas = await db.buscar(
-        f"""SELECT s.sub_bacia, s.cidade, s.sistema,
-                   COALESCE(s.vazao_marginal, 0) AS vazao,
-                   oc.categoria_motivo
-              FROM {casc.esquema()}.otim_subbacia s
-              LEFT JOIN {casc.esquema()}.otim_obra oc
-                     ON oc.run_id = s.run_id AND oc.obra_id = s.obra_coleta
-             WHERE s.run_id = $1 AND NOT s.faturando{filtro_cidade}
-             ORDER BY COALESCE(s.vazao_marginal, 0) DESC, s.sub_bacia""",
+    maiores = await db.buscar(
+        f"""SELECT topico, obra_id, componente, cidade, sistema, no, capex, ligacoes
+              FROM (
+                SELECT {topico_sql} AS topico, o.obra_id, o.componente, o.cidade,
+                       COALESCE(NULLIF(o.sistema, ''), sn.sistema) AS sistema,
+                       o.no, COALESCE(o.capex, 0) AS capex,
+                       COALESCE(o.ligacoes, 0) AS ligacoes,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY {topico_sql}
+                           ORDER BY COALESCE(o.capex, 0) DESC, o.obra_id
+                       ) AS pos
+                {de_obras}
+                 WHERE {filtro}
+              ) x
+             WHERE pos <= 10
+             ORDER BY topico, capex DESC""",
         *args,
     )
 
-    categorias: dict[str, dict[str, Any]] = {}
-    for linha in presas:
-        # Sem categoria a sub-bacia continua contando: some do agrupamento e o
-        # cabecalho ("185 de 1047 nao faturam") deixaria de fechar com as parcelas.
-        chave = linha["categoria_motivo"] or "Sem motivo registrado"
-        c = categorias.setdefault(
-            chave, {"categoria": chave, "subbacias": 0, "vazaoPresa": 0.0, "itens": []}
+    candidatas = await db.buscar_um(
+        f"""SELECT COUNT(*) FILTER (WHERE o.necessaria) AS candidatas,
+                   COUNT(*) FILTER (WHERE o.necessaria AND o.construida) AS no_plano
+            {de_obras}
+             WHERE {" AND ".join(x for x in onde if x not in ("o.necessaria", "NOT o.construida"))}""",
+        *args,
+    )
+
+    #: A ORDEM É FIXA, e é leitura: primeiro o que dinheiro resolve, depois o que
+    #: não resolve, por fim o que é consequência dos dois. Ordenar por tamanho
+    #: poria sempre o terceiro no topo — ele tem 4 mil obras — e enterraria o
+    #: único acionável.
+    ORDEM = ("orcamento", "nao_se_paga", "depende", "outros")
+
+    por_topico: dict[str, dict[str, Any]] = {}
+    de_terceiros = 0
+    for l in por_componente:
+        if l["topico"] == "terceiro":
+            de_terceiros += l["obras"]
+            continue
+        t = por_topico.setdefault(
+            l["topico"],
+            {"topico": l["topico"], "obras": 0, "capex": 0.0, "ligacoes": 0.0,
+             "porComponente": [], "maiores": []},
         )
-        c["subbacias"] += 1
-        c["vazaoPresa"] += linha["vazao"]
-        c["itens"].append(
+        t["obras"] += l["obras"]
+        t["capex"] += l["capex"]
+        t["ligacoes"] += l["ligacoes"]
+        t["porComponente"].append(
             {
-                "subBaciaId": linha["sub_bacia"],
-                "cidadeId": linha["cidade"],
-                "sistemaId": linha["sistema"],
-                "vazaoPresa": linha["vazao"],
+                "componente": casc.nome_componente(l["componente"]),
+                "obras": l["obras"],
+                "capex": l["capex"],
             }
         )
 
-    # O ELO: a obra que, nao construida, tira OUTRAS sub-bacias do plano.
-    #
-    # `DISTINCT` no par (elo, no) antes de somar: um no com tres obras travadas
-    # pelo mesmo elo apareceria tres vezes, e a vazao dele entraria tres vezes na
-    # soma. E a ordenacao e pela VAZAO liberada, nao pela contagem — decidir onde
-    # investir depende de QUEM esta preso, nao de quantos.
+    for m in maiores:
+        t = por_topico.get(m["topico"])
+        if t is None:
+            continue
+        t["maiores"].append(
+            {
+                "obraId": m["obra_id"],
+                "componente": casc.nome_componente(m["componente"]),
+                "cidadeId": m["cidade"],
+                "sistemaId": m["sistema"],
+                "subBaciaId": m["no"],
+                "capex": m["capex"],
+                "ligacoes": m["ligacoes"],
+            }
+        )
+
+    topicos = [por_topico[k] for k in ORDEM if k in por_topico]
+
     elos = await db.buscar(
         f"""WITH presos AS (
                 SELECT DISTINCT o.elo_que_trava AS elo, o.no AS sub_bacia
-                  FROM {casc.esquema()}.otim_obra o
+                  FROM {esq}.otim_obra o
                  WHERE o.run_id = $1
                    AND o.elo_que_trava IS NOT NULL
                    AND o.no IS NOT NULL
             )
             SELECT p.elo AS obra_id, e.componente, e.cidade, e.no,
-                   -- `otim_obra.sistema` vem VAZIO nas obras de transporte (6695
-                   -- das 8079 do maior run): o motor so o preenche onde a obra
-                   -- pertence a um sistema por si. Quem sabe o sistema e a
-                   -- sub-bacia em que a obra esta, e o contrato promete um
-                   -- `sistemaId` de verdade — a tela monta `/sistemas/{id}` com
-                   -- ele, e um `null` viraria link para lugar nenhum.
                    COALESCE(e.sistema, se.sistema) AS sistema,
                    COUNT(*) AS bloqueia,
                    COALESCE(SUM(s.vazao_marginal), 0) AS vazao_liberada
               FROM presos p
-              JOIN {casc.esquema()}.otim_subbacia s
+              JOIN {esq}.otim_subbacia s
                 ON s.run_id = $1 AND s.sub_bacia = p.sub_bacia
-              LEFT JOIN {casc.esquema()}.otim_obra e
+              LEFT JOIN {esq}.otim_obra e
                      ON e.run_id = $1 AND e.obra_id = p.elo
-              LEFT JOIN {casc.esquema()}.otim_subbacia se
+              LEFT JOIN {esq}.otim_subbacia se
                      ON se.run_id = $1 AND se.sub_bacia = e.no
-             WHERE TRUE{filtro_cidade}
+             WHERE {"s.cidade = $2" if cidade else ("COALESCE(e.sistema, se.sistema) = $2" if sistema else "TRUE")}
              GROUP BY p.elo, e.componente, e.cidade, e.sistema, se.sistema, e.no
              ORDER BY vazao_liberada DESC, bloqueia DESC, p.elo""",
-        *args,
+        *(args[:2] if (cidade or sistema) else args[:1]),
     )
 
     return {
-        "naoFaturando": (totais or {}).get("nao_fatura") or 0,
-        "totalSubbacias": (totais or {}).get("total") or 0,
-        "categorias": sorted(
-            categorias.values(), key=lambda c: c["vazaoPresa"], reverse=True
-        ),
+        "obrasFora": sum(t["obras"] for t in topicos),
+        "capexFora": sum(t["capex"] for t in topicos),
+        "ligacoesFora": sum(t["ligacoes"] for t in topicos),
+        "obrasCandidatas": (candidatas or {}).get("candidatas") or 0,
+        "obrasNoPlano": (candidatas or {}).get("no_plano") or 0,
+        "deTerceiros": de_terceiros,
+        "topicos": topicos,
         "elos": [
             {
                 "obraId": e["obra_id"],
@@ -159,6 +264,7 @@ async def explicabilidade(run_id: str, cidade: str | None = None) -> dict[str, A
             for e in elos
         ],
     }
+
 
 async def candidatas_do_teto(
     run_id: str,

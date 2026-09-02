@@ -46,6 +46,9 @@ FORMAS_DO_CONTRATO = {
     "GET /runs/{}/explicabilidade",
     "GET /runs/{}/sensibilidade",
     "GET /runs/{}/cidades/{}/explicabilidade",
+    # O nivel 3 (sistema). Deixou de ser filtro no cliente quando a resposta
+    # virou AGREGADO por obra: agregado nao se filtra depois.
+    "GET /runs/{}/sistemas/{}/explicabilidade",
     # A LISTA e o CRONOGRAMA vem antes de `/obras/{}` na declaracao, e a ordem e
     # parte do contrato: o FastAPI casa por ordem, e `/obras/{}` engoliria
     # "cronograma" como se fosse um id de obra.
@@ -159,7 +162,7 @@ def test_nenhum_endpoint_a_mais():
 def test_a_lista_nao_esta_vazia():
     # Guarda contra o teste passar por não encontrar rota nenhuma — se `_expostas`
     # quebrar com uma mudança do FastAPI, os dois testes acima passariam vazios.
-    assert len(_expostas()) == len(FORMAS_DO_CONTRATO) == 44
+    assert len(_expostas()) == len(FORMAS_DO_CONTRATO) == 45
 
 
 @pytest.mark.parametrize("run_id", ["r1' OR 1=1", "../etc", "com espaco", ""])

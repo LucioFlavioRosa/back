@@ -458,6 +458,28 @@ async def explicabilidade_da_cidade(run_id: RunPublicado, cidade_id: str) -> dic
     return await _ou_404(await explic.explicabilidade(run_id, cidade_id), "Cidade")
 
 
+@router.get(
+    "/runs/{run_id}/sistemas/{sistema_id}/explicabilidade",
+    response_model=formas.ExplicabilidadeGlobal,
+)
+async def explicabilidade_do_sistema(run_id: RunPublicado, sistema_id: str) -> dict[str, Any]:
+    """O mesmo recorte dentro de um sistema — o nivel 3.
+
+    ERA FILTRO NO CLIENTE, e deixou de poder ser. Enquanto a resposta trazia a
+    lista inteira de sub-bacias, cada uma com o `sistemaId` dela, a tela do nivel
+    3 recortava sozinha. A resposta virou AGREGADO por obra, e agregado nao se
+    filtra depois: quem sabe somar por sistema e quem tem as linhas.
+
+    O RECORTE NAO E `otim_obra.sistema` SOZINHO. Obra de transporte vem com esse
+    campo vazio (6.695 das 8.079 do maior run) — e obra de transporte e
+    justamente o assunto deste nivel. O repositorio cai na sub-bacia do no da
+    obra, o mesmo `COALESCE` que a consulta de elos ja fazia.
+    """
+    return await _ou_404(
+        await explic.explicabilidade(run_id, sistema=sistema_id), "Sistema"
+    )
+
+
 # As duas rotas de obra abaixo vem ANTES de `/obras/{obra_id}`, e a ordem e o que
 # as faz existir: o FastAPI casa na ordem de declaracao, e `/obras/{obra_id}`
 # aceitaria "cronograma" como se fosse um id — resposta 404 "Obra nao encontrada"
