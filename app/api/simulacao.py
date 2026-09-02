@@ -63,6 +63,11 @@ async def prontidao(unidade_id: str) -> dict[str, Any]:
         "unidadeId": unidade_id,
         "unidadeNome": unidade["nome"],
         "pendencias": conta["pendencias"],
+        # `populacao` NAO E PENDENCIA, e por isso viaja fora do total: nada no
+        # cadastro obriga a preencher populacao desde que a regua da cobertura
+        # virou parametro de rodada. Vem aqui porque e nesta tela que se escolhe
+        # a regua, e escolher POPULACAO sem os dados mede em ligacoes sem dizer.
+        "populacao": conta["populacao"],
         # `porGrupo` alem do contrato, de proposito: com so o total, a tela diz
         # "faltam 12 campos" e o usuario tem de procurar em cinco grupos. O front
         # ignora campo que nao conhece, entao acrescentar nao quebra nada.

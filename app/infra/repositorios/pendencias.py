@@ -135,8 +135,9 @@ async def contar(unidade_id: str) -> dict[str, Any]:
           FROM {_i()}.empresa e
          WHERE e.unidade_id = $1
     """
-    # A sub-bacia herda a régua da cidade do seu sistema — é por isso que a conta
-    # dela não sai só da própria tabela.
+    # OS COMPONENTES DA UNIDADE, pelo sistema em que estão. Não sai só de
+    # `subbacia_operacional`/`cts_operacional` porque nenhuma das duas diz a que
+    # unidade pertence: quem diz é o sistema, e o sistema é de uma cidade.
     subs = f"""
         SELECT t.componente_sistema_id AS id
           FROM {_i()}.sistema_topologia t
@@ -151,7 +152,15 @@ async def contar(unidade_id: str) -> dict[str, Any]:
              comps AS ({subs}),
              sb AS (
                 SELECT c.id,
-                       {_vazios(_PARAMS, "b")} AS pend_params
+                       {_vazios(_PARAMS, "b")} AS pend_params,
+                       -- POPULAÇÃO INFORMADA? Não é pendência (ver a CTE
+                       -- `cidades`): é o que a tela de simulação precisa saber
+                       -- para dizer se a régua POPULAÇÃO vale alguma coisa nesta
+                       -- unidade. Sem os dois campos o motor converte pela
+                       -- densidade 1,0 — mede em ligações e segue, avisando só no
+                       -- log do job.
+                       (b.universo_populacao IS NOT NULL
+                        AND b.populacao_atual IS NOT NULL) AS tem_pop
                   FROM comps c
                   JOIN {_i()}.subbacia_operacional b ON b.sub_bacia = c.id
              ),
@@ -176,7 +185,12 @@ async def contar(unidade_id: str) -> dict[str, Any]:
              -- nao aparece aqui, e nao deve: ela nao entra na simulacao.
              ct AS (
                 SELECT c.id,
-                       {_vazios(_PARAMS, "o")} AS pend_params
+                       {_vazios(_PARAMS, "o")} AS pend_params,
+                       -- Mesma pergunta da sub-bacia, e as duas somam: a régua
+                       -- POPULAÇÃO vale para o cenário inteiro, e a CTS é nó como
+                       -- qualquer outro.
+                       (o.universo_populacao IS NOT NULL
+                        AND o.populacao_atual IS NOT NULL) AS tem_pop
                   FROM comps c
                   JOIN {_i()}.cts_operacional o ON o.cts = c.id
              ),
@@ -223,7 +237,16 @@ async def contar(unidade_id: str) -> dict[str, Any]:
           (SELECT COALESCE(SUM({len(_ETE)} + CASE WHEN nova THEN {len(_ETE_NOVA)}
                                                   ELSE 0 END), 0) FROM et)  AS t4,
           (SELECT COALESCE(SUM({len(_PARAMS)} + 4 * {len(_OBRA)}), 0)
-             FROM ct)                                                       AS t5
+             FROM ct)                                                       AS t5,
+          -- POPULAÇÃO INFORMADA, sub-bacias e CTS somadas. Não entra em
+          -- pendência nenhuma: a régua da cobertura é parâmetro de rodada
+          -- (migração 019), e nada no cadastro obriga a preencher população.
+          -- Quem precisa disto é a tela de Simular, para dizer se escolher
+          -- POPULAÇÃO mede o que promete — sem os dois campos, o motor converte
+          -- pela densidade 1,0 e o plano sai medido em ligações.
+          (SELECT count(*) FROM sb) + (SELECT count(*) FROM ct)             AS pop_total,
+          (SELECT COALESCE(SUM(tem_pop::int), 0) FROM sb)
+            + (SELECT COALESCE(SUM(tem_pop::int), 0) FROM ct)               AS pop_ok
         """,
         unidade_id,
     ) or {}
@@ -246,6 +269,12 @@ async def contar(unidade_id: str) -> dict[str, Any]:
     return {
         "pendencias": pendencias,
         "completude": completude,
+        # A COBERTURA POR POPULAÇÃO É POSSÍVEL NESTA UNIDADE? Não é pendência —
+        # é informação para quem escolhe a régua na hora de rodar.
+        "populacao": {
+            "elementos": int(linha.get("pop_total") or 0),
+            "completos": int(linha.get("pop_ok") or 0),
+        },
         "porGrupo": {
             "topologia": grupos["g1"],
             "contrato": grupos["g2"],

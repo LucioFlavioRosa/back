@@ -333,10 +333,28 @@ class Gravacao(BaseModel):
 # ===========================================================================
 #  Simulação
 # ===========================================================================
+class CoberturaPorPopulacao(BaseModel):
+    """Quantos elementos da unidade têm população informada — e quantos existem.
+
+    NÃO É PENDÊNCIA. A régua da cobertura é parâmetro de rodada (migração 019), e
+    nada no cadastro obriga a preencher população. Isto existe para a tela de
+    Simular poder dizer se escolher POPULAÇÃO mede o que promete: sem
+    `universo_populacao` e `populacao_atual`, o motor converte pela densidade 1,0
+    — ou seja, mede em ligações e segue, avisando só no log do job.
+
+    `elementos` conta sub-bacias e CTS que estão em algum sistema da unidade: são
+    os que entram na simulação, e portanto os que a régua alcança.
+    """
+
+    elementos: int
+    completos: int
+
+
 class Prontidao(BaseModel):
     unidadeId: str
     unidadeNome: str
     pendencias: int
+    populacao: CoberturaPorPopulacao
     porGrupo: dict[str, int]
     faltando: list[Inconsistencia]
 
