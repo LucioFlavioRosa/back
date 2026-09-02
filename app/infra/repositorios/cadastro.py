@@ -1,10 +1,14 @@
 """Leitura de `input.*` — o cadastro que alimenta a simulação.
 
-O recorte é sempre a UNIDADE, e ele desce pela hierarquia:
+A hierarquia é `regional → diretoria → unidade → empresa → cidade → sistema`.
+O recorte é sempre a UNIDADE, e ele desce dela para baixo:
 
     unidade_regional → empresa → cidade_empresa → cidade
                      → cidade_sistema → sistema_topologia
                      → subbacia_operacional / cts_operacional / ete_capex
+
+Os dois níveis ACIMA da unidade (`regional`, `diretoria`) não entram no recorte:
+eles são o caminho até ela, e quem escolhe a unidade já passou por eles.
 
 Não há coluna `unidade_id` nas tabelas de baixo: quem pertence a quem sai do
 encadeamento de FKs. Por isso quase toda consulta aqui carrega o mesmo CTE de
@@ -247,7 +251,8 @@ async def unidade(unidade_id: str) -> dict[str, Any] | None:
 
 # ------------------------------------------------------------------- fichas
 async def hierarquia(unidade_id: str) -> dict[str, Any]:
-    """Grupo 01 — a arvore inteira, cinco niveis.
+    """Grupo 01 — a arvore inteira, seis niveis:
+    `regional > diretoria > unidade > empresa > cidade > sistema`.
 
     OS NOMES SAO OS DO FRONT, e sao curtos: `rid`/`uid`/`empId`/`cidId`/`sis`/
     `jus`, como declarados em `cadastro/domain/hierarquia.ts`. Renomear um deles

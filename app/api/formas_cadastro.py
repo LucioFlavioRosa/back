@@ -91,7 +91,8 @@ class Empresa(BaseModel):
     """O nível entre a unidade e o município (modelo de dados v8).
 
     Chamava-se superintendência até a v7. A troca é de nome e de posição no
-    caminho — `regional > unidade > empresa > cidade` —, não de conteúdo: o
+    caminho — `regional > diretoria > unidade > empresa > cidade` —, não de
+    conteúdo: o
     campo continua sendo (código, nome) e a tabela de origem manteve as três
     colunas que tinha.
     """

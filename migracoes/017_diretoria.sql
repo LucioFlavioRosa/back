@@ -56,6 +56,14 @@ CREATE INDEX IF NOT EXISTS ix_unidade_diretoria
 -- O ID E DERIVADO porque a fonte nao tem um: ela traz o NOME da diretoria, como
 -- traz o da regional. `dir-<unidade_id>` e explicito sobre a derivacao e nao
 -- colide com id nenhum que a carga possa trazer depois.
+--
+-- QUANDO A CARGA REAL CHEGAR, o id sai do par (regional, nome): a fonte traz
+-- DIRETORIA como TEXTO, sem id, e dois nomes iguais em regionais diferentes sao
+-- diretorias diferentes. A carga deve derivar `diretoria_id` de
+-- `(regional_id, DIRETORIA)` — nao do nome sozinho, que colidiria entre
+-- regionais, nem da unidade, que e o que este backfill usa por nao ter outra
+-- coisa. `unidade_regional.diretoria_id` e entao reescrito pelo id novo, e as
+-- linhas `dir-<unidade_id>` que sobrarem sem unidade nenhuma podem ser apagadas.
 INSERT INTO input.diretoria (diretoria_id, diretoria_name, regional_id)
 SELECT 'dir-' || u.unidade_id, u.unidade_name, u.regional_id
   FROM input.unidade_regional u

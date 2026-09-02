@@ -114,8 +114,9 @@ async def unidade(unidade_id: str) -> dict[str, Any]:
 async def hierarquia(unidade_id: str) -> dict[str, Any]:
     """Grupo 01 — a árvore organizacional inteira, do Databricks.
 
-    Cinco níveis numa resposta só porque a tela desenha a árvore completa: buscar
-    por nível faria a tela montar em cascata, com um salto visual a cada nível.
+    Seis níveis — `regional > diretoria > unidade > empresa > cidade > sistema` —
+    numa resposta só porque a tela desenha a árvore completa: buscar por nível
+    faria a tela montar em cascata, com um salto visual a cada nível.
     """
     return await cadastro.hierarquia(unidade_id)
 
