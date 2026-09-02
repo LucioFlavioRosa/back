@@ -135,11 +135,20 @@ class ComponenteSemSistema(BaseModel):
     Elas NÃO têm ficha em `cts-operacional`: aquela rota serve as CTS da unidade,
     e uma CTS livre não é de unidade nenhuma. É por aqui que a tela sabe que ela
     existe, e é `tipo` que diz o que ela é.
+
+    A LISTA É DA UNIDADE, e não da base inteira: `cidade_id` (migração 018) diz
+    onde a CTS está, e a resposta traz só as daqui. Antes vinham todas, e quatro
+    das cinco unidades recebiam uma lista inteira de candidatas que não podiam
+    ser colocadas ali sem erro.
     """
 
     id: str
     nome: str
     tipo: str
+    #: A cidade da CTS — é por ela que a tela recorta o seletor para a cidade do
+    #: sistema. Vazio quando a carga ainda não a trouxe: essas vêm mesmo assim, e
+    #: a tela as mostra separadas em vez de escondê-las.
+    cidId: str
 
 
 class Hierarquia(BaseModel):

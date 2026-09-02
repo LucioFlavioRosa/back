@@ -336,28 +336,47 @@ async def hierarquia(unidade_id: str) -> dict[str, Any]:
     )
     # COMPONENTE SEM SISTEMA — cadastrado, ainda nao colocado em lugar nenhum.
     #
-    # NAO e recortado por unidade, e nao poderia ser: sem sistema nao ha cidade,
-    # nao ha empresa, nao ha unidade. E o modelo real do produto — do
-    # Databricks vem quais sub-bacias e qual ETE sao do sistema, e TODAS as CTS
-    # cadastradas; em que sistema cada CTS entra e a Regional que decide, e ela
-    # pode colocar qualquer uma que exista na base.
+    # RECORTADO PELA UNIDADE, e isto e uma correcao. O comentario aqui dizia que
+    # o recorte era impossivel — "sem sistema nao ha cidade, nao ha empresa, nao
+    # ha unidade" — e por isso a resposta trazia TODAS as CTS da base, para
+    # qualquer unidade. A premissa era falsa: a fonte sempre soube onde a CTS
+    # esta (o extrato de portfolio traz CIDADE e CTS na mesma linha). Quem tinha
+    # perdido a informacao era o esquema, e a migracao 018 a devolveu em
+    # `cts_operacional.cidade_id`.
+    #
+    # O que a falta de recorte custava: das 151 CTS soltas da base, TODAS sao de
+    # uma unidade so. As outras quatro unidades recebiam as 151 assim mesmo —
+    # uma lista inteira de candidatas que nao podiam ser colocadas ali sem erro,
+    # e nenhuma indicacao de qual era qual.
+    #
+    # CIDADE DESCONHECIDA NAO SOME. `cidade_id` e nulavel (a carga pode nao ter
+    # trazido), e escondê-la deixaria uma CTS que existe no banco sem forma
+    # nenhuma de ser colocada. Ela vem, com `cidId` vazio, e a tela a mostra
+    # separada — o mesmo tratamento das unidades sem diretoria.
     #
     # `tipo` viaja junto porque a tela precisa rotular a lista, e a natureza do
     # componente nao esta na topologia: ela e a tabela em que ele tem ficha.
+    # `cidId` viaja junto porque e por ele que a tela recorta o seletor para a
+    # cidade do sistema que esta sendo montado.
     sem_sistema = await db.buscar(
-        f"""SELECT t.componente_sistema_id AS id,
+        f"""WITH cid AS ({_cidades_cte()})
+            SELECT t.componente_sistema_id AS id,
                    t.componente_sistema_nome AS nome,
                    CASE WHEN e.ete_id IS NOT NULL THEN 'ete'
                         WHEN c.cts    IS NOT NULL THEN 'cts'
                         WHEN b.sub_bacia IS NOT NULL THEN 'sub-bacia'
-                        ELSE '' END AS tipo
+                        ELSE '' END AS tipo,
+                   c.cidade_id AS "cidId"
               FROM {_i()}.sistema_topologia t
               LEFT JOIN {_i()}.ete_capex e ON e.ete_id = t.componente_sistema_id
               LEFT JOIN {_i()}.cts_operacional c ON c.cts = t.componente_sistema_id
               LEFT JOIN {_i()}.subbacia_operacional b
                      ON b.sub_bacia = t.componente_sistema_id
              WHERE t.sistema_id IS NULL
-             ORDER BY 3, 2, 1"""
+               AND (c.cidade_id IS NULL
+                    OR c.cidade_id IN (SELECT cidade_id FROM cid))
+             ORDER BY 3, 2, 1""",
+        unidade_id,
     )
 
     def txt(linhas):
