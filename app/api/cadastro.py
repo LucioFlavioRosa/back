@@ -74,6 +74,25 @@ async def regionais(quem: Quem) -> list[dict[str, Any]]:
     return [r for r in todas if r["id"] in minhas]
 
 
+@router.get("/regionais/{regional_id}/diretorias", response_model=list[formas.Diretoria])
+async def diretorias(regional_id: str, quem: Quem) -> list[dict[str, Any]]:
+    """As diretorias da regional — o nível entre ela e a unidade.
+
+    Mesmo recorte de `/regionais`: uma diretoria aparece quando o usuário acessa
+    ALGUMA unidade dela. Como `cadastro.diretorias` já sai de `unidade_regional`,
+    basta cruzar com as unidades concedidas — não há segunda regra de acesso.
+    """
+    todas = await cadastro.diretorias(regional_id)
+    if quem.tudo:
+        return todas
+    minhas = {
+        u["diretoriaId"]
+        for u in await cadastro.unidades(regional_id)
+        if u["id"] in quem.unidades
+    }
+    return [d for d in todas if d["id"] in minhas]
+
+
 @router.get("/regionais/{regional_id}/unidades", response_model=list[formas.Unidade])
 async def unidades(regional_id: str, quem: Quem) -> list[dict[str, Any]]:
     todas = await cadastro.unidades(regional_id)
@@ -95,8 +114,9 @@ async def unidade(unidade_id: str) -> dict[str, Any]:
 async def hierarquia(unidade_id: str) -> dict[str, Any]:
     """Grupo 01 — a árvore organizacional inteira, do Databricks.
 
-    Cinco níveis numa resposta só porque a tela desenha a árvore completa: buscar
-    por nível faria a tela montar em cascata, com um salto visual a cada nível.
+    Seis níveis — `regional > diretoria > unidade > empresa > cidade > sistema` —
+    numa resposta só porque a tela desenha a árvore completa: buscar por nível
+    faria a tela montar em cascata, com um salto visual a cada nível.
     """
     return await cadastro.hierarquia(unidade_id)
 

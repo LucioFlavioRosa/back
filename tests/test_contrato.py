@@ -72,6 +72,10 @@ FORMAS_DO_CONTRATO = {
     # TOPOLOGIA, e vai pelas rotas de topologia — mexer na ficha sem mexer no no
     # produz meia CTS. Ver `app/api/cadastro.py`.
     "GET /regionais",
+    # A DIRETORIA e o nivel entre a regional e a unidade (migracao 017). A tela de
+    # selecao escolhe regional -> diretoria -> unidade, e sem esta rota o passo do
+    # meio nao existiria.
+    "GET /regionais/{}/diretorias",
     "GET /regionais/{}/unidades",
     "GET /unidades/{}",
     "GET /unidades/{}/hierarquia",
@@ -155,7 +159,7 @@ def test_nenhum_endpoint_a_mais():
 def test_a_lista_nao_esta_vazia():
     # Guarda contra o teste passar por não encontrar rota nenhuma — se `_expostas`
     # quebrar com uma mudança do FastAPI, os dois testes acima passariam vazios.
-    assert len(_expostas()) == len(FORMAS_DO_CONTRATO) == 43
+    assert len(_expostas()) == len(FORMAS_DO_CONTRATO) == 44
 
 
 @pytest.mark.parametrize("run_id", ["r1' OR 1=1", "../etc", "com espaco", ""])

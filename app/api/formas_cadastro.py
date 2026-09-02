@@ -30,6 +30,17 @@ class Regional(BaseModel):
     nome: str
 
 
+class Diretoria(BaseModel):
+    """O nível entre a regional e a unidade.
+
+    `nome` é `| None` porque a carga pode trazer a diretoria sem nome — mesma
+    tolerância de `regional_name`.
+    """
+
+    id: str
+    nome: str | None
+
+
 class ResumoDaUnidade(BaseModel):
     cidades: int
     sistemas: int
@@ -46,6 +57,10 @@ class Unidade(BaseModel):
     id: str
     nome: str
     regionalId: str
+    #: `| None` enquanto a carga não trouxer a diretoria da unidade. A tela cai
+    #: para "sem diretoria" em vez de esconder a unidade.
+    diretoriaId: str | None
+    diretoriaNome: str | None
     waccMedio: float | None
     completude: int
     #: Falso quando a carga do Databricks não chegou — a tela avisa em vez de
@@ -60,6 +75,10 @@ class Unidade(BaseModel):
 class UnidadeERegional(BaseModel):
     rid: str
     rnome: str
+    #: A diretoria, entre a regional e a unidade. Vazio enquanto a carga não a
+    #: trouxer — `""`, e não nulo, como todo campo do Grupo 01.
+    did: str
+    dnome: str
     uid: str
     unome: str
     waccMedio: str
@@ -72,7 +91,8 @@ class Empresa(BaseModel):
     """O nível entre a unidade e o município (modelo de dados v8).
 
     Chamava-se superintendência até a v7. A troca é de nome e de posição no
-    caminho — `regional > unidade > empresa > cidade` —, não de conteúdo: o
+    caminho — `regional > diretoria > unidade > empresa > cidade` —, não de
+    conteúdo: o
     campo continua sendo (código, nome) e a tabela de origem manteve as três
     colunas que tinha.
     """
@@ -115,11 +135,20 @@ class ComponenteSemSistema(BaseModel):
     Elas NÃO têm ficha em `cts-operacional`: aquela rota serve as CTS da unidade,
     e uma CTS livre não é de unidade nenhuma. É por aqui que a tela sabe que ela
     existe, e é `tipo` que diz o que ela é.
+
+    A LISTA É DA UNIDADE, e não da base inteira: `cidade_id` (migração 018) diz
+    onde a CTS está, e a resposta traz só as daqui. Antes vinham todas, e quatro
+    das cinco unidades recebiam uma lista inteira de candidatas que não podiam
+    ser colocadas ali sem erro.
     """
 
     id: str
     nome: str
     tipo: str
+    #: A cidade da CTS — é por ela que a tela recorta o seletor para a cidade do
+    #: sistema. Vazio quando a carga ainda não a trouxe: essas vêm mesmo assim, e
+    #: a tela as mostra separadas em vez de escondê-las.
+    cidId: str
 
 
 class Hierarquia(BaseModel):

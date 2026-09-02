@@ -1,10 +1,14 @@
 """Leitura de `input.*` — o cadastro que alimenta a simulação.
 
-O recorte é sempre a UNIDADE, e ele desce pela hierarquia:
+A hierarquia é `regional → diretoria → unidade → empresa → cidade → sistema`.
+O recorte é sempre a UNIDADE, e ele desce dela para baixo:
 
     unidade_regional → empresa → cidade_empresa → cidade
                      → cidade_sistema → sistema_topologia
                      → subbacia_operacional / cts_operacional / ete_capex
+
+Os dois níveis ACIMA da unidade (`regional`, `diretoria`) não entram no recorte:
+eles são o caminho até ela, e quem escolhe a unidade já passou por eles.
 
 Não há coluna `unidade_id` nas tabelas de baixo: quem pertence a quem sai do
 encadeamento de FKs. Por isso quase toda consulta aqui carrega o mesmo CTE de
@@ -78,15 +82,38 @@ def _cidades_cte() -> str:
 
 # ---------------------------------------------------------------- organização
 async def regionais() -> list[dict[str, Any]]:
-    """As regionais, deduzidas de `unidade_regional`.
+    """As regionais que TÊM unidade, deduzidas de `unidade_regional`.
 
-    Não há tabela de regional: a coluna `regional_id`/`regional_name` vive junto da
-    unidade. `DISTINCT` em vez de uma tabela própria é o que o esquema permite.
+    Existe `input.regional`, e mesmo assim a lista sai daqui: uma regional sem
+    unidade nenhuma não é escolhível — a tela seguinte abriria vazia, e a pessoa
+    voltaria sem saber o que fez de errado. `DISTINCT` na unidade responde
+    "regionais em que há o que abrir", que é a pergunta da tela.
     """
     linhas = await db.buscar(
         f"""SELECT DISTINCT regional_id AS id, regional_name AS nome
               FROM {_i()}.unidade_regional
              WHERE regional_id IS NOT NULL ORDER BY 2"""
+    )
+    return [dict(l) for l in linhas]
+
+
+async def diretorias(regional_id: str) -> list[dict[str, Any]]:
+    """As diretorias da regional que têm unidade — mesma regra de `regionais`.
+
+    A DIRETORIA É O NÍVEL ENTRE A REGIONAL E A UNIDADE (migração 017):
+    regional → diretoria → unidade → empresa → cidade → sistema.
+
+    Sai de `unidade_regional`, e não de `input.diretoria`, pela razão de
+    `regionais`: uma diretoria sem unidade abriria uma tela vazia. E o `JOIN` na
+    unidade é o que faz o recorte por concessão da rota funcionar sem uma
+    segunda regra — quem enxerga a unidade enxerga a diretoria dela.
+    """
+    linhas = await db.buscar(
+        f"""SELECT DISTINCT diretoria_id AS id, diretoria_name AS nome
+              FROM {_i()}.unidade_regional
+             WHERE regional_id = $1 AND diretoria_id IS NOT NULL
+             ORDER BY 2""",
+        regional_id,
     )
     return [dict(l) for l in linhas]
 
@@ -156,7 +183,8 @@ def _resumo(c: dict[str, Any]) -> dict[str, int]:
 
 async def unidade(unidade_id: str) -> dict[str, Any] | None:
     base = await db.buscar_um(
-        f"""SELECT unidade_id, unidade_name, regional_id, regional_name, wacc_medio
+        f"""SELECT unidade_id, unidade_name, regional_id, regional_name,
+                   diretoria_id, diretoria_name, wacc_medio
               FROM {_i()}.unidade_regional WHERE unidade_id = $1""",
         unidade_id,
     )
@@ -209,6 +237,10 @@ async def unidade(unidade_id: str) -> dict[str, Any] | None:
     return {
         "id": base["unidade_id"],
         "regionalId": base["regional_id"],
+        # NULO ATRAVESSA em vez de virar texto vazio: a diretoria pode ainda não
+        # ter chegado na carga, e `""` diria que ela existe e não tem nome.
+        "diretoriaId": base["diretoria_id"],
+        "diretoriaNome": base["diretoria_name"],
         "nome": base["unidade_name"],
         "waccMedio": base["wacc_medio"],
         "resumo": _resumo(c),
@@ -219,7 +251,8 @@ async def unidade(unidade_id: str) -> dict[str, Any] | None:
 
 # ------------------------------------------------------------------- fichas
 async def hierarquia(unidade_id: str) -> dict[str, Any]:
-    """Grupo 01 — a arvore inteira, cinco niveis.
+    """Grupo 01 — a arvore inteira, seis niveis:
+    `regional > diretoria > unidade > empresa > cidade > sistema`.
 
     OS NOMES SAO OS DO FRONT, e sao curtos: `rid`/`uid`/`empId`/`cidId`/`sis`/
     `jus`, como declarados em `cadastro/domain/hierarquia.ts`. Renomear um deles
@@ -233,7 +266,8 @@ async def hierarquia(unidade_id: str) -> dict[str, Any]:
     # resposta inteira), e `str(True)` em Python daria `'True'` — o front
     # compararia com `'true'` e acharia que a unidade nao usa CTS, calado.
     u = await db.buscar_um(
-        f"""SELECT regional_id, regional_name, unidade_id, unidade_name, wacc_medio,
+        f"""SELECT regional_id, regional_name, diretoria_id, diretoria_name,
+                   unidade_id, unidade_name, wacc_medio,
                    CASE WHEN usa_macrorregiao_cts THEN 'true' ELSE 'false' END AS usa_cts
               FROM {_i()}.unidade_regional WHERE unidade_id = $1""",
         unidade_id,
@@ -241,6 +275,11 @@ async def hierarquia(unidade_id: str) -> dict[str, Any]:
     unid = {
         "rid": u.get("regional_id") or "",
         "rnome": u.get("regional_name") or "",
+        # A DIRETORIA entre a regional e a unidade (migração 017). Aqui vazio, e
+        # não nulo: o contrato do Grupo 01 é "tudo string", e a tela chama
+        # `.trim()` no que recebe.
+        "did": u.get("diretoria_id") or "",
+        "dnome": u.get("diretoria_name") or "",
         "uid": u.get("unidade_id") or "",
         "unome": u.get("unidade_name") or "",
         "waccMedio": pt_br(u.get("wacc_medio")),
@@ -297,28 +336,57 @@ async def hierarquia(unidade_id: str) -> dict[str, Any]:
     )
     # COMPONENTE SEM SISTEMA — cadastrado, ainda nao colocado em lugar nenhum.
     #
-    # NAO e recortado por unidade, e nao poderia ser: sem sistema nao ha cidade,
-    # nao ha empresa, nao ha unidade. E o modelo real do produto — do
-    # Databricks vem quais sub-bacias e qual ETE sao do sistema, e TODAS as CTS
-    # cadastradas; em que sistema cada CTS entra e a Regional que decide, e ela
-    # pode colocar qualquer uma que exista na base.
+    # RECORTADO PELA UNIDADE, e isto e uma correcao. O comentario aqui dizia que
+    # o recorte era impossivel — "sem sistema nao ha cidade, nao ha empresa, nao
+    # ha unidade" — e por isso a resposta trazia TODAS as CTS da base, para
+    # qualquer unidade. A premissa era falsa: a fonte sempre soube onde a CTS
+    # esta (o extrato de portfolio traz CIDADE e CTS na mesma linha). Quem tinha
+    # perdido a informacao era o esquema, e a migracao 018 a devolveu em
+    # `cts_operacional.cidade_id`.
+    #
+    # O que a falta de recorte custava: das 151 CTS soltas da base, TODAS sao de
+    # uma unidade so. As outras quatro unidades recebiam as 151 assim mesmo —
+    # uma lista inteira de candidatas que nao podiam ser colocadas ali sem erro,
+    # e nenhuma indicacao de qual era qual.
+    #
+    # CIDADE DESCONHECIDA NAO SOME. `cidade_id` e nulavel (a carga pode nao ter
+    # trazido), e escondê-la deixaria uma CTS que existe no banco sem forma
+    # nenhuma de ser colocada. Ela vem, com `cidId` vazio, e a tela a mostra
+    # separada — o mesmo tratamento das unidades sem diretoria.
+    #
+    # O RECORTE SO ALCANCA CTS, e o `c.cts IS NULL` diz isso em vez de deixar
+    # acontecer. Sub-bacia e ETE nao tem coluna de cidade em lugar nenhum: se um
+    # dia uma ficar sem sistema, nao ha por onde recorta-la, e ela aparece para
+    # todas as unidades. Sem esta linha o efeito era o mesmo, mas POR ACIDENTE —
+    # `c.cidade_id IS NULL` e verdadeiro para quem nem esta em `cts_operacional`,
+    # e a consulta parecia recortar o que nao recortava. Hoje a lista e 100% CTS,
+    # entao isto e sobre a proxima pessoa a ler a consulta, nao sobre um defeito
+    # visivel.
     #
     # `tipo` viaja junto porque a tela precisa rotular a lista, e a natureza do
     # componente nao esta na topologia: ela e a tabela em que ele tem ficha.
+    # `cidId` viaja junto porque e por ele que a tela recorta o seletor para a
+    # cidade do sistema que esta sendo montado.
     sem_sistema = await db.buscar(
-        f"""SELECT t.componente_sistema_id AS id,
+        f"""WITH cid AS ({_cidades_cte()})
+            SELECT t.componente_sistema_id AS id,
                    t.componente_sistema_nome AS nome,
                    CASE WHEN e.ete_id IS NOT NULL THEN 'ete'
                         WHEN c.cts    IS NOT NULL THEN 'cts'
                         WHEN b.sub_bacia IS NOT NULL THEN 'sub-bacia'
-                        ELSE '' END AS tipo
+                        ELSE '' END AS tipo,
+                   c.cidade_id AS "cidId"
               FROM {_i()}.sistema_topologia t
               LEFT JOIN {_i()}.ete_capex e ON e.ete_id = t.componente_sistema_id
               LEFT JOIN {_i()}.cts_operacional c ON c.cts = t.componente_sistema_id
               LEFT JOIN {_i()}.subbacia_operacional b
                      ON b.sub_bacia = t.componente_sistema_id
              WHERE t.sistema_id IS NULL
-             ORDER BY 3, 2, 1"""
+               AND (c.cts IS NULL
+                    OR c.cidade_id IS NULL
+                    OR c.cidade_id IN (SELECT cidade_id FROM cid))
+             ORDER BY 3, 2, 1""",
+        unidade_id,
     )
 
     def txt(linhas):

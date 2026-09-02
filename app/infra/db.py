@@ -184,6 +184,12 @@ _EXIGIDO_NULAVEL = [
 #: erro precisa dizer isso em vez de aparecer no meio de um 500.
 _EXIGIDO_COLUNA = [
     ("input", "unidade_regional", "usa_macrorregiao_cts", "016_cts_por_unidade.sql"),
+    #: Mesma razao: a leitura do Grupo 01 seleciona a coluna, e num banco onde a
+    #: 017 nao rodou o erro precisa dizer isso.
+    ("input", "unidade_regional", "diretoria_id", "017_diretoria.sql"),
+    #: E a 018: sem `cidade_id` a lista de CTS sem sistema nao tem como ser
+    #: recortada, e `GET /hierarquia` responde 500 na consulta.
+    ("input", "cts_operacional", "cidade_id", "018_onde_a_cts_esta.sql"),
 ]
 
 

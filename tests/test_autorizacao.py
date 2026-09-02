@@ -35,6 +35,8 @@ RECORTE_PROPRIO = {
     "/api/runs": "resultados.historico filtra por dono; simulacao.criar chama exigir_unidade",
     "/api/regionais": "cadastro.regionais filtra pelas unidades acessiveis",
     "/api/regionais/{regional_id}/unidades": "cadastro.unidades filtra a lista",
+    "/api/regionais/{regional_id}/diretorias":
+        "cadastro.diretorias sai de unidade_regional; o handler cruza com as unidades concedidas",
 }
 
 #: Rotas sem dado de nenhuma unidade — nao ha o que recortar.
