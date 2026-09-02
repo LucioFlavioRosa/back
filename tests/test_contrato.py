@@ -111,11 +111,12 @@ FORMAS_DO_CONTRATO = {
     # confere o desenho final, com as mesmas regras. As de um componente por vez
     # ficam: sao o caminho certo para mexer numa linha so.
     "PUT /unidades/{}/topologia",
-    # O que o SISTEMA declara sobre si — hoje so `usaCts`: marcado, ele aceita uma
-    # CTS; desmarcado, varias. E regra de cadastro, e nao de simulacao (o motor
-    # nunca contou CTS por sistema). O NOME do sistema nao entra: vem do
-    # Databricks e nao tem rota de escrita, como o resto dos nomes do Grupo 01.
-    "PUT /unidades/{}/sistemas/{}",
+    # O que a UNIDADE declara sobre si — hoje so `usaCts`: marcada, CADA sistema
+    # dela aceita uma CTS; desmarcada, aceitam varias. E regra de cadastro, e nao
+    # de simulacao (o motor nunca contou CTS por sistema). Era uma rota por
+    # sistema ate a migracao 016. O NOME e o WACC nao entram: vem do Databricks e
+    # nao tem rota de escrita, como o resto dos nomes do Grupo 01.
+    "PUT /unidades/{}",
 }
 
 

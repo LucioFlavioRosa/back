@@ -184,14 +184,14 @@ def problemas_do_sistema(
             + ", ".join(repr(e) for e in no_sistema)
             + "). Um sistema tem uma ETE só."
         )
-    # UMA CTS POR SISTEMA, quando o sistema declara usar sistema de CTS. A regra e
-    # do CADASTRO, e nao do motor — para ele uma ou duas CTS sao nos como
-    # quaisquer outros.
+    # UMA CTS POR SISTEMA, quando a unidade usa macrorregiao de CTS. A regra e do
+    # CADASTRO, e nao do motor — para ele uma ou duas CTS sao nos como quaisquer
+    # outros.
     if usa_cts and len(cts_aqui := sorted(ctss & set(escoa))) > 1:
         problemas.append(
-            f"O sistema {sistema_id!r} está marcado como sistema de CTS e ficaria "
+            f"A unidade usa macrorregião de CTS, e o sistema {sistema_id!r} ficaria "
             f"com {len(cts_aqui)} (" + ", ".join(repr(c) for c in cts_aqui) + "). "
-            "Desmarque a opção no sistema para ter mais de uma CTS."
+            "Desmarque a opção na unidade para ter mais de uma CTS por sistema."
         )
     return problemas
 

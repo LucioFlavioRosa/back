@@ -299,20 +299,31 @@ async def salvar_topologia_em_lote(
     )
 
 
-@router.put("/unidades/{unidade_id}/sistemas/{sistema_id}", response_model=formas.Gravacao, response_model_exclude_unset=True)
-async def salvar_sistema(
-    unidade_id: str, sistema_id: str, corpo: Corpo, usuario: Usuario
+@router.put("/unidades/{unidade_id}", response_model=formas.Gravacao, response_model_exclude_unset=True)
+async def salvar_unidade(
+    unidade_id: str, corpo: Corpo, usuario: Usuario
 ) -> dict[str, Any]:
-    """Grupo 01 — o que o sistema declara sobre si: `{"usaCts": true|false}`.
+    """Grupo 01 — o que a unidade declara sobre si.
 
-    Marcado, o sistema aceita **uma** CTS; desmarcado, aceita várias. É regra de
-    cadastro, e não de simulação: o motor nunca contou CTS por sistema.
+    `{"usaCts": true|false, "waccMedio": "0,0945"}` — as duas chaves são
+    opcionais, e **só o que vem é escrito**: chave ausente deixa a coluna como
+    está, nunca a apaga. Corpo sem nenhuma das duas responde 422.
 
-    O nome do sistema NÃO entra aqui — ele vem do Databricks e não tem rota de
-    escrita, como o resto dos nomes do Grupo 01.
+    `usaCts` marcada: a unidade usa **macrorregião de CTS**, e cada sistema dela
+    aceita uma CTS; desmarcada, aceitam várias. É regra de cadastro, e não de
+    simulação: o motor nunca contou CTS por sistema. Era uma rota por SISTEMA
+    (`PUT /unidades/{id}/sistemas/{id}`) — a decisão passou a ser da unidade e
+    vale para todos os sistemas dentro dela. Marcar com algum sistema de duas CTS
+    responde **422** nomeando quais são.
+
+    `waccMedio` em string pt-BR, como todo número do Grupo 01. Vazio grava NULL:
+    campo em branco é ausência, e zero seria uma unidade que desconta a nada.
+
+    O NOME da unidade e o da regional NÃO entram aqui — vêm do Databricks e não
+    têm rota de escrita, como o resto dos nomes do Grupo 01.
     """
-    return await cadastro_escrita.salvar_sistema(
-        unidade_id=unidade_id, sistema_id=sistema_id, corpo=corpo, autor=usuario
+    return await cadastro_escrita.salvar_unidade(
+        unidade_id=unidade_id, corpo=corpo, autor=usuario
     )
 
 

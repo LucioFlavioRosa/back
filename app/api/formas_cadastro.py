@@ -63,6 +63,9 @@ class UnidadeERegional(BaseModel):
     uid: str
     unome: str
     waccMedio: str
+    #: `'true'`/`'false'` minusculo, como todo booleano do Grupo 01. Marcada, cada
+    #: sistema da unidade aceita UMA CTS.
+    usaCts: str
 
 
 class Empresa(BaseModel):
@@ -96,7 +99,6 @@ class SistemaDaHierarquia(BaseModel):
     id: str
     nome: str
     cidId: str
-    usaCts: str
 
 
 class NoDaTopologia(BaseModel):
