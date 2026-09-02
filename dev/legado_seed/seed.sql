@@ -3,7 +3,7 @@ INSERT INTO input.regional_superintendencia VALUES ('sup1','Sup A','u1');
 INSERT INTO input.superintendencia_cidade VALUES ('c_rio','Rio Bonito','sup1');
 INSERT INTO input.cidade_sistema VALUES ('s38','Sistema 38','c_rio');
 INSERT INTO input.sistema_topologia (componente_sistema_id, componente_sistema_nome, sistema_id, componente_sistema_id_jusante) VALUES ('b38_1','Sub-bacia 38.1','s38',NULL);
-INSERT INTO input.cidade_operacional (cidade_id, unidade_cobertura) VALUES ('c_rio','ligacoes');
+INSERT INTO input.cidade_operacional (cidade_id) VALUES ('c_rio');
 INSERT INTO input.subbacia_operacional (sub_bacia, preco_por_ligacao, universo_ligacoes, ligacoes_atuais) VALUES ('b38_1', 1850, 300, 100);
 INSERT INTO input.metas_cobertura VALUES ('c_rio', 2030, 0.4);
 INSERT INTO input.fator_esgoto VALUES ('c_rio','Rio Bonito', 0.4, 0.72);
