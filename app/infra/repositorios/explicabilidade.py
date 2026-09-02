@@ -327,7 +327,8 @@ async def cenario_anual(run_id: str) -> dict[str, Any] | None:
                 -- "quanto custaria". Sao 560 obras de CAPEX zero — o dinheiro nao
                 -- mudava, mas a CONTAGEM mudava, e duas telas da mesma rodada
                 -- diriam numeros diferentes para a mesma pergunta.
-                SELECT obra_id, no, sistema, capex, construida, elo_que_trava, mes_inicio
+                SELECT obra_id, no, sistema, capex, componente, construida,
+                       elo_que_trava, mes_inicio
                   FROM {esq}.otim_obra
                  WHERE run_id = $1 AND necessaria
                    AND (construida OR categoria_motivo <> 'Terceiro (pre-requisito)')
@@ -360,17 +361,18 @@ async def cenario_anual(run_id: str) -> dict[str, Any] | None:
             SELECT
               (SELECT COALESCE(SUM(capex), 0) FROM o WHERE construida) AS capex_plano,
               (SELECT COUNT(*) FROM o WHERE construida)                AS obras_plano,
-              f.positivo, COUNT(*) AS obras, COALESCE(SUM(f.capex), 0) AS capex
+              f.positivo, f.componente,
+              COUNT(*) AS obras, COALESCE(SUM(f.capex), 0) AS capex
               FROM (
-                SELECT f.obra_id, f.capex,
+                SELECT f.obra_id, f.capex, f.componente,
                        COALESCE(BOOL_OR(sb.pot_saldo_rateado > 0), FALSE) AS positivo
                   FROM o f
                   LEFT JOIN serve s ON s.obra_id = f.obra_id
                   LEFT JOIN sb ON sb.sub_bacia = s.sub_bacia
                  WHERE NOT f.construida
-                 GROUP BY f.obra_id, f.capex
+                 GROUP BY f.obra_id, f.capex, f.componente
               ) f
-             GROUP BY f.positivo""",
+             GROUP BY f.positivo, f.componente""",
         run_id,
     )
 
@@ -380,6 +382,23 @@ async def cenario_anual(run_id: str) -> dict[str, Any] | None:
     falta_toda = sum(float(l["capex"]) for l in linhas)
     obras_paga = sum(int(l["obras"]) for l in linhas if l["positivo"])
     obras_toda = sum(int(l["obras"]) for l in linhas)
+
+    #: POR TIPO DE ELEMENTO, e na MESMA regra de rateio do total: cada
+    #: componente entra no ano com o peso daquele ano. Sem isso, a barra
+    #: empilhada nao somaria o valor que o proprio quadro anuncia.
+    #:
+    #: A ORDEM E POR CAPEX, decrescente, e nao alfabetica: a fatia maior embaixo
+    #: da barra e a que se le primeiro, e e ela que responde "de que este
+    #: dinheiro e feito".
+    por_comp: dict[str, dict[str, float]] = {}
+    for l in linhas:
+        c = por_comp.setdefault(
+            casc.nome_componente(l["componente"]), {"queSePaga": 0.0, "todas": 0.0}
+        )
+        c["todas"] += float(l["capex"])
+        if l["positivo"]:
+            c["queSePaga"] += float(l["capex"])
+    componentes = sorted(por_comp.items(), key=lambda kv: kv[1]["todas"], reverse=True)
 
     por_ano = await db.buscar(
         f"""SELECT FLOOR(mes_inicio / 12)::int AS ano_rel,
@@ -406,6 +425,14 @@ async def cenario_anual(run_id: str) -> dict[str, Any] | None:
                 # escala maior. Ver o docstring para por que não é por obra.
                 "faltaQueSePaga": falta_paga * peso,
                 "faltaTodas": falta_toda * peso,
+                "porComponente": [
+                    {
+                        "componente": nome,
+                        "queSePaga": v["queSePaga"] * peso,
+                        "todas": v["todas"] * peso,
+                    }
+                    for nome, v in componentes
+                ],
             }
         )
 

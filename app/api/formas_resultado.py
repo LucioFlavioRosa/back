@@ -381,6 +381,18 @@ class EloQueTrava(BaseModel):
     vazaoLiberada: float
 
 
+class ComponenteNoAno(BaseModel):
+    """Quanto de cada TIPO de elemento entraria naquele ano.
+
+    Rateado com o mesmo peso do total do ano — sem isso a barra empilhada nao
+    somaria o valor que o proprio quadro anuncia.
+    """
+
+    componente: str
+    queSePaga: float
+    todas: float
+
+
 class AnoDoCenario(BaseModel):
     """Um ano da janela: o que o plano faz nele, e o que faltaria investir."""
 
@@ -392,6 +404,9 @@ class AnoDoCenario(BaseModel):
     #: escala maior. Nao e otimizacao, e a tela diz isso.
     faltaQueSePaga: float
     faltaTodas: float
+    #: Ordenado por CAPEX decrescente: a fatia maior fica embaixo da barra, que
+    #: e onde a leitura comeca.
+    porComponente: list[ComponenteNoAno]
 
 
 class EscopoDoCenario(BaseModel):
