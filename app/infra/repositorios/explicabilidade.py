@@ -409,7 +409,18 @@ async def cenario_anual(run_id: str) -> dict[str, Any] | None:
         run_id,
     )
     ano0 = janela[0][0]
-    plano_do_ano = {ano0 + int(l["ano_rel"]) - 1: l for l in por_ano}
+    #: `mes_inicio` 0 E O PRIMEIRO ANO DA JANELA, e nao o anterior.
+    #:
+    #: Havia um `- 1` aqui, e ele deslocava o CAPEX do plano um ano inteiro para
+    #: tras na tabela do quadro. Medido no run_20260901_145746_581dc6 contra
+    #: `data_inicio`, que e a data que o motor grava: com o `- 1`, as 299 obras
+    #: construidas caiam no ano errado; sem ele, nenhuma.
+    #:
+    #: Nao e obvio porque a janela descarta o ano-base (orcamento 0.0), e a
+    #: intuicao e que descartar um ano exige recuar um. Nao exige: `mes_inicio`
+    #: conta a partir do primeiro ano COM orcamento, que e exatamente
+    #: `janela[0]`.
+    plano_do_ano = {ano0 + int(l["ano_rel"]): l for l in por_ano}
 
     anos = []
     for ano, orcado in janela:
