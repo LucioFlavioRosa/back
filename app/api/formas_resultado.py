@@ -328,18 +328,47 @@ class CidadeDetalhe(BaseModel):
 # ===========================================================================
 #  Explicabilidade — "por que o plano não fatura 100%"
 # ===========================================================================
-class SubBaciaPresa(BaseModel):
-    subBaciaId: str
-    cidadeId: str
+class ObraForaDoPlano(BaseModel):
+    """Uma obra que não entrou — as maiores de cada tópico, por CAPEX."""
+
+    obraId: str
+    componente: str
+    cidadeId: str | None
     sistemaId: str | None
-    vazaoPresa: float
+    #: O nó que a obra atende. Vazio nas de transporte, que não têm nó próprio.
+    subBaciaId: str | None
+    capex: float
+    #: Ligações que a obra traria. ZERO em obra de transporte — é a regra do
+    #: domínio: só ligação e CTS faturam, o resto é CAPEX e OPEX que existe para
+    #: o esgoto chegar à ETE.
+    ligacoes: float
 
 
-class CategoriaDaExplicabilidade(BaseModel):
-    categoria: str
-    subbacias: int
-    vazaoPresa: float
-    itens: list[SubBaciaPresa]
+class ComponenteDoTopico(BaseModel):
+    """Quantas obras de cada TIPO o tópico tem — a leitura de dentro dele."""
+
+    componente: str
+    obras: int
+    capex: float
+
+
+class TopicoDaExplicabilidade(BaseModel):
+    """Um dos três motivos de uma obra não entrar, agrupado pelo que se faz nele.
+
+    `topico` é o CÓDIGO (`orcamento` | `nao_se_paga` | `depende` | `outros`), e
+    não o rótulo: a tela escreve a frase em português, e mudar texto de tela não
+    pode mudar contrato. `outros` é válvula — categoria nova do motor aparece
+    nele em vez de sumir do agregado.
+    """
+
+    topico: str
+    obras: int
+    capex: float
+    ligacoes: float
+    porComponente: list[ComponenteDoTopico]
+    #: As dez de maior CAPEX. NÃO é a lista completa, e a tela diz isso: mandar
+    #: as 6.765 trocaria uma tela pesada por uma ilegível.
+    maiores: list[ObraForaDoPlano]
 
 
 class EloQueTrava(BaseModel):
@@ -352,10 +381,102 @@ class EloQueTrava(BaseModel):
     vazaoLiberada: float
 
 
+class ComponenteNoAno(BaseModel):
+    """Quanto de cada TIPO de elemento entraria naquele ano.
+
+    Rateado com o mesmo peso do total do ano — sem isso a barra empilhada nao
+    somaria o valor que o proprio quadro anuncia.
+    """
+
+    componente: str
+    #: O codigo do banco (`tro`, `rede`...). A tela usa para pedir as obras
+    #: daquele tipo em `/obras?componente=`.
+    codigo: str
+    queSePaga: float
+    todas: float
+
+
+class AnoDoCenario(BaseModel):
+    """Um ano da janela: o que o plano faz nele, e o que faltaria investir."""
+
+    ano: int
+    orcado: float
+    noPlano: float
+    obrasNoPlano: int
+    #: O que falta, rateado pelo PESO deste ano no orcamento atual — mesma forma,
+    #: escala maior. Nao e otimizacao, e a tela diz isso.
+    faltaQueSePaga: float
+    faltaTodas: float
+    #: Ordenado por CAPEX decrescente: a fatia maior fica embaixo da barra, que
+    #: e onde a leitura comeca.
+    porComponente: list[ComponenteNoAno]
+
+
+class EscopoDoCenario(BaseModel):
+    """Quanto falta, em tres reguas da mesma coisa.
+
+    `fator` responde "de quantas vezes teria de ser o orcamento"; `anos` responde
+    "quantos anos ao ritmo de hoje". Sao o mesmo numero — e ter os dois e o que
+    faz a ideia atravessar para quem nao lida com orcamento todo dia.
+    """
+
+    obras: int
+    capex: float
+    fator: float
+    anosAoRitmoDeHoje: float
+
+
+class PodemComecarCedo(BaseModel):
+    """Quantas das obras que ficaram fora poderiam comecar JA no primeiro ano.
+
+    E o que sobrou da pergunta "sem teto, o que entra em cada ano?": a resposta
+    nao dava grafico (quase tudo no primeiro ano, e tres anos vazios), mas da
+    frase — e a frase e o achado. Tirado o dinheiro, nao ha nada segurando obra
+    nenhuma: o cronograma do plano e artefato de orcamento, nao de engenharia.
+    """
+
+    obras: int
+    de: int
+
+
+class CenarioAnual(BaseModel):
+    """DE QUANTO TERIA DE SER O ORCAMENTO ANUAL para fazer tudo na MESMA janela.
+
+    Substitui duas perguntas que os dados recusaram: "sem teto, o que entra em
+    cada ano" (6.645 das 7.325 obras podem comecar no primeiro — vira uma torre)
+    e "quantos anos ao ritmo de hoje" (64 — setenta barras nao sao um grafico).
+    Fixada a janela, a resposta cabe em seis barras.
+    """
+
+    anos: list[AnoDoCenario]
+    podemComecarCedo: PodemComecarCedo
+    anosDaJanela: int
+    orcamentoAnualDeHoje: float
+    obrasNoPlano: int
+    capexNoPlano: float
+    queSePaga: EscopoDoCenario
+    todas: EscopoDoCenario
+
+
 class ExplicabilidadeGlobal(BaseModel):
-    naoFaturando: int
-    totalSubbacias: int
-    categorias: list[CategoriaDaExplicabilidade]
+    """As OBRAS que ficaram fora do plano, em três tópicos.
+
+    Era por SUB-BACIA, e a troca não é de rótulo: obra de transporte não tem
+    sub-bacia própria, então 85% do CAPEX que ficou de fora não cabia na lista
+    antiga — 4.531 obras e R$ 4,4 bi invisíveis no maior run publicado.
+
+    `obrasCandidatas` é o denominador (o que o motor considerou), `obrasNoPlano`
+    o que entrou, e `deTerceiros` fica FORA dos tópicos: é obra que acontece e
+    outro paga — não é decisão de investimento do plano.
+    """
+
+    obrasFora: int
+    obrasCandidatas: int
+    obrasNoPlano: int
+    capexFora: float
+    ligacoesFora: float
+    deTerceiros: int
+    topicos: list[TopicoDaExplicabilidade]
     elos: list[EloQueTrava]
 
 

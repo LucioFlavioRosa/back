@@ -322,11 +322,57 @@ async def subbacia(run_id: str, sub_id: str) -> dict[str, Any]:
 async def explicabilidade(run_id: RunPublicado) -> dict[str, Any]:
     """Por que o plano nao conecta 100% — agregado por motivo, nivel global.
 
-    Sem `_ou_404`: uma rodada sem nenhuma sub-bacia presa e uma resposta legitima
-    (`naoFaturando: 0`), e a tela a trata como "nada a explicar". 404 aqui diria
-    que a rodada nao existe.
+    Sem `_ou_404`: uma rodada sem nenhuma obra fora do plano e uma resposta
+    legitima (`obrasFora: 0`), e a tela a trata como "nada a explicar". 404 aqui
+    diria que a rodada nao existe.
     """
     return await explic.explicabilidade(run_id)
+
+
+@router.get("/runs/{run_id}/cenario-anual", response_model=formas.CenarioAnual)
+async def cenario_anual(run_id: RunPublicado) -> dict[str, Any]:
+    """De quanto teria de ser o orcamento anual para fazer tudo na mesma janela.
+
+    Rota propria, e nao um campo da explicabilidade: a explicabilidade responde
+    "o que ficou fora e por que"; esta responde "quanto custaria nao deixar". A
+    tela do nivel 1 usa as duas juntas, e o nivel 2 e 3 so a primeira.
+    """
+    return await _ou_404(await explic.cenario_anual(run_id), "Rodada")
+
+
+@router.get("/runs/{run_id}/cenario-anual/obras", response_model=formas.ObrasPagina)
+async def obras_do_cenario(
+    run_id: RunPublicado,
+    escopo: Annotated[Literal["paga", "todas"], Query()],
+    ano: Annotated[int | None, Query()] = None,
+    componente: Annotated[str | None, Query()] = None,
+    pagina: Annotated[int, Query(ge=1)] = 1,
+    tamanho: Annotated[int, Query(ge=1, le=500)] = 50,
+) -> dict[str, Any]:
+    """As obras de UMA FATIA do cenario anual — o que a barra soma, linha a linha.
+
+    ROTA PROPRIA, e nao `/obras?componente=&ano=`. A lista generica filtra pelo
+    ano em que a obra COMECA, e obra fora do plano nao comeca em ano nenhum: o
+    ano aqui e o que a distribuicao do cenario ATRIBUIU a ela. E `escopo` nao
+    existe na lista generica — foi exatamente por isso que a planilha do chip
+    "so o que se paga" vinha com as obras todas.
+
+    `escopo` e OBRIGATORIO — com default, a chamada sem ele responderia com um
+    recorte plausivel e errado. `ano` e `componente` sao opcionais e somam: sem
+    ano e a janela inteira daquele tipo (o total que o chip mostra), sem
+    componente e a barra inteira daquele ano.
+    """
+    return await _ou_404(
+        await explic.obras_do_cenario(
+            run_id,
+            escopo=escopo,
+            ano=ano,
+            componente=componente,
+            pagina=pagina,
+            tamanho=tamanho,
+        ),
+        "Rodada",
+    )
 
 
 @router.get("/runs/{run_id}/sensibilidade", response_model=formas.Sensibilidade)
@@ -456,6 +502,28 @@ async def explicabilidade_da_cidade(run_id: RunPublicado, cidade_id: str) -> dic
     Aqui o 404 vale — cidade que nao pertence a rodada nao tem explicacao nenhuma.
     """
     return await _ou_404(await explic.explicabilidade(run_id, cidade_id), "Cidade")
+
+
+@router.get(
+    "/runs/{run_id}/sistemas/{sistema_id}/explicabilidade",
+    response_model=formas.ExplicabilidadeGlobal,
+)
+async def explicabilidade_do_sistema(run_id: RunPublicado, sistema_id: str) -> dict[str, Any]:
+    """O mesmo recorte dentro de um sistema — o nivel 3.
+
+    ERA FILTRO NO CLIENTE, e deixou de poder ser. Enquanto a resposta trazia a
+    lista inteira de sub-bacias, cada uma com o `sistemaId` dela, a tela do nivel
+    3 recortava sozinha. A resposta virou AGREGADO por obra, e agregado nao se
+    filtra depois: quem sabe somar por sistema e quem tem as linhas.
+
+    O RECORTE NAO E `otim_obra.sistema` SOZINHO. Obra de transporte vem com esse
+    campo vazio (6.695 das 8.079 do maior run) — e obra de transporte e
+    justamente o assunto deste nivel. O repositorio cai na sub-bacia do no da
+    obra, o mesmo `COALESCE` que a consulta de elos ja fazia.
+    """
+    return await _ou_404(
+        await explic.explicabilidade(run_id, sistema=sistema_id), "Sistema"
+    )
 
 
 # As duas rotas de obra abaixo vem ANTES de `/obras/{obra_id}`, e a ordem e o que
