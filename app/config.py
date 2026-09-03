@@ -22,7 +22,9 @@ class Config(BaseSettings):
 
     # ---------------------------------------------------------------- banco
     postgres_url: str = Field(
-        ...,
+        # SEM `...`: campo sem default JA E obrigatorio no Pydantic v2, e o
+        # ellipsis so repete isso em voz alta. `Field` fica aqui pela descricao,
+        # que e o que aparece no erro de configuracao quando falta a variavel.
         description=(
             "postgresql://user:senha@host:5432/otimizador — o MESMO formato que o job "
             "de producao usa. Nao use `postgresql+psycopg2://`: o psycopg2 do pacote "
@@ -45,7 +47,6 @@ class Config(BaseSettings):
 
     # ---------------------------------------------------------------- fila
     service_bus_conn: str = Field(
-        ...,
         description="Connection string do Service Bus. Vazio so e aceito em teste.",
     )
     fila_simulacoes: str = "otimizacoes"
