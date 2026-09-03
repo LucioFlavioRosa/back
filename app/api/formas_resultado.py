@@ -389,6 +389,9 @@ class ComponenteNoAno(BaseModel):
     """
 
     componente: str
+    #: O codigo do banco (`tro`, `rede`...). A tela usa para pedir as obras
+    #: daquele tipo em `/obras?componente=`.
+    codigo: str
     queSePaga: float
     todas: float
 

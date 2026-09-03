@@ -322,9 +322,9 @@ async def subbacia(run_id: str, sub_id: str) -> dict[str, Any]:
 async def explicabilidade(run_id: RunPublicado) -> dict[str, Any]:
     """Por que o plano nao conecta 100% — agregado por motivo, nivel global.
 
-    Sem `_ou_404`: uma rodada sem nenhuma sub-bacia presa e uma resposta legitima
-    (`naoFaturando: 0`), e a tela a trata como "nada a explicar". 404 aqui diria
-    que a rodada nao existe.
+    Sem `_ou_404`: uma rodada sem nenhuma obra fora do plano e uma resposta
+    legitima (`obrasFora: 0`), e a tela a trata como "nada a explicar". 404 aqui
+    diria que a rodada nao existe.
     """
     return await explic.explicabilidade(run_id)
 
@@ -338,6 +338,41 @@ async def cenario_anual(run_id: RunPublicado) -> dict[str, Any]:
     tela do nivel 1 usa as duas juntas, e o nivel 2 e 3 so a primeira.
     """
     return await _ou_404(await explic.cenario_anual(run_id), "Rodada")
+
+
+@router.get("/runs/{run_id}/cenario-anual/obras", response_model=formas.ObrasPagina)
+async def obras_do_cenario(
+    run_id: RunPublicado,
+    escopo: Annotated[Literal["paga", "todas"], Query()],
+    ano: Annotated[int | None, Query()] = None,
+    componente: Annotated[str | None, Query()] = None,
+    pagina: Annotated[int, Query(ge=1)] = 1,
+    tamanho: Annotated[int, Query(ge=1, le=500)] = 50,
+) -> dict[str, Any]:
+    """As obras de UMA FATIA do cenario anual — o que a barra soma, linha a linha.
+
+    ROTA PROPRIA, e nao `/obras?componente=&ano=`. A lista generica filtra pelo
+    ano em que a obra COMECA, e obra fora do plano nao comeca em ano nenhum: o
+    ano aqui e o que a distribuicao do cenario ATRIBUIU a ela. E `escopo` nao
+    existe na lista generica — foi exatamente por isso que a planilha do chip
+    "so o que se paga" vinha com as obras todas.
+
+    `escopo` e OBRIGATORIO — com default, a chamada sem ele responderia com um
+    recorte plausivel e errado. `ano` e `componente` sao opcionais e somam: sem
+    ano e a janela inteira daquele tipo (o total que o chip mostra), sem
+    componente e a barra inteira daquele ano.
+    """
+    return await _ou_404(
+        await explic.obras_do_cenario(
+            run_id,
+            escopo=escopo,
+            ano=ano,
+            componente=componente,
+            pagina=pagina,
+            tamanho=tamanho,
+        ),
+        "Rodada",
+    )
 
 
 @router.get("/runs/{run_id}/sensibilidade", response_model=formas.Sensibilidade)

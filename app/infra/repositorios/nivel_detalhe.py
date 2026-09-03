@@ -16,6 +16,7 @@ from app.infra.repositorios import cascata as casc
 async def obras(
     run_id: str,
     situacao: str | None = None,
+    obra_ids: list[str] | None = None,
     cidade: str | None = None,
     ano: int | None = None,
     recorte: str | None = None,
@@ -35,6 +36,18 @@ async def obras(
     if situacao:
         args.append(situacao)
         onde.append(f"{casc.SITUACAO_SQL} = ${len(args)}")
+
+    # UMA LISTA EXPLICITA DE OBRAS. Quem pede assim ja SABE quais sao — hoje o
+    # cenario anual, que atribuiu cada obra a um ano em Python e precisa das
+    # linhas completas daquelas e so daquelas. Refazer o criterio em SQL aqui
+    # seria uma segunda implementacao da mesma regra, e a divergencia entre as
+    # duas apareceria como uma barra que nao bate com a planilha dela.
+    #
+    # Lista VAZIA nao e "sem filtro": e um recorte que nao pegou nada, e devolver
+    # a rodada inteira no lugar de zero linhas seria o pior erro possivel aqui.
+    if obra_ids is not None:
+        args.append(obra_ids)
+        onde.append(f"o.obra_id = ANY(${len(args)}::text[])")
     if cidade:
         args.append(cidade)
         onde.append(f"o.cidade = ${len(args)}")

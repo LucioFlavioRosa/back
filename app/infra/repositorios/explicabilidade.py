@@ -12,10 +12,12 @@ telas diferentes" partiria uma leitura só em duas.
 Saiu de `niveis.py`, com o vocabulário comum em `cascata.py`.
 """
 
+import json
 from typing import Any
 
 from app.infra import db
 from app.infra.repositorios import cascata as casc
+from app.infra.repositorios import nivel_detalhe
 from app.dominio import teto as teto_dom
 
 
@@ -98,22 +100,46 @@ async def explicabilidade(
         LEFT JOIN {esq}.otim_subbacia sn
                ON sn.run_id = o.run_id AND sn.sub_bacia = o.no
     """
-    onde = ["o.run_id = $1", "o.necessaria", "NOT o.construida"]
+    #: OS DOIS RECORTES SÃO EXCLUSIVOS, e isto é uma exceção e não um `if`
+    #: silencioso: a consulta principal filtraria os dois, mas a de elos só
+    #: aplica o primeiro — o resultado seria uma tela em que os números de cima
+    #: e a lista de baixo falam de conjuntos diferentes. As rotas de hoje nunca
+    #: passam os dois; quem passar tem de saber que não é suportado.
+    if cidade and sistema:
+        raise ValueError("recorte por cidade e por sistema ao mesmo tempo não é suportado")
+
+    #: O `WHERE` EM PARTES NOMEADAS, e não numa lista de onde depois se remove
+    #: por comparação de texto. `candidatas` precisa do MESMO recorte sem as
+    #: cláusulas de "ficou fora" — era `x not in ("o.necessaria", ...)`, que
+    #: passaria a devolver o denominador errado no dia em que alguém escrevesse
+    #: `o.necessaria = TRUE`. Sem erro, sem teste vermelho: só uma porcentagem
+    #: menor do que deveria.
+    base = ["o.run_id = $1"]
+    fora = ["o.necessaria", "NOT o.construida"]
     args: list = [run_id]
     if cidade:
         args.append(cidade)
-        onde.append(f"o.cidade = ${len(args)}")
+        base.append(f"o.cidade = ${len(args)}")
     if sistema:
         args.append(sistema)
-        onde.append(f"COALESCE(NULLIF(o.sistema, ''), sn.sistema) = ${len(args)}")
-    filtro = " AND ".join(onde)
+        base.append(f"COALESCE(NULLIF(o.sistema, ''), sn.sistema) = ${len(args)}")
+    filtro = " AND ".join(base + fora)
 
     if cidade or sistema:
-        col, val = ("cidade", cidade) if cidade else ("sistema", sistema)
+        #: A EXISTÊNCIA É CONFERIDA NO MESMO UNIVERSO EM QUE SE FILTRA.
+        #:
+        #: Era `otim_subbacia` sozinha, e o filtro real é
+        #: `COALESCE(NULLIF(o.sistema,''), sn.sistema)` sobre `otim_obra` — dois
+        #: conjuntos que nada no schema obriga a coincidir (não há FK de
+        #: `otim_obra.sistema` para lugar nenhum). Nos dados de hoje coincidem;
+        #: no dia em que um sistema existir só em obra, a tela responderia 404
+        #: sobre um recorte que tem obras.
         existe = await db.buscar_um(
-            f"SELECT 1 FROM {esq}.otim_subbacia WHERE run_id = $1 AND {col} = $2 LIMIT 1",
-            run_id,
-            val,
+            f"""SELECT 1
+                  {de_obras}
+                 WHERE {" AND ".join(base)}
+                 LIMIT 1""",
+            *args,
         )
         if not existe:
             return None
@@ -168,7 +194,7 @@ async def explicabilidade(
         f"""SELECT COUNT(*) FILTER (WHERE o.necessaria) AS candidatas,
                    COUNT(*) FILTER (WHERE o.necessaria AND o.construida) AS no_plano
             {de_obras}
-             WHERE {" AND ".join(x for x in onde if x not in ("o.necessaria", "NOT o.construida"))}""",
+             WHERE {" AND ".join(base)}""",
         *args,
     )
 
@@ -266,6 +292,118 @@ async def explicabilidade(
     }
 
 
+async def _obras_fora(run_id: str) -> list[dict[str, Any]]:
+    """As obras que ficaram fora, cada uma com o VPL do conjunto que ela serve.
+
+    Uma consulta só, usada pelo cenário e pela lista que o download leva — e é
+    por isso que ela é uma função: se as duas montassem o recorte por conta
+    própria, o número da barra e a planilha divergiriam sem nada acusar.
+
+    `positivo` é o VPL do CONJUNTO, e não da obra: uma ligação que perde por
+    orçamento arrasta com ela toda a cadeia até a ETE, e é o saldo do conjunto
+    (`otim_subbacia.pot_saldo_rateado`, já rateado pelo motor) que diz se aquilo
+    valia a pena. Por isso a obra herda o veredito do melhor conjunto que serve.
+    """
+    esq = casc.esquema()
+    return await db.buscar(
+        f"""WITH o AS (
+                -- MESMO RECORTE DA EXPLICABILIDADE: obra de terceiro ACONTECE e
+                -- outro paga, entao nao entra em "quanto custaria".
+                SELECT obra_id, no, sistema, cidade, capex, componente, construida,
+                       elo_que_trava
+                  FROM {esq}.otim_obra
+                 WHERE run_id = $1 AND necessaria AND NOT construida
+                   AND categoria_motivo <> 'Terceiro (pre-requisito)'
+            ),
+            todas AS (
+                SELECT obra_id, no, elo_que_trava FROM {esq}.otim_obra WHERE run_id = $1
+            ),
+            sb AS (
+                SELECT sub_bacia, sistema, pot_saldo_rateado
+                  FROM {esq}.otim_subbacia
+                 WHERE run_id = $1 AND NOT faturando
+            ),
+            -- QUEM A OBRA SERVE: o proprio no, todo no que ela destrava, e — na
+            -- ponta da cadeia — o sistema inteiro. A ETE nao tem no proprio: ela
+            -- E o fim do caminho, e sem esta terceira via os 844 modulos ficariam
+            -- sem classificacao, que e R$ 947 Mi somindo da conta.
+            serve AS (
+                SELECT f.obra_id, f.no AS sub_bacia FROM o f
+                 WHERE f.no IS NOT NULL AND f.no <> ''
+                UNION
+                SELECT f.obra_id, t.no FROM o f
+                  JOIN todas t ON t.elo_que_trava = f.obra_id
+                                AND t.no IS NOT NULL AND t.no <> ''
+                UNION
+                SELECT f.obra_id, s2.sub_bacia FROM o f
+                  JOIN sb s2 ON s2.sistema = f.sistema
+                 WHERE f.no IS NULL OR f.no = ''
+            )
+            SELECT f.obra_id, f.componente, f.cidade, f.no,
+                   COALESCE(f.capex, 0) AS capex,
+                   COALESCE(BOOL_OR(sb.pot_saldo_rateado > 0), FALSE) AS positivo
+              FROM o f
+              LEFT JOIN serve s ON s.obra_id = f.obra_id
+              LEFT JOIN sb ON sb.sub_bacia = s.sub_bacia
+             GROUP BY f.obra_id, f.componente, f.cidade, f.no, f.capex
+             ORDER BY COALESCE(f.capex, 0) DESC, f.obra_id""",
+        run_id,
+    )
+
+
+def _distribuir(obras: list[dict[str, Any]], janela: list[tuple[int, float]]) -> dict[str, int]:
+    """Em que ano cada obra entraria — obra a obra, e nao em fatia de porcentagem.
+
+    ERA UM RATEIO. Cada componente tinha o total dele multiplicado pelo peso do
+    ano, o que dava barras certas e uma mentira embaixo: nenhuma obra pertencia a
+    ano nenhum, entao "os troncos de 2029" nao existiam para baixar. Com a
+    atribuicao, cada obra cai em UM ano — e a planilha de uma barra e exatamente
+    o que aquela barra soma.
+
+    A REGRA E MAIOR-PRIMEIRO NO ANO MAIS VAZIO (`LPT`, a heuristica classica de
+    balanceamento): as obras descem por CAPEX e cada uma vai para o ano com mais
+    espaco sobrando em relacao a cota dele. As cotas seguem o PERFIL do orcamento
+    atual — mesma forma, escala maior —, e o resultado fica proximo delas sem
+    quebrar obra em pedacos.
+
+    NAO E UMA OTIMIZACAO, e a tela diz isso. O motor decide sequencia com
+    precedencia, prazo e receita; aqui a pergunta e outra — "de quanto teria de
+    ser o orcamento" —, e para respondê-la basta uma distribuicao que respeite as
+    cotas e nao invente ordem de execucao.
+    """
+    total = sum(v for _, v in janela) or 1.0
+    falta = {ano: sum(o["capex"] for o in obras) * (v / total) for ano, v in janela}
+    onde: dict[str, int] = {}
+    for o in obras:
+        ano = max(falta, key=lambda a: falta[a])
+        onde[o["obra_id"]] = ano
+        falta[ano] -= o["capex"]
+    return onde
+
+
+async def _janela_do_orcamento(run_id: str) -> list[tuple[int, float]]:
+    """Os anos do cenário e a cota de cada um, do orçamento que a rodada publicou.
+
+    ANO COM ORÇAMENTO ZERO NÃO É ANO DA JANELA. O ano-base vem com 0.0, e
+    incluí-lo daria uma barra que promete investimento onde não há nenhum.
+
+    Vazia quando a rodada não publicou orçamento — quem chama devolve `None`.
+    """
+    esq = casc.esquema()
+    meta = await db.buscar_um(
+        f"""SELECT orcamento_por_ano::jsonb AS orc FROM {esq}.otim_meta WHERE run_id = $1""",
+        run_id,
+    )
+    if not meta or not meta["orc"]:
+        return []
+    orc = meta["orc"] if isinstance(meta["orc"], dict) else json.loads(meta["orc"])
+    return sorted(
+        (int(a), float(v))
+        for a, v in orc.items()
+        if isinstance(v, (int, float)) and float(v) > 0
+    )
+
+
 async def cenario_anual(run_id: str) -> dict[str, Any] | None:
     """DE QUANTO TERIA DE SER O ORÇAMENTO ANUAL para fazer tudo na MESMA janela.
 
@@ -283,11 +421,18 @@ async def cenario_anual(run_id: str) -> dict[str, Any] | None:
     do gráfico de obras por ano, e a resposta vira um fator: 11,7x para tudo que
     se paga, 18,4x para todas as obras.
 
-    ## A distribuição segue o PERFIL do plano, e não é escalonamento novo
+    ## Cada obra cai em UM ano — atribuição, e não rateio
 
-    O que falta é rateado entre os anos na proporção do orçamento que a rodada já
-    tem (`otim_meta.orcamento_por_ano`). Não é uma otimização — é a mesma forma,
-    numa escala maior, e a tela diz isso.
+    As cotas seguem o perfil do orçamento que a rodada já tem
+    (`otim_meta.orcamento_por_ano`): mesma forma, escala maior. Mas o que se
+    distribui são as OBRAS, uma a uma (`_distribuir`), e não o valor de cada
+    componente multiplicado pelo peso do ano.
+
+    Era rateio, e o rateio dava barras certas com uma mentira embaixo: nenhuma
+    obra pertencia a ano nenhum, então "os troncos de 2029" não existiam para
+    listar nem para baixar. Com a atribuição, a planilha de uma fatia é
+    exatamente o que aquela fatia soma — e é `obras_do_cenario` que a entrega,
+    reusando esta mesma distribuição para as duas não poderem divergir.
 
     Distribuir pelo `inicio_min_mes` de cada obra seria mais sofisticado e MENOS
     verdadeiro: 91% delas podem começar no primeiro ano, então o resultado seria
@@ -299,108 +444,63 @@ async def cenario_anual(run_id: str) -> dict[str, Any] | None:
     gráficos comparáveis lado a lado.
     """
     esq = casc.esquema()
-    meta = await db.buscar_um(
-        f"""SELECT orcamento_por_ano::jsonb AS orc FROM {esq}.otim_meta WHERE run_id = $1""",
-        run_id,
-    )
-    if not meta or not meta["orc"]:
-        return None
-
-    import json
-
-    orc = meta["orc"] if isinstance(meta["orc"], dict) else json.loads(meta["orc"])
-    #: ANO COM ORÇAMENTO ZERO NÃO É ANO DA JANELA. O ano-base vem com 0.0, e
-    #: incluí-lo daria uma barra que promete investimento onde não há nenhum.
-    janela = sorted(
-        (int(a), float(v))
-        for a, v in orc.items()
-        if isinstance(v, (int, float)) and float(v) > 0
-    )
+    janela = await _janela_do_orcamento(run_id)
     if not janela:
         return None
     total_orcado = sum(v for _, v in janela)
 
-    linhas = await db.buscar(
-        f"""WITH o AS (
-                -- MESMO RECORTE DA EXPLICABILIDADE, e nao "todas as necessarias":
-                -- obra de terceiro ACONTECE e outro paga, entao ela nao entra em
-                -- "quanto custaria". Sao 560 obras de CAPEX zero — o dinheiro nao
-                -- mudava, mas a CONTAGEM mudava, e duas telas da mesma rodada
-                -- diriam numeros diferentes para a mesma pergunta.
-                SELECT obra_id, no, sistema, capex, componente, construida,
-                       elo_que_trava, mes_inicio
-                  FROM {esq}.otim_obra
-                 WHERE run_id = $1 AND necessaria
-                   AND (construida OR categoria_motivo <> 'Terceiro (pre-requisito)')
-            ),
-            todas AS (
-                SELECT obra_id, no, elo_que_trava FROM {esq}.otim_obra WHERE run_id = $1
-            ),
-            sb AS (
-                SELECT sub_bacia, sistema, pot_saldo_rateado
-                  FROM {esq}.otim_subbacia
-                 WHERE run_id = $1 AND NOT faturando
-            ),
-            -- QUEM A OBRA SERVE: o próprio nó, todo nó que ela destrava, e — na
-            -- ponta da cadeia — o sistema inteiro. A ETE não tem nó próprio: ela
-            -- É o fim do caminho, e sem esta terceira via os 844 módulos ficariam
-            -- sem classificação, que é R$ 947 Mi somindo da conta.
-            serve AS (
-                SELECT f.obra_id, f.no AS sub_bacia FROM o f
-                 WHERE NOT f.construida AND f.no IS NOT NULL AND f.no <> ''
-                UNION
-                SELECT f.obra_id, t.no FROM o f
-                  JOIN todas t ON t.elo_que_trava = f.obra_id
-                                AND t.no IS NOT NULL AND t.no <> ''
-                 WHERE NOT f.construida
-                UNION
-                SELECT f.obra_id, s2.sub_bacia FROM o f
-                  JOIN sb s2 ON s2.sistema = f.sistema
-                 WHERE NOT f.construida AND (f.no IS NULL OR f.no = '')
-            )
-            SELECT
-              (SELECT COALESCE(SUM(capex), 0) FROM o WHERE construida) AS capex_plano,
-              (SELECT COUNT(*) FROM o WHERE construida)                AS obras_plano,
-              f.positivo, f.componente,
-              COUNT(*) AS obras, COALESCE(SUM(f.capex), 0) AS capex
-              FROM (
-                SELECT f.obra_id, f.capex, f.componente,
-                       COALESCE(BOOL_OR(sb.pot_saldo_rateado > 0), FALSE) AS positivo
-                  FROM o f
-                  LEFT JOIN serve s ON s.obra_id = f.obra_id
-                  LEFT JOIN sb ON sb.sub_bacia = s.sub_bacia
-                 WHERE NOT f.construida
-                 GROUP BY f.obra_id, f.capex, f.componente
-              ) f
-             GROUP BY f.positivo, f.componente""",
+    obras = await _obras_fora(run_id)
+    plano = await db.buscar_um(
+        f"""SELECT COALESCE(SUM(capex), 0) AS capex, COUNT(*) AS obras
+              FROM {esq}.otim_obra
+             WHERE run_id = $1 AND necessaria AND construida""",
         run_id,
-    )
+    ) or {}
+    capex_plano = float(plano.get("capex") or 0.0)
+    obras_plano = int(plano.get("obras") or 0)
 
-    capex_plano = float(linhas[0]["capex_plano"]) if linhas else 0.0
-    obras_plano = int(linhas[0]["obras_plano"]) if linhas else 0
-    falta_paga = sum(float(l["capex"]) for l in linhas if l["positivo"])
-    falta_toda = sum(float(l["capex"]) for l in linhas)
-    obras_paga = sum(int(l["obras"]) for l in linhas if l["positivo"])
-    obras_toda = sum(int(l["obras"]) for l in linhas)
+    paga = [o for o in obras if o["positivo"]]
+    falta_paga = sum(o["capex"] for o in paga)
+    falta_toda = sum(o["capex"] for o in obras)
+    obras_paga = len(paga)
+    obras_toda = len(obras)
 
-    #: POR TIPO DE ELEMENTO, e na MESMA regra de rateio do total: cada
-    #: componente entra no ano com o peso daquele ano. Sem isso, a barra
-    #: empilhada nao somaria o valor que o proprio quadro anuncia.
-    #:
-    #: A ORDEM E POR CAPEX, decrescente, e nao alfabetica: a fatia maior embaixo
-    #: da barra e a que se le primeiro, e e ela que responde "de que este
-    #: dinheiro e feito".
-    por_comp: dict[str, dict[str, float]] = {}
-    for l in linhas:
-        c = por_comp.setdefault(
-            casc.nome_componente(l["componente"]), {"queSePaga": 0.0, "todas": 0.0}
+    #: DUAS DISTRIBUICOES, uma por escopo, e nao uma filtrada depois. "So o que
+    #: se paga" e um cenario menor: as cotas de cada ano sao outras, e as obras
+    #: se acomodam de outro jeito. Reaproveitar a distribuicao de "todas" e
+    #: filtrar deixaria os anos desbalanceados, com a barra menor num ano e
+    #: quase vazia noutro por acidente de quem saiu.
+    onde = {"todas": _distribuir(obras, janela), "paga": _distribuir(paga, janela)}
+
+    por_ano: dict[int, dict[str, dict[str, float]]] = {
+        ano: {} for ano, _ in janela
+    }
+    ordem: list[tuple[str, str]] = []
+    total_por_comp: dict[str, float] = {}
+    for o in obras:
+        nome = casc.nome_componente(o["componente"])
+        cod = o["componente"]
+        if cod not in total_por_comp:
+            ordem.append((cod, nome))
+            total_por_comp[cod] = 0.0
+        total_por_comp[cod] += o["capex"]
+
+        alvo = por_ano[onde["todas"][o["obra_id"]]].setdefault(
+            cod, {"queSePaga": 0.0, "todas": 0.0}
         )
-        c["todas"] += float(l["capex"])
-        if l["positivo"]:
-            c["queSePaga"] += float(l["capex"])
-    componentes = sorted(por_comp.items(), key=lambda kv: kv[1]["todas"], reverse=True)
+        alvo["todas"] += o["capex"]
+        if o["positivo"]:
+            por_ano[onde["paga"][o["obra_id"]]].setdefault(
+                cod, {"queSePaga": 0.0, "todas": 0.0}
+            )["queSePaga"] += o["capex"]
 
-    por_ano = await db.buscar(
+    #: A ORDEM DOS TIPOS E A MESMA EM TODOS OS ANOS, por CAPEX total decrescente:
+    #: pilha que troca de ordem entre barras nao se compara. E todo tipo aparece
+    #: em todo ano, mesmo com zero — sem isso a fatia sumiria da legenda de um
+    #: ano e a leitura ficaria diferente de barra para barra.
+    ordem.sort(key=lambda c: total_por_comp[c[0]], reverse=True)
+
+    plano_por_ano = await db.buscar(
         f"""SELECT FLOOR(mes_inicio / 12)::int AS ano_rel,
                    COUNT(*) AS obras, COALESCE(SUM(capex), 0) AS capex
               FROM {esq}.otim_obra
@@ -408,7 +508,6 @@ async def cenario_anual(run_id: str) -> dict[str, Any] | None:
              GROUP BY 1""",
         run_id,
     )
-    ano0 = janela[0][0]
     #: `mes_inicio` 0 E O PRIMEIRO ANO DA JANELA, e nao o anterior.
     #:
     #: Havia um `- 1` aqui, e ele deslocava o CAPEX do plano um ano inteiro para
@@ -416,33 +515,33 @@ async def cenario_anual(run_id: str) -> dict[str, Any] | None:
     #: `data_inicio`, que e a data que o motor grava: com o `- 1`, as 299 obras
     #: construidas caiam no ano errado; sem ele, nenhuma.
     #:
-    #: Nao e obvio porque a janela descarta o ano-base (orcamento 0.0), e a
+    #: Nao e obvio porque `janela` descarta o ano-base (orcamento 0.0), e a
     #: intuicao e que descartar um ano exige recuar um. Nao exige: `mes_inicio`
     #: conta a partir do primeiro ano COM orcamento, que e exatamente
     #: `janela[0]`.
-    plano_do_ano = {ano0 + int(l["ano_rel"]): l for l in por_ano}
+    ano0 = janela[0][0]
+    do_plano = {ano0 + int(l["ano_rel"]): l for l in plano_por_ano}
 
     anos = []
     for ano, orcado in janela:
-        peso = orcado / total_orcado
-        no_plano = plano_do_ano.get(ano)
+        no_plano = do_plano.get(ano)
+        fatias = por_ano[ano]
         anos.append(
             {
                 "ano": ano,
                 "orcado": orcado,
                 "noPlano": float(no_plano["capex"]) if no_plano else 0.0,
                 "obrasNoPlano": int(no_plano["obras"]) if no_plano else 0,
-                # O RATEIO É PELO PESO DO ANO no orçamento atual: mesma forma,
-                # escala maior. Ver o docstring para por que não é por obra.
-                "faltaQueSePaga": falta_paga * peso,
-                "faltaTodas": falta_toda * peso,
+                "faltaQueSePaga": sum(v["queSePaga"] for v in fatias.values()),
+                "faltaTodas": sum(v["todas"] for v in fatias.values()),
                 "porComponente": [
                     {
                         "componente": nome,
-                        "queSePaga": v["queSePaga"] * peso,
-                        "todas": v["todas"] * peso,
+                        "codigo": cod,
+                        "queSePaga": fatias.get(cod, {}).get("queSePaga", 0.0),
+                        "todas": fatias.get(cod, {}).get("todas", 0.0),
                     }
-                    for nome, v in componentes
+                    for cod, nome in ordem
                 ],
             }
         )
@@ -493,6 +592,60 @@ async def cenario_anual(run_id: str) -> dict[str, Any] | None:
         },
     }
 
+
+async def obras_do_cenario(
+    run_id: str,
+    escopo: str,
+    ano: int | None = None,
+    componente: str | None = None,
+    pagina: int = 1,
+    tamanho: int = 50,
+) -> dict[str, Any] | None:
+    """AS OBRAS DE UMA FATIA do cenário anual — a lista e a planilha.
+
+    O que a fatia soma é o que esta lista traz, porque as duas saem da MESMA
+    distribuição: `cenario_anual` chama `_obras_fora` + `_distribuir` para
+    desenhar a barra, e esta função chama as duas de novo com os mesmos
+    argumentos. Não há um segundo critério para divergir do primeiro.
+
+    OS TRÊS RECORTES IMPORTAM, e é por isso que os três são obrigatórios no
+    caminho até aqui:
+
+      `escopo` — "só o que se paga" é um cenário MENOR, com cotas anuais
+      próprias; as obras se acomodam de outro jeito. Era o furo antigo: o chip
+      dizia R$ 514,5 Mi e a planilha vinha com R$ 1.210,8 Mi.
+
+      `ano` — cada obra cai em um ano só. Antes o ano era rateio e não
+      selecionava obra nenhuma. `None` é a JANELA INTEIRA, e não "tanto faz": é
+      o que o chip de um tipo mostra (o total dos anos), então é o que o
+      download dele tem de levar.
+
+      `componente` — a fatia clicada. `None` é a barra inteira do ano.
+
+    Cada recorte que a tela oferece existe aqui, e o que o número prometeu é o
+    que o arquivo entrega.
+
+    `None` quando a rodada não publicou orçamento: sem janela não há cenário, e
+    é a mesma resposta que `cenario_anual` dá.
+    """
+    janela = await _janela_do_orcamento(run_id)
+    if not janela:
+        return None
+
+    obras = await _obras_fora(run_id)
+    if escopo == "paga":
+        obras = [o for o in obras if o["positivo"]]
+    onde = _distribuir(obras, janela)
+
+    ids = [
+        o["obra_id"]
+        for o in obras
+        if (ano is None or onde[o["obra_id"]] == ano)
+        and (componente is None or o["componente"] == componente)
+    ]
+    return await nivel_detalhe.obras(
+        run_id, obra_ids=ids, pagina=pagina, tamanho=tamanho
+    )
 
 async def candidatas_do_teto(
     run_id: str,
