@@ -64,7 +64,7 @@ _Avoid_: CTS filha, CTS individual
 **Linha da macrorregião**:
 A linha de `cts_operacional` que REPRESENTA a macrorregião, marcada com
 `e_macrorregiao`. Nasce no instante em que a macrorregião é colocada num sistema,
-com as doze medidas do Databricks já somadas, os `params` vazios e as quatro
+com as medidas do Databricks já somadas, os `params` vazios e as quatro
 obras em branco. É ela que a Regional preenche, que a prontidão cobra e que o
 motor lê como nó — os membros continuam soltos, e é assim que devem ficar.
 _Avoid_: CTS agregada, CTS virtual

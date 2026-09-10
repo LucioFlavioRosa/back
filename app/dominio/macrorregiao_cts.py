@@ -22,11 +22,16 @@ Isso não é economia de código, é o que torna a regra defensável. Somar
 `potencial_crescimento` daria 2,30 num fator que é 1,15. Nenhuma dessas contas
 precisa existir, porque nenhuma dessas colunas é do Databricks.
 
-## As doze que agregam são todas somas
+## O que agrega são todas somas
 
 Receita faturada e arrecadada, ligações e economias (universo, atuais e novas
-obras) e o recorte residencial. Todas medem QUANTIDADE numa área; a área da
-macrorregião é a união das áreas dos membros, e a medida da união é a soma.
+obras) e o recorte residencial — as doze que a tela mostra —, mais
+`populacao_novas_obras`, que ela não mostra. Todas medem QUANTIDADE numa área; a
+área da macrorregião é a união das áreas dos membros, e a medida da união é a
+soma.
+
+A décima terceira é somada ao NASCER e não entra no alarme de divergência: ver
+`COLUNAS_COMPARAVEIS`.
 
 O RECORTE RESIDENCIAL soma ENTRE MEMBROS, e nunca se soma ao total: ele já está
 dentro de `ligacoes_atuais`. É parcela apurada, não estimativa.
@@ -43,6 +48,7 @@ from typing import Any
 
 #: A INTERFACE PÚBLICA deste módulo.
 __all__ = [
+    "COLUNAS_COMPARAVEIS",
     "COLUNAS_DA_REGIONAL",
     "COLUNAS_DE_IDENTIDADE",
     "COLUNAS_QUE_SOMAM",
@@ -54,7 +60,8 @@ __all__ = [
 ]
 
 
-#: As doze colunas do Databricks, na ordem em que a ficha as apresenta.
+#: O que a macrorregião SOMA: as doze medidas que a ficha apresenta, na ordem
+#: delas, mais `populacao_novas_obras` — que a tela não mostra.
 #:
 #: `ligacoes_novas_obras` e `economias_novas_obras` somam como as demais, e o
 #: resultado é honesto — mas o MOTOR as ignora e deriva de `universo - atuais`
@@ -133,7 +140,7 @@ def _cidade_dominante(membros: list[dict[str, Any]]) -> str | None:
 
 
 def agregar(membros: list[dict[str, Any]]) -> dict[str, Any]:
-    """As doze medidas somadas, para uma macrorregião.
+    """As medidas do Databricks somadas, para uma macrorregião.
 
     Devolve SÓ o que agrega. Os `params`, as quatro obras e o `cts` da
     macrorregião entram por quem chama — este módulo não inventa identidade nem
@@ -250,6 +257,21 @@ def livres(
     return sorted(saida, key=lambda m: m["id"])
 
 
+#: O que o ALARME de divergência compara — e é menos do que se soma.
+#:
+#: `populacao_novas_obras` fica de fora, e a razão é a mesma que a mantém em
+#: `NAO_MODELADOS`: a escrita nunca a toca. Ela seria, portanto, a única coluna
+#: capaz de gerar um aviso que a ação recomendada — gravar a ficha de novo — não
+#: conserta, e um alarme que não apaga é um alarme que ensina a ignorar alarmes.
+#:
+#: Ela continua sendo SOMADA quando a macrorregião nasce (`COLUNAS_QUE_SOMAM`):
+#: nascer com o valor certo é diferente de prometer mantê-lo atualizado. E o motor
+#: a deriva de `universo - atuais` de qualquer jeito.
+COLUNAS_COMPARAVEIS = tuple(
+    c for c in COLUNAS_QUE_SOMAM if c != "populacao_novas_obras"
+)
+
+
 #: A FOLGA da comparação de somas, em valor absoluto.
 #:
 #: As colunas de receita são `double precision`, e somar quatro delas em ordens
@@ -278,7 +300,7 @@ def divergencias(
     """
     fresca = agregar(membros)
     fora: dict[str, tuple[Any, Any]] = {}
-    for coluna in COLUNAS_QUE_SOMAM:
+    for coluna in COLUNAS_COMPARAVEIS:
         antes, agora = guardada.get(coluna), fresca.get(coluna)
         if antes is None and agora is None:
             continue

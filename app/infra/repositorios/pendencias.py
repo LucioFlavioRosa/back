@@ -341,7 +341,7 @@ async def _macrorregioes_desatualizadas(unidade_id: str) -> list[dict[str, Any]]
     """
     guardadas = await db.buscar(
         f"""WITH cid AS ({CIDADES_DA_UNIDADE.format(i=_i())})
-            SELECT o.*
+            SELECT o.*, cid.emp_codigo
               FROM {_i()}.cts_operacional o
               JOIN cid ON cid.cidade_id = o.cidade_id
               JOIN {_i()}.sistema_topologia t ON t.componente_sistema_id = o.cts
@@ -361,13 +361,15 @@ async def _macrorregioes_desatualizadas(unidade_id: str) -> list[dict[str, Any]]
         unidade_id,
         [g["cts"] for g in guardadas],
     )
-    por_macro: dict[str, list[dict[str, Any]]] = {}
-    for m in membros:
-        por_macro.setdefault(m["sistema_cts"], []).append(m)
+    # POR PAR, e não por nome: `agrupar` é quem define a chave da macrorregião, e
+    # comparar contra a soma de "todo mundo que tem este `sistema_cts`" mediria a
+    # ficha contra um grupo que pode não ser o dela — o mesmo defeito que
+    # `_somas_de_hoje` tinha.
+    por_macro = macrorregiao_cts.agrupar(membros)
 
     saida: list[dict[str, Any]] = []
     for g in guardadas:
-        grupo = por_macro.get(g["cts"])
+        grupo = por_macro.get((g["cts"], g["emp_codigo"]))
         if not grupo:
             # SEM MEMBRO NENHUM a soma não existe, e não há com o que comparar.
             # Acontece se a recarga tirar a coluna `sistema_cts` de todos eles; a

@@ -893,11 +893,20 @@ async def _quem_aponta_para(con: Any, componente_id: str) -> list[str]:
 
 #: As colunas que a linha da macrorregião recebe ao nascer, na ordem do `INSERT`.
 #:
-#: São as 12 medidas somadas, mais `cidade_id` (a dominante). Os `params` FICAM
-#: NULOS de propósito: são preenchimento da Regional, e a macrorregião nasce com o
-#: mesmo nada de qualquer ficha nova — pendência que a tela vai cobrar, e não um
-#: valor inventado a partir dos membros.
+#: São as medidas somadas (`COLUNAS_QUE_SOMAM`), mais `cidade_id` — a dominante.
+#: Os `params` FICAM NULOS de propósito: são preenchimento da Regional, e a
+#: macrorregião nasce com o mesmo nada de qualquer ficha nova — pendência que a
+#: tela vai cobrar, e não um valor inventado a partir dos membros.
 _COLUNAS_DA_LINHA_NOVA = macrorregiao_cts.COLUNAS_QUE_SOMAM + ("cidade_id",)
+
+
+#: TUDO o que a obra da macrorregião recebe ao nascer: nome e unidade de medida.
+#:
+#: É a fronteira entre vocabulário e medida, e por isso é uma constante e não um
+#: literal dentro do SQL: uma coluna a mais aqui é a base literal voltando, e uma
+#: constante dá onde apontar o teste (`test_obras_do_banco`). Qualquer número
+#: nasce NULO — quem preenche é a Regional.
+COLUNAS_DA_OBRA_NOVA = ("cts", "componente", "unidade")
 
 
 async def _membros_da_macrorregiao(
@@ -934,7 +943,7 @@ async def _membros_da_macrorregiao(
 
 
 async def _somas_de_hoje(con: Any, ficha_id: str) -> dict[str, Any] | None:
-    """As 12 medidas somadas AGORA, ou `None` se a ficha não é uma macrorregião.
+    """As medidas do Databricks somadas AGORA, ou `None` se a ficha não é macro.
 
     Devolve com os nomes do FRONT (`fat`, `ligU`, …), porque é isso que
     `_gravar_coleta` recebe no bloco `db` — assim a gravação, a comparação e a
@@ -950,15 +959,30 @@ async def _somas_de_hoje(con: Any, ficha_id: str) -> dict[str, Any] | None:
     )
     if not linha or not linha["e_macrorregiao"]:
         return None
+    # A CHAVE É O PAR, TAMBÉM AQUI. Somar todo mundo que tem aquele `sistema_cts`
+    # é somar por NOME, e nome não é chave: bastaria uma recarga dar o mesmo nome
+    # a coletores de outra empresa para esta gravação substituir a ficha pela soma
+    # de um grupo que não é o dela. A empresa da macrorregião vem da cidade dela,
+    # e é ela que recorta os membros.
     membros = await con.fetch(
-        f"""SELECT * FROM {_i()}.cts_operacional
-             WHERE sistema_cts = $1 AND NOT e_macrorregiao""",
+        f"""WITH minha AS (
+                SELECT ce.emp_codigo
+                  FROM {_i()}.cts_operacional o
+                  JOIN {_i()}.cidade_empresa ce ON ce.cidade_id = o.cidade_id
+                 WHERE o.cts = $1 AND o.e_macrorregiao
+            )
+            SELECT o.*
+              FROM {_i()}.cts_operacional o
+              JOIN {_i()}.cidade_empresa ce ON ce.cidade_id = o.cidade_id
+              JOIN minha ON minha.emp_codigo = ce.emp_codigo
+             WHERE o.sistema_cts = $1 AND NOT o.e_macrorregiao""",
         ficha_id,
     )
     if not membros:
         # Sem coletor nenhum não há soma. A ficha continua como está — o que ela
         # afirma foi somado um dia, e zerá-la agora apagaria dado por causa de uma
-        # coluna que a origem deixou de mandar.
+        # coluna que a origem deixou de mandar. Quem denuncia esse estado é
+        # `pendencias._macrorregioes_desatualizadas`.
         return None
     somado = macrorregiao_cts.agregar([dict(m) for m in membros])
     return {
@@ -1091,7 +1115,8 @@ async def _preparar_macrorregiao(
     # A ficha nasce, então, com quatro obras em branco — e a prontidão as cobra
     # como cobra as de qualquer componente recém-colocado.
     await con.executemany(
-        f"""INSERT INTO {_i()}.componentes_cts_capex (cts, componente, unidade)
+        f"""INSERT INTO {_i()}.componentes_cts_capex
+                ({", ".join(COLUNAS_DA_OBRA_NOVA)})
             VALUES ($1, $2, $3) ON CONFLICT (cts, componente) DO NOTHING""",
         [(componente_id, nome, unidade) for nome, unidade in OBRAS_DA_CTS],
     )

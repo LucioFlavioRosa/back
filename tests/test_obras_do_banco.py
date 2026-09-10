@@ -172,25 +172,29 @@ def test_a_ordem_e_a_do_caminho_do_esgoto():
 def test_a_obra_da_macrorregiao_nasce_so_com_vocabulario():
     """O `INSERT` que cria as quatro não pode escrever NÚMERO nenhum.
 
-    A versão anterior deste teste conferia que nome e unidade eram `str` — o que
-    passa com qualquer implementação, inclusive uma que gravasse `quantidade` e
-    `preco_unitario` junto. O que interessa é a lista de COLUNAS do `INSERT`: ela
-    é a fronteira entre vocabulário e medida, e é ela que a base literal
-    atravessaria ao voltar.
+    Duas versões deste teste não mordiam. A primeira conferia que nome e unidade
+    eram `str` — o que passa com qualquer implementação, inclusive uma que
+    gravasse `quantidade` junto. A segunda procurava a lista de colunas com regex
+    na fonte: mordia, mas quebrava com qualquer mudança de formatação, e pegaria o
+    `INSERT` errado se outro fosse acrescentado antes.
+
+    A terceira aponta para a CONSTANTE de onde o `INSERT` monta a lista. É a
+    fronteira entre vocabulário e medida escrita num lugar só, e é ela que a base
+    literal atravessaria ao voltar.
     """
+    from app.infra.repositorios.cadastro_escrita import COLUNAS_DA_OBRA_NOVA
+
+    assert set(COLUNAS_DA_OBRA_NOVA) == {"cts", "componente", "unidade"}, (
+        f"a obra da macrorregião passou a nascer com "
+        f"{set(COLUNAS_DA_OBRA_NOVA) - {'cts', 'componente', 'unidade'}}: número que "
+        "ninguém digitou entra na simulação com cara de cadastro."
+    )
+    # E o `INSERT` monta a lista DA CONSTANTE — senão o teste guardaria uma
+    # constante que o código não usa.
     fonte = (
         BACKEND / "app/infra/repositorios/cadastro_escrita.py"
     ).read_text(encoding="utf-8")
-    insert = re.search(
-        r"INSERT INTO \{_i\(\)\}\.componentes_cts_capex \(([^)]*)\)", fonte
-    )
-    assert insert, "o INSERT das obras da macrorregião sumiu ou mudou de forma"
-    colunas = {c.strip() for c in insert.group(1).split(",")}
-    assert colunas == {"cts", "componente", "unidade"}, (
-        f"o INSERT das obras da macrorregião grava {colunas - {'cts', 'componente', 'unidade'}} "
-        "além do vocabulário — número que ninguém digitou entra na simulação com "
-        "cara de cadastro."
-    )
+    assert 'componentes_cts_capex\n                ({", ".join(COLUNAS_DA_OBRA_NOVA)})' in fonte
 
 
 def test_o_backend_nao_tem_mais_base_literal_de_obra():

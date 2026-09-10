@@ -376,6 +376,14 @@ async def hierarquia(unidade_id: str) -> dict[str, Any]:
               LEFT JOIN {_i()}.subbacia_operacional b
                      ON b.sub_bacia = t.componente_sistema_id
              WHERE t.sistema_id IS NULL
+               -- A LINHA DA MACRORREGIÃO NUNCA ENTRA AQUI, marcada a unidade ou
+               -- não. Ela é um AGREGADO: oferecida como coletor comum — o que
+               -- aconteceria com a unidade desmarcada, onde `_macrorregioes_livres`
+               -- nem roda —, poderia ser colocada ao lado dos coletores que ela
+               -- soma, e a rodada contaria as mesmas ligações duas vezes. Marcada
+               -- a unidade, ela volta à lista por `_macrorregioes_livres`, que é o
+               -- único caminho por onde ela deve aparecer.
+               AND NOT coalesce(c.e_macrorregiao, false)
                AND (c.cts IS NULL
                     OR c.cidade_id IS NULL
                     OR c.cidade_id IN (SELECT cidade_id FROM cid))
@@ -888,12 +896,17 @@ async def _macrorregioes_livres(unidade_id: str) -> list[dict[str, Any]]:
                AND NOT o.e_macrorregiao""",
         unidade_id,
     )
+    # RECORTADA PELA UNIDADE, como tudo aqui. Sem o recorte, uma macrorregião de
+    # nome igual colocada NOUTRA unidade apagaria esta da lista — os membros daqui
+    # livres, e a opção sumindo sem nada dizer por quê.
     colocadas = {
         l["cts"]
         for l in await db.buscar(
             f"""SELECT o.cts FROM {_i()}.cts_operacional o
+                  JOIN ({_cidades_cte()}) c ON c.cidade_id = o.cidade_id
                   JOIN {_i()}.sistema_topologia t ON t.componente_sistema_id = o.cts
                  WHERE o.e_macrorregiao AND coalesce(t.sistema_id, '') <> ''""",
+            unidade_id,
         )
     }
     return macrorregiao_cts.livres(macrorregiao_cts.agrupar(membros), colocadas)

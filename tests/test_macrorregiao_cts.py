@@ -13,7 +13,9 @@ from app.dominio.macrorregiao_cts import (
     COLUNAS_DA_REGIONAL,
     COLUNAS_QUE_SOMAM,
     agregar,
+    COLUNAS_COMPARAVEIS,
     agrupar,
+    divergencias,
     livres,
     nomes_ambiguos,
 )
@@ -368,3 +370,71 @@ def test_o_ambiguo_nao_e_fundido_num_grupo_so():
     )
     assert sorted(grupos) == [("MACRO_A", "e1"), ("MACRO_A", "e2")]
     assert [agregar(g)["ligacoes_atuais"] for _k, g in sorted(grupos.items())] == [100, 7]
+
+
+# --------------------------------------------------------------------------
+# O ALARME DE DIVERGÊNCIA
+#
+# Colocada, a ficha não é recalculada na leitura — é ela que a Regional preenche
+# e o motor lê. O preço é ficar para trás numa recarga do Databricks, e estes
+# testes prendem o que o alarme promete: acusar o que a ação recomendada
+# (gravar a ficha de novo) consegue consertar, e só isso.
+# --------------------------------------------------------------------------
+
+
+def _guardada(**kw):
+    """A ficha como está no banco: as somas de quando ela foi colocada.
+
+    O que não se informa fica NULO, e não zero — `divergencias` distingue os dois
+    (ADR 0002), e um fixture que zerasse tudo compararia nulo contra zero em onze
+    colunas e acusaria divergência em toda leitura.
+    """
+    base = {c: None for c in COLUNAS_QUE_SOMAM}
+    return {**base, **kw}
+
+
+def test_ficha_igual_a_soma_de_hoje_nao_diverge():
+    membros = [cts(ligacoes_atuais=10), cts(ligacoes_atuais=5)]
+    assert divergencias(_guardada(ligacoes_atuais=15), membros) == {}
+
+
+def test_membro_que_mudou_aparece_nomeando_a_coluna():
+    membros = [cts(ligacoes_atuais=10), cts(ligacoes_atuais=5)]
+    fora = divergencias(_guardada(ligacoes_atuais=99), membros)
+    assert list(fora) == ["ligacoes_atuais"]
+    assert fora["ligacoes_atuais"] == (99, 15)
+
+
+def test_a_folga_de_um_centavo_engole_ruido_de_ponto_flutuante():
+    """Somar `double precision` em ordens diferentes difere na última casa.
+
+    Um alarme que dispara por isso é um alarme que ensina a ignorar alarmes.
+    """
+    membros = [cts(receita_faturada_media_mensal=0.1) for _ in range(3)]
+    assert divergencias(_guardada(receita_faturada_media_mensal=0.3), membros) == {}
+
+
+def test_um_centavo_e_meio_de_diferenca_ja_aparece():
+    membros = [cts(receita_faturada_media_mensal=100.0)]
+    assert "receita_faturada_media_mensal" in divergencias(
+        _guardada(receita_faturada_media_mensal=100.015), membros
+    )
+
+
+def test_populacao_de_novas_obras_nao_entra_no_alarme():
+    """A única coluna somada que a ESCRITA nunca toca (`NAO_MODELADOS`).
+
+    Acusá-la produziria um aviso que "grave a ficha de novo" não apaga — e um
+    alarme que não apaga ensina a ignorar os outros. Ela continua sendo somada
+    quando a macrorregião NASCE: nascer certa é diferente de prometer manter.
+    """
+    assert "populacao_novas_obras" in COLUNAS_QUE_SOMAM
+    membros = [cts(populacao_novas_obras=1000)]
+    assert divergencias(_guardada(populacao_novas_obras=1), membros) == {}
+
+
+def test_o_alarme_cobre_todo_o_resto_do_que_se_soma():
+    """Coluna nova em `COLUNAS_QUE_SOMAM` entra no alarme sem ninguém lembrar."""
+    assert set(COLUNAS_COMPARAVEIS) == set(COLUNAS_QUE_SOMAM) - {
+        "populacao_novas_obras"
+    }

@@ -93,7 +93,7 @@ existência. Ela:
 1. acha os membros pelo nome, dentro das cidades da unidade;
 2. recusa se o nome pertence a mais de uma empresa;
 3. recusa se algum membro já está em sistema;
-4. cria a linha em `cts_operacional` — as 12 medidas do Databricks **somadas**,
+4. cria a linha em `cts_operacional` — as medidas do Databricks **somadas**,
    `cidade_id` = a do membro com mais ligações, `e_macrorregiao = true`,
    `sistema_cts` NULO (a macrorregião não é membro de si mesma);
 5. cria as **4 obras vazias** em `componentes_cts_capex`;
@@ -247,4 +247,23 @@ sem reclamar.
 A hierarquia passou a marcar a linha com `macro: "true"`, e o seletor deixa a
 macrorregião passar pelo recorte. O `tipo` continua `"cts"`: para montar o sistema
 ela **é** o coletor daquele sistema, e a tela não precisa de palavra nova para
-colocá-la. O campo existe por essa razão só.
+colocá-la. O campo existe por essa razão só, e o rótulo do seletor diz que as
+macrorregiões estão ali — um recorte descrito errado é pior que recorte nenhum,
+porque quem procura entende que a lista está completa.
+
+## O par `(sistema_cts, emp_codigo)` vale em toda consulta
+
+A chave da macrorregião é o par, e consultar por NOME é o defeito que reaparece
+de três formas. Todas as três estão fechadas, e cada uma tinha um estrago
+diferente:
+
+| onde | o que o nome sozinho fazia |
+|---|---|
+| `_somas_de_hoje` (a cura) | gravar a ficha somava coletores de outra empresa dentro dela — medido, 484 viravam 650 |
+| `_macrorregioes_desatualizadas` (o alarme) | comparava a ficha contra um grupo que não é o dela |
+| `_macrorregioes_livres` (a oferta) | uma macrorregião homônima colocada em OUTRA unidade apagava esta da lista |
+
+E a linha da macrorregião **nunca** entra em `semSistema` como coletor comum. Com
+a unidade desmarcada, `_macrorregioes_livres` nem roda: sem essa exclusão, o
+agregado seria oferecido como se fosse um coletor, poderia ser colocado ao lado
+dos coletores que ele soma, e a rodada contaria as mesmas ligações duas vezes.
