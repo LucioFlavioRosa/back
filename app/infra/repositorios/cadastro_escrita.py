@@ -17,7 +17,19 @@ Duas regras atravessam tudo aqui:
 from typing import Any
 
 from app.config import config
-from app.dominio.campos import COLETA, NAO_MODELADOS
+from app.dominio import macrorregiao_cts
+
+# A cardinalidade vem de `pendencias`, e nao de um numero repetido aqui: e a MESMA
+# regua que o `/prontidao` usa para denunciar obra ausente. Duas copias dela
+# fariam a tela dizer que a ficha esta incompleta e o `PUT` aceita-la — ou o
+# contrario, que e pior.
+from app.dominio.campos import (
+    COLETA,
+    NAO_MODELADOS,
+    OBRAS_CTS,
+    OBRAS_DA_CTS,
+    OBRAS_SUBBACIA,
+)
 from app.dominio.erros import FichaDeOutraUnidade, FichaIncompleta, TopologiaInvalida
 from app.dominio.ficha import (
     ETE,
@@ -35,14 +47,9 @@ from app.dominio.topologia import (
     pedido_do_corpo,
     problemas_do_sistema,
 )
-from app.dominio.trilha import Alteracao, REGIONAL, diferencas, origem_do_campo
+from app.dominio.trilha import REGIONAL, Alteracao, diferencas, origem_do_campo
 from app.infra import db
-
-# A cardinalidade vem de `pendencias`, e nao de um numero repetido aqui: e a MESMA
-# regua que o `/prontidao` usa para denunciar obra ausente. Duas copias dela
-# fariam a tela dizer que a ficha esta incompleta e o `PUT` aceita-la — ou o
-# contrario, que e pior.
-from app.dominio.campos import OBRAS_CTS, OBRAS_SUBBACIA
+from app.infra.repositorios.recortes import CIDADES_DA_UNIDADE
 
 
 def _i() -> str:
@@ -397,13 +404,31 @@ async def salvar_coleta(
         # obras e a ficha termina com metade de cada uma.
         await con.execute("SELECT pg_advisory_xact_lock(hashtext($1))", ficha_id)
         exigir_ficha_inteira(corpo)
+        bloco_db = corpo.get("db") or {}
+        if e_cts:
+            # GRAVAR A FICHA DE UMA MACRORREGIÃO REFAZ A SOMA.
+            #
+            # O bloco `db` que chega veio do último `GET`, e o `GET` mostra a linha
+            # gravada — que pode estar para trás de uma recarga do Databricks
+            # (`pendencias._macrorregioes_desatualizadas` é quem avisa). Regravá-lo
+            # como veio devolveria ao banco a soma velha, e a divergência
+            # sobreviveria à única ação que a pessoa tem para corrigi-la.
+            #
+            # As medidas do Databricks não são digitadas: são travadas na tela. Não
+            # há, portanto, nada que a pessoa tenha escrito aqui para ser
+            # descartado — o que se descarta é uma cópia envelhecida do que a base
+            # comercial já diz. A trilha registra a diferença com origem
+            # `databricks`, que é o que ela significa: correção de número que veio
+            # de fora.
+            if (frescas := await _somas_de_hoje(con, ficha_id)) is not None:
+                bloco_db = frescas
         mudancas = await _gravar_coleta(
             con,
             tabela=tabela,
             chave=chave,
             ficha_id=ficha_id,
             params=corpo.get("params") or {},
-            bloco_db=corpo.get("db") or {},
+            bloco_db=bloco_db,
         )
         # `in` e não `or []`: ficha SEM a chave não mexe nas obras; ficha COM a
         # chave e lista vazia apaga todas. São intenções diferentes.
@@ -866,6 +891,232 @@ async def _quem_aponta_para(con: Any, componente_id: str) -> list[str]:
     return [l["id"] for l in linhas]
 
 
+#: As colunas que a linha da macrorregião recebe ao nascer, na ordem do `INSERT`.
+#:
+#: São as 12 medidas somadas, mais `cidade_id` (a dominante). Os `params` FICAM
+#: NULOS de propósito: são preenchimento da Regional, e a macrorregião nasce com o
+#: mesmo nada de qualquer ficha nova — pendência que a tela vai cobrar, e não um
+#: valor inventado a partir dos membros.
+_COLUNAS_DA_LINHA_NOVA = macrorregiao_cts.COLUNAS_QUE_SOMAM + ("cidade_id",)
+
+
+async def _membros_da_macrorregiao(
+    con: Any, unidade_id: str, macro: str
+) -> list[dict[str, Any]]:
+    """Os coletores que formam `macro` nesta unidade — vazio se `macro` não nomeia uma.
+
+    `NOT e_macrorregiao` não é zelo: a própria linha da macrorregião tem
+    `sistema_cts` NULO (migração 021) e já não cairia aqui. A cláusula está escrita
+    porque é ela que garante isso para quem ler a consulta sozinha.
+
+    `colocada` vem junto para a pergunta "está livre?" não precisar de uma segunda
+    ida ao banco dentro da transação já travada.
+
+    `emp_codigo` vem junto porque a chave da macrorregião é o PAR
+    `(sistema_cts, emp_codigo)`: o nome sozinho pode pertencer a duas empresas da
+    unidade, e quem chama precisa saber disso para recusar em vez de somar as
+    duas. Ver `macrorregiao_cts.nomes_ambiguos`.
+    """
+    linhas = await con.fetch(
+        f"""WITH cid AS ({CIDADES_DA_UNIDADE.format(i=_i())})
+            SELECT o.*, cid.emp_codigo,
+                   coalesce(t.sistema_id, '') <> '' AS colocada
+              FROM {_i()}.cts_operacional o
+              JOIN cid ON cid.cidade_id = o.cidade_id
+              LEFT JOIN {_i()}.sistema_topologia t
+                     ON t.componente_sistema_id = o.cts
+             WHERE o.sistema_cts = $2 AND NOT o.e_macrorregiao
+             ORDER BY o.cts""",
+        unidade_id,
+        macro,
+    )
+    return [dict(l) for l in linhas]
+
+
+async def _somas_de_hoje(con: Any, ficha_id: str) -> dict[str, Any] | None:
+    """As 12 medidas somadas AGORA, ou `None` se a ficha não é uma macrorregião.
+
+    Devolve com os nomes do FRONT (`fat`, `ligU`, …), porque é isso que
+    `_gravar_coleta` recebe no bloco `db` — assim a gravação, a comparação e a
+    trilha continuam sendo as de sempre, e não um caminho paralelo.
+
+    `populacao_novas_obras` fica de fora: ela está em `NAO_MODELADOS`, e a escrita
+    nunca a toca. Refrescá-la aqui abriria exceção numa regra que vale para as
+    duas tabelas de coleta, para ganhar uma coluna que o motor deriva de
+    `universo - atuais` de qualquer jeito.
+    """
+    linha = await con.fetchrow(
+        f"SELECT e_macrorregiao FROM {_i()}.cts_operacional WHERE cts = $1", ficha_id
+    )
+    if not linha or not linha["e_macrorregiao"]:
+        return None
+    membros = await con.fetch(
+        f"""SELECT * FROM {_i()}.cts_operacional
+             WHERE sistema_cts = $1 AND NOT e_macrorregiao""",
+        ficha_id,
+    )
+    if not membros:
+        # Sem coletor nenhum não há soma. A ficha continua como está — o que ela
+        # afirma foi somado um dia, e zerá-la agora apagaria dado por causa de uma
+        # coluna que a origem deixou de mandar.
+        return None
+    somado = macrorregiao_cts.agregar([dict(m) for m in membros])
+    return {
+        COLETA[coluna]: valor
+        for coluna, valor in somado.items()
+        if coluna in COLETA and COLETA[coluna] not in NAO_MODELADOS
+    }
+
+
+async def _nomes_de_macrorregiao(con: Any, unidade_id: str) -> set[str]:
+    """Os nomes que, nesta unidade, são de macrorregião — numa consulta só.
+
+    Serve o caminho em LOTE, onde a alternativa é perguntar por componente
+    enviado: o desenho de um sistema chega com dezenas deles, e quase nenhum é
+    macrorregião. Uma ida ao banco responde por todos.
+    """
+    linhas = await con.fetch(
+        f"""SELECT DISTINCT o.sistema_cts AS nome
+              FROM {_i()}.cts_operacional o
+              JOIN ({CIDADES_DA_UNIDADE.format(i=_i())}) c ON c.cidade_id = o.cidade_id
+             WHERE o.sistema_cts IS NOT NULL AND btrim(o.sistema_cts) <> ''
+               AND NOT o.e_macrorregiao""",
+        unidade_id,
+    )
+    return {l["nome"] for l in linhas}
+
+
+async def _preparar_macrorregiao(
+    con: Any, *, unidade_id: str, componente_id: str, autor: str
+) -> None:
+    """A MACRORREGIÃO GANHA LINHA NA HORA EM QUE É COLOCADA NUM SISTEMA.
+
+    Até aqui ela era uma soma calculada na leitura: o Grupo 01 a oferece pelo nome
+    que a origem deu (`sistema_cts`), e não há linha nenhuma com esse id. Colocar
+    exige linha de verdade — as 4 obras são FK para `cts_operacional(cts)`, e o
+    motor lê a ficha do nó na própria tabela.
+
+    CRIAR AGORA, E NÃO AO MARCAR A UNIDADE: marcar é declaração de regime, e
+    materializar dezenas de agregados que talvez ninguém use encheria a base de
+    fichas órfãs — e desmarcar teria de apagá-las, com as obras já preenchidas
+    dentro. Colocada, a macrorregião passou a existir para o cadastro, e a linha é
+    o registro disso.
+
+    SEGUNDA COLOCAÇÃO NÃO RECRIA: a linha já existe, e `_EXISTE_COMPONENTE` a
+    encontra antes de se chegar aqui. Tirar a macrorregião do sistema e devolvê-la
+    conserva os `params` e as obras — que é o que se espera de mudar um componente
+    de lugar.
+
+    NÃO LEVANTA quando `componente_id` não nomeia macrorregião nenhuma: quem
+    responde por id desconhecido é o `_EXISTE_COMPONENTE` de sempre, logo adiante.
+    """
+    membros = await _membros_da_macrorregiao(con, unidade_id, componente_id)
+    if not membros:
+        return
+
+    # A CHAVE É O PAR `(sistema_cts, emp_codigo)`, e a linha guarda UM id.
+    #
+    # Duas empresas da unidade com uma macrorregião de mesmo nome são DUAS
+    # macrorregiões, e `cts_operacional.cts` só comporta uma. Somar as duas
+    # juntaria coletores que empresas diferentes operam — e é exatamente o que
+    # aconteceria em silêncio se este recorte não existisse, porque a busca dos
+    # membros é pelo nome.
+    #
+    # A tela nem chega a oferecer um nome assim (`macrorregiao_cts.livres`); a
+    # recusa aqui é para quem chama a rota direto, e para o dia em que a carga
+    # criar a ambiguidade com a lista já aberta.
+    empresas = sorted({m["emp_codigo"] for m in membros})
+    if len(empresas) > 1:
+        raise TopologiaInvalida(
+            f"{componente_id!r} é o nome de uma macrorregião em mais de uma "
+            f"empresa da unidade (" + ", ".join(repr(e) for e in empresas) + "). "
+            "São macrorregiões diferentes com o mesmo nome, e o cadastro guarda um "
+            "id só — a origem precisa distingui-las antes de elas serem colocadas."
+        )
+
+    # COLISÃO DE NOME. Um coletor do Databricks batizado com o nome de uma
+    # macrorregião faria esta gravação colocar O COLETOR onde a tela ofereceu a
+    # macrorregião — mesmo id, outra coisa. É dado de origem para arrumar, e não
+    # ambiguidade para o servidor resolver sozinho escolhendo um dos dois.
+    homonimo = await con.fetchrow(
+        f"SELECT e_macrorregiao FROM {_i()}.cts_operacional WHERE cts = $1",
+        componente_id,
+    )
+    if homonimo and not homonimo["e_macrorregiao"]:
+        raise TopologiaInvalida(
+            f"{componente_id!r} é ao mesmo tempo o nome de uma macrorregião e o id "
+            "de um coletor do cadastro. Enquanto os dois se chamarem assim, não dá "
+            "para saber qual está sendo colocado."
+        )
+    if homonimo:
+        return
+
+    # LIVRE É "NENHUM MEMBRO COLOCADO", a mesma regra pela qual o Grupo 01 a
+    # ofereceu. A lista já filtra por isso; a checagem existe porque a lista foi
+    # lida antes, e um membro pode ter sido colocado nesse intervalo.
+    if presos := [m["cts"] for m in membros if m["colocada"]]:
+        raise TopologiaInvalida(
+            f"A macrorregião {componente_id!r} não está livre: "
+            + ", ".join(repr(c) for c in presos)
+            + " já está(ão) em sistema. Tire-o(s) do sistema para colocar a "
+            "macrorregião inteira."
+        )
+
+    valores = macrorregiao_cts.agregar(membros)
+    colunas = ("cts", "e_macrorregiao", *_COLUNAS_DA_LINHA_NOVA)
+    lugares = ", ".join(f"${n}" for n in range(1, len(colunas) + 1))
+    await con.execute(
+        f"""INSERT INTO {_i()}.cts_operacional
+                ({", ".join(colunas)}, atualizado_em, atualizado_por)
+            VALUES ({lugares}, now(), ${len(colunas) + 1})""",
+        componente_id,
+        True,
+        *(valores.get(c) for c in _COLUNAS_DA_LINHA_NOVA),
+        autor,
+    )
+    # AS QUATRO OBRAS NASCEM JUNTO, VAZIAS.
+    #
+    # Nascem porque o `PUT` da ficha RECUSA cardinalidade incompleta
+    # (`ficha.obras_da_ficha`): ele sobrepõe campo sobre a linha gravada e nunca
+    # cria a obra que falta — para uma CTS do Databricks as quatro sempre vieram
+    # na carga, e a macrorregião não vem de carga nenhuma. Sem elas, a ficha
+    # nasceria impossível de gravar.
+    #
+    # VAZIAS porque obra NÃO AGREGA. Somar `quantidade` e `preco_unitario` dos
+    # membros violaria `capex_e_derivado`, e mediá-los produziria números
+    # plausíveis que ninguém digitou — que é o defeito que tirou a "base literal"
+    # de `obras_da_ficha`. O que se grava aqui é só o vocabulário: o nome da obra
+    # e a unidade de medida dela, iguais nas 337 CTS do banco.
+    #
+    # A ficha nasce, então, com quatro obras em branco — e a prontidão as cobra
+    # como cobra as de qualquer componente recém-colocado.
+    await con.executemany(
+        f"""INSERT INTO {_i()}.componentes_cts_capex (cts, componente, unidade)
+            VALUES ($1, $2, $3) ON CONFLICT (cts, componente) DO NOTHING""",
+        [(componente_id, nome, unidade) for nome, unidade in OBRAS_DA_CTS],
+    )
+
+    # A TRILHA REGISTRA A CRIAÇÃO, e não treze campos: quem a lê meses depois quer
+    # saber que a macrorregião passou a existir e de que coletores ela veio. Os
+    # números somados estão na ficha, e repeti-los aqui seriam treze linhas que
+    # ninguém compara com nada. `antes` nulo já diz "não existia" (ver `Alteracao`).
+    await _registrar(
+        con,
+        tipo="cts",
+        ficha_id=componente_id,
+        unidade_id=unidade_id,
+        autor=autor,
+        mudancas=[
+            Alteracao(
+                campo="macrorregiao",
+                antes=None,
+                depois="soma de " + ", ".join(m["cts"] for m in membros),
+                origem=REGIONAL,
+            )
+        ],
+    )
+
+
 async def _exigir_caminho_coerente(
     con: Any, *, componente_id: str, sistema_id: str, jusante: str | None
 ) -> None:
@@ -944,6 +1195,18 @@ async def salvar_topologia(
             con, sistema_id, espiada["sistema_id"] if espiada else None
         )
 
+        # A UNIDADE USA MACRORREGIÃO? A resposta decide três coisas aqui embaixo,
+        # e é a mesma para as três — lê-se uma vez, dentro do lock da unidade que
+        # `_travar_unidade` acabou de tomar, e por isso ela não muda no meio.
+        usa_macro = await _unidade_usa_cts(con, unidade_id)
+
+        # A MACRORREGIÃO É CRIADA ANTES DE SER PROCURADA. Até este momento ela não
+        # tem linha em `cts_operacional`, e `_EXISTE_COMPONENTE` a trataria como id
+        # inventado — que é o que ele existe para pegar. Ver `_preparar_macrorregiao`.
+        if usa_macro:
+            await _preparar_macrorregiao(
+                con, unidade_id=unidade_id, componente_id=componente_id, autor=autor
+            )
         if not await con.fetchrow(_EXISTE_COMPONENTE.format(i=_i()), componente_id):
             raise FichaDeOutraUnidade(
                 f"componente {componente_id!r} nao existe no cadastro"
@@ -1015,7 +1278,23 @@ async def salvar_topologia(
         # como quaisquer outros. Fica no servidor mesmo assim: a tela ja esconde o
         # seletor, mas quem desmarcar a caixa, adicionar duas e marcar de volta
         # passaria pela tela sem passar por aqui.
-        if await _e_cts(con, componente_id) and await _unidade_usa_cts(con, unidade_id):
+        if await _e_cts(con, componente_id) and usa_macro:
+            # MEMBRO NÃO SE COLOCA SOZINHO. A tela marcada oferece macrorregiões, e
+            # não os coletores que as formam — colocar um deles é exatamente o que a
+            # macrorregião existe para impedir. Chega aqui quem tinha a lista antiga
+            # aberta quando a caixa foi marcada, ou quem chama a rota direto.
+            dono = await con.fetchval(
+                f"""SELECT sistema_cts FROM {_i()}.cts_operacional
+                     WHERE cts = $1 AND sistema_cts IS NOT NULL
+                       AND btrim(sistema_cts) <> ''""",
+                componente_id,
+            )
+            if dono:
+                raise TopologiaInvalida(
+                    f"{componente_id!r} faz parte da macrorregião {dono!r}, e a "
+                    f"unidade {unidade_id!r} trabalha em macrorregião. Coloque "
+                    f"{dono!r} no sistema — ela entra inteira, com os coletores dentro."
+                )
             if ja := await _cts_do_sistema(con, sistema_id, exceto=componente_id):
                 raise TopologiaInvalida(
                     f"A unidade {unidade_id!r} usa macrorregião de CTS, e o sistema "
@@ -1083,6 +1362,32 @@ async def _sistemas_com_varias_cts(con: Any, unidade_id: str) -> dict[str, list[
     return {l["sis"]: list(l["cts"]) for l in linhas}
 
 
+async def _macrorregioes_colocadas(con: Any, unidade_id: str) -> dict[str, str]:
+    """As macrorregiões desta unidade que estão em algum sistema, e onde.
+
+    É o que impede DESMARCAR a unidade. Desmarcada, os coletores membros voltam a
+    ser oferecidos e podem ser colocados — enquanto a macrorregião que os SOMA
+    continua no sistema. O motor então cria nó para os dois
+    (`otimizador_capex_v62.py`, em `ler_banco`: nó nasce de `sistema_topologia`
+    para todo componente que exista em `cts_operacional`), e as mesmas ligações,
+    a mesma receita e as mesmas obras entram na conta DUAS VEZES.
+
+    Não é estado que a tela denuncie: a macrorregião passa a ser lida como um
+    coletor comum, com números que ninguém reconhece como soma de outros quatro.
+    """
+    linhas = await con.fetch(
+        f"""WITH cid AS ({CIDADES_DA_UNIDADE.format(i=_i())})
+            SELECT o.cts, t.sistema_id
+              FROM {_i()}.cts_operacional o
+              JOIN cid ON cid.cidade_id = o.cidade_id
+              JOIN {_i()}.sistema_topologia t ON t.componente_sistema_id = o.cts
+             WHERE o.e_macrorregiao AND coalesce(t.sistema_id, '') <> ''
+             ORDER BY 1""",
+        unidade_id,
+    )
+    return {l["cts"]: l["sistema_id"] for l in linhas}
+
+
 async def salvar_unidade(
     *, unidade_id: str, corpo: dict[str, Any], autor: str
 ) -> dict[str, Any]:
@@ -1105,6 +1410,12 @@ async def salvar_unidade(
     alternativa seria aceitar e deixar a unidade num estado que ela própria
     declara impossível — e a recusa da próxima gravação de topologia apareceria
     depois, longe daqui, parecendo defeito.
+
+    DESMARCAR com macrorregião em sistema é RECUSADO pelo espelho da mesma razão,
+    e o preço aqui é maior: a macrorregião ficaria no sistema enquanto os
+    coletores que ela soma voltariam a ser colocáveis, e a rodada contaria as
+    mesmas ligações duas vezes. Tirar a macrorregião do sistema primeiro resolve,
+    e não perde o que foi preenchido nela.
 
     `waccMedio` — o custo médio de capital da unidade, de onde toda obra sem WACC
     próprio herda a taxa de desconto. Vazio vira NULL: no contrato, campo em
@@ -1138,6 +1449,23 @@ async def salvar_unidade(
         )
         if antes is None:
             raise FichaDeOutraUnidade(f"unidade {unidade_id!r} nao existe")
+        # DESMARCAR COM MACRORREGIÃO COLOCADA É RECUSADO — o espelho da regra
+        # abaixo, e pela mesma razão: não deixar a unidade num estado que ela
+        # própria declara impossível. Aqui o preço é maior que uma tela confusa,
+        # porque a rodada passa a contar em duplicidade (ver
+        # `_macrorregioes_colocadas`).
+        #
+        # A saída é explícita e reversível: tirar a macrorregião do sistema — o
+        # que devolve os coletores dela à lista — e só então desmarcar. A linha e
+        # o que a Regional preencheu nela permanecem.
+        if tem_cts and not usa and (postas := await _macrorregioes_colocadas(con, unidade_id)):
+            raise TopologiaInvalida(
+                f"{len(postas)} macrorregião(ões) da unidade está(ão) em sistema: "
+                + "; ".join(f"{m!r} em {sis!r}" for m, sis in postas.items())
+                + ". Desmarcar agora deixaria a macrorregião no sistema e liberaria "
+                "os coletores que ela soma — a simulação contaria as mesmas ligações "
+                "e as mesmas obras duas vezes. Tire-a(s) do sistema primeiro."
+            )
         if usa and (cheios := await _sistemas_com_varias_cts(con, unidade_id)):
             raise TopologiaInvalida(
                 f"{len(cheios)} sistema(s) da unidade têm mais de uma CTS: "
@@ -1432,6 +1760,24 @@ async def salvar_topologia_em_lote(
             l["id"]: (l["sis"], l["jus"]) for l in linhas
         }
 
+        # O MESMO CAMINHO DA MACRORREGIÃO, e aqui ele importa mais: montar o
+        # sistema inteiro de uma vez é o que a tela faz. Sem isto, a macrorregião
+        # passaria pela rota de um componente só e seria recusada nesta —
+        # `_quais_existem` a trataria como id inventado, que é o que ele existe
+        # para pegar. Ver `_preparar_macrorregiao`.
+        usa_macro = await _unidade_usa_cts(con, unidade_id)
+        if usa_macro:
+            macros = await _nomes_de_macrorregiao(con, unidade_id)
+            for componente_id in enviados:
+                if componente_id in antes or componente_id not in macros:
+                    continue
+                await _preparar_macrorregiao(
+                    con,
+                    unidade_id=unidade_id,
+                    componente_id=componente_id,
+                    autor=autor,
+                )
+
         # Quem NAO tem linha na topologia precisa existir em alguma ficha. Uma
         # consulta para todos, e nao uma por componente: ver `_quais_existem`.
         sem_linha = [c for c in enviados if c not in antes]
@@ -1485,7 +1831,28 @@ async def salvar_topologia_em_lote(
         # sistemas sao de CTS" virou uma pergunta so, feita a unidade.
         etes = await _quais_sao(con, "ete_capex", "ete_id", enviados)
         ctss = await _quais_sao(con, "cts_operacional", "cts", enviados)
-        usa_cts = await _unidade_usa_cts(con, unidade_id)
+
+        # MEMBRO NÃO SE COLOCA SOZINHO — a mesma regra de `salvar_topologia`, na
+        # rota que grava o sistema inteiro. Uma consulta para todos os enviados:
+        # a lista de um sistema grande chega com dezenas de componentes.
+        if usa_macro:
+            membros = await con.fetch(
+                f"""SELECT cts, sistema_cts FROM {_i()}.cts_operacional
+                     WHERE cts = ANY($1::text[]) AND sistema_cts IS NOT NULL
+                       AND btrim(sistema_cts) <> ''
+                     ORDER BY 1""",
+                enviados,
+            )
+            if membros:
+                raise TopologiaInvalida(
+                    "; ".join(
+                        f"{l['cts']!r} faz parte da macrorregião {l['sistema_cts']!r}"
+                        for l in membros
+                    )
+                    + f". A unidade {unidade_id!r} trabalha em macrorregião: coloque "
+                    "a macrorregião no sistema — ela entra inteira, com os "
+                    "coletores dentro."
+                )
 
         problemas: list[str] = []
         for sistema_id, mapa in pedido.items():
@@ -1494,7 +1861,7 @@ async def salvar_topologia_em_lote(
                 sistema_id=sistema_id,
                 etes=etes,
                 ctss=ctss,
-                usa_cts=usa_cts,
+                usa_cts=usa_macro,
             )
         if problemas:
             raise TopologiaInvalida(" ".join(problemas))

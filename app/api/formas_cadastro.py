@@ -148,7 +148,21 @@ class ComponenteSemSistema(BaseModel):
     #: A cidade da CTS — é por ela que a tela recorta o seletor para a cidade do
     #: sistema. Vazio quando a carga ainda não a trouxe: essas vêm mesmo assim, e
     #: a tela as mostra separadas em vez de escondê-las.
+    #:
+    #: NA MACRORREGIÃO ela é a cidade DOMINANTE, e o recorte por cidade não vale:
+    #: ver `macro`.
     cidId: str
+    #: ESTA LINHA É UMA MACRORREGIÃO? `"true"` ou `"false"`, como o resto desta
+    #: resposta, que é toda de strings.
+    #:
+    #: O `tipo` continua `"cts"` de propósito — para montar o sistema, a
+    #: macrorregião É o coletor daquele sistema, e a tela não precisa de uma
+    #: palavra nova para colocá-la. Este campo existe por UMA razão só: a
+    #: macrorregião pode cruzar município, e a ficha expõe uma cidade só. O
+    #: recorte "só os coletores da cidade do sistema" protege quem coloca um
+    #: coletor; aplicado a ela, esconderia-a de todos os sistemas das outras
+    #: cidades que ela atende.
+    macro: str = "false"
 
 
 class Hierarquia(BaseModel):

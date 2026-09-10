@@ -12,7 +12,7 @@ eles são o caminho até ela, e quem escolhe a unidade já passou por eles.
 
 Não há coluna `unidade_id` nas tabelas de baixo: quem pertence a quem sai do
 encadeamento de FKs. Por isso quase toda consulta aqui carrega o mesmo CTE de
-cidades da unidade — extraí-lo em `_CIDADES_DA_UNIDADE` mantém o recorte escrito
+cidades da unidade — extraí-lo em `CIDADES_DA_UNIDADE` mantém o recorte escrito
 uma vez só, e é o recorte que, errado, faria a tela mostrar cidade de outra
 unidade sem nenhum sinal.
 
@@ -25,11 +25,12 @@ import logging
 from typing import Any
 
 from app.config import config
-from app.infra import db
-from app.infra.repositorios import pendencias
+from app.dominio import macrorregiao_cts
 from app.dominio.campos import COLETA, DO_DATABRICKS
 from app.dominio.formato import SEM_SEPARADOR, pt_br, pt_br_ano
-
+from app.infra import db
+from app.infra.repositorios import pendencias
+from app.infra.repositorios.recortes import CIDADES_DA_UNIDADE
 
 log = logging.getLogger(__name__)
 
@@ -44,13 +45,6 @@ def _i() -> str:
 #: existir só como linha de vínculo e ganhou tabela própria, então o caminho
 #: passa por `cidade_empresa` (o vínculo) até `cidade` (o município). A
 #: superintendência virou `empresa`, campo a campo.
-_CIDADES_DA_UNIDADE = """
-    SELECT c.cidade_id, c.cidade_name, ce.emp_codigo
-      FROM {i}.cidade c
-      JOIN {i}.cidade_empresa ce ON ce.cidade_id = c.cidade_id
-      JOIN {i}.empresa e ON e.emp_codigo = ce.emp_codigo
-     WHERE e.unidade_id = $1
-"""
 
 
 def _auditoria(linha: dict[str, Any]) -> dict[str, Any]:
@@ -77,7 +71,7 @@ def _auditoria(linha: dict[str, Any]) -> dict[str, Any]:
 
 
 def _cidades_cte() -> str:
-    return _CIDADES_DA_UNIDADE.format(i=_i())
+    return CIDADES_DA_UNIDADE.format(i=_i())
 
 
 # ---------------------------------------------------------------- organização
@@ -388,6 +382,37 @@ async def hierarquia(unidade_id: str) -> dict[str, Any]:
              ORDER BY 3, 2, 1""",
         unidade_id,
     )
+
+    # MACRORREGIAO NO LUGAR DAS CTS SOLTAS.
+    #
+    # Marcada a unidade, a tela de montar o sistema oferece MACRORREGIOES — e nao
+    # os coletores que as compoem. Oferecer os membros contradiria o regime que a
+    # propria unidade declarou: colocar um deles sozinho num sistema e exatamente
+    # o que a macrorregiao existe para impedir.
+    #
+    # DISPONIVEL MUDA DE SIGNIFICADO. Para uma CTS, disponivel e "a linha dela na
+    # topologia nao tem sistema"; para a macrorregiao sao duas condicoes, e a
+    # regra inteira esta em `_macrorregioes_livres`. Uma delas some da lista em
+    # vez de ser oferecida e recusada na hora de colocar, longe daqui.
+    if await _usa_macrorregiao(unidade_id):
+        # `tipo` continua 'cts': para a tela, a macrorregião É o coletor daquele
+        # sistema. Ela não aprende uma palavra nova, e `ehCts` continua valendo.
+        sem_sistema = [
+            {**l, "macro": "false"} for l in sem_sistema if l["tipo"] != "cts"
+        ] + [
+            {
+                "id": m["id"],
+                "nome": m["id"],
+                "tipo": "cts",
+                "cidId": m["cidId"],
+                # A CIDADE É A DOMINANTE, e a macrorregião pode atender outras.
+                # Sem esta marca a tela a recortaria pela cidade do sistema, como
+                # faz com um coletor, e ela sumiria dos sistemas das demais.
+                "macro": "true",
+            }
+            for m in await _macrorregioes_livres(unidade_id)
+        ]
+        sem_sistema.sort(key=lambda l: (l["tipo"] or "", l["nome"] or "", l["id"] or ""))
 
     def txt(linhas):
         return [{k: ("" if v is None else str(v)) for k, v in l.items()} for l in linhas]
@@ -775,6 +800,105 @@ async def etes(unidade_id: str) -> dict[str, Any]:
     return {"etes": etes}
 
 
+async def _usa_macrorregiao(unidade_id: str) -> bool:
+    """A unidade trabalha em macrorregião de CTS?
+
+    Uma consulta minúscula, e não um parâmetro que os chamadores passem adiante:
+    a flag decide a CARDINALIDADE do que se serve, e um chamador que a esquecesse
+    devolveria CTS individuais numa unidade marcada — sem erro, e com a tela
+    oferecendo o que a unidade declarou não usar.
+    """
+    linha = await db.buscar_um(
+        f"SELECT usa_macrorregiao_cts FROM {_i()}.unidade_regional WHERE unidade_id = $1",
+        unidade_id,
+    )
+    return bool(linha and linha["usa_macrorregiao_cts"])
+
+
+async def _fichas_de_macrorregiao(unidade_id: str) -> dict[str, dict[str, Any]]:
+    """As fichas das macrorregiões desta unidade, já somadas.
+
+    A CHAVE é o id que a origem dá à macrorregião (`sistema_cts`), e não um id
+    inventado aqui: ele é o que a tela devolve ao colocar a macrorregião num
+    sistema, e um id gerado por nós teria de ser guardado em algum lugar só para
+    ser reconhecido de volta.
+
+    A soma é a de `dominio.macrorregiao_cts` — as 12 medidas do Databricks. Os
+    `params` e as 4 obras NÃO saem daqui: são preenchimento da macrorregião, e
+    vêm da ficha dela.
+    """
+    membros = await db.buscar(
+        f"""SELECT o.*, ce.emp_codigo
+              FROM {_i()}.cts_operacional o
+              JOIN {_i()}.cidade_empresa ce ON ce.cidade_id = o.cidade_id
+              JOIN ({_cidades_cte()}) c ON c.cidade_id = o.cidade_id
+             WHERE o.sistema_cts IS NOT NULL AND btrim(o.sistema_cts) <> ''""",
+        unidade_id,
+    )
+    grupos = macrorregiao_cts.agrupar(membros)
+    # NOME QUE DUAS EMPRESAS USAM FICA DE FORA — ver `macrorregiao_cts.nomes_ambiguos`.
+    # As fichas são um MAPA POR ID, e o id é o nome: manter os dois faria o segundo
+    # sobrescrever o primeiro, que é a fusão silenciosa que a regra existe para
+    # impedir. Ele também não é oferecido para montar o sistema, então nunca chega
+    # a ter linha nem obras.
+    ambiguos = macrorregiao_cts.nomes_ambiguos(grupos)
+    fichas: dict[str, dict[str, Any]] = {}
+    for (macro, _empresa), grupo in grupos.items():
+        if macro in ambiguos:
+            continue
+        fichas[macro] = {**macrorregiao_cts.agregar(grupo), "cts": macro}
+
+    # A LINHA GRAVADA MANDA, quando existe. São dois estados, e cada um tem UMA
+    # verdade: enquanto a macrorregião não foi colocada num sistema ela não tem
+    # linha, e a ficha é a soma calculada agora; colocada, a soma virou linha
+    # (`_preparar_macrorregiao`) e é ela que a Regional preenche, que a trilha
+    # audita e que o MOTOR lê. Recalcular por cima faria a tela mostrar um número
+    # e a rodada usar outro no mesmo instante.
+    fichas.update(
+        {
+            l["cts"]: dict(l)
+            for l in await db.buscar(
+                f"""SELECT o.* FROM {_i()}.cts_operacional o
+                      JOIN ({_cidades_cte()}) c ON c.cidade_id = o.cidade_id
+                     WHERE o.e_macrorregiao""",
+                unidade_id,
+            )
+        }
+    )
+    return fichas
+
+
+async def _macrorregioes_livres(unidade_id: str) -> list[dict[str, Any]]:
+    """As macrorregiões que a tela de montar o sistema pode oferecer.
+
+    As DUAS consultas que a regra precisa: os membros de cada macrorregião (com
+    "este está em sistema?" junto) e as macrorregiões que já foram colocadas. Quem
+    decide é `dominio.macrorregiao_cts.livres`.
+    """
+    membros = await db.buscar(
+        f"""SELECT o.cts, o.cidade_id, o.ligacoes_atuais, o.sistema_cts,
+                   ce.emp_codigo,
+                   coalesce(t.sistema_id, '') <> '' AS colocada
+              FROM {_i()}.cts_operacional o
+              JOIN {_i()}.cidade_empresa ce ON ce.cidade_id = o.cidade_id
+              JOIN ({_cidades_cte()}) c ON c.cidade_id = o.cidade_id
+              LEFT JOIN {_i()}.sistema_topologia t
+                     ON t.componente_sistema_id = o.cts
+             WHERE o.sistema_cts IS NOT NULL AND btrim(o.sistema_cts) <> ''
+               AND NOT o.e_macrorregiao""",
+        unidade_id,
+    )
+    colocadas = {
+        l["cts"]
+        for l in await db.buscar(
+            f"""SELECT o.cts FROM {_i()}.cts_operacional o
+                  JOIN {_i()}.sistema_topologia t ON t.componente_sistema_id = o.cts
+                 WHERE o.e_macrorregiao AND coalesce(t.sistema_id, '') <> ''""",
+        )
+    }
+    return macrorregiao_cts.livres(macrorregiao_cts.agrupar(membros), colocadas)
+
+
 async def cts(unidade_id: str) -> dict[str, Any]:
     """Grupo 05 — as CTS COLOCADAS nos sistemas desta unidade.
 
@@ -794,16 +918,26 @@ async def cts(unidade_id: str) -> dict[str, Any]:
     ver `_cts_inconsistentes`. Ela NAO cruza com `ctss`: sao justamente os que
     nao tem ficha para editar.
     """
-    fichas = {
-        f["cts"]: f
-        for f in await db.buscar(
-            f"""SELECT o.* FROM {_i()}.cts_operacional o
-                  JOIN {_i()}.sistema_topologia t ON t.componente_sistema_id = o.cts
-                  JOIN {_i()}.cidade_sistema s USING (sistema_id)
-                  JOIN ({_cidades_cte()}) c ON c.cidade_id = s.cidade_id""",
-            unidade_id,
-        )
-    }
+    # A CARDINALIDADE VEM DA UNIDADE. Marcada a macrorregião, o que se serve é uma
+    # ficha por macrorregião — as CTS membro deixam de aparecer sozinhas, porque
+    # não é nelas que a Regional preenche nada. Desmarcada, é a leitura de sempre.
+    #
+    # O front não distingue os dois casos, e não precisa: o payload tem a mesma
+    # forma, e o `id` continua sendo um id opaco que ele devolve ao colocar o
+    # componente num sistema.
+    if await _usa_macrorregiao(unidade_id):
+        fichas = await _fichas_de_macrorregiao(unidade_id)
+    else:
+        fichas = {
+            f["cts"]: f
+            for f in await db.buscar(
+                f"""SELECT o.* FROM {_i()}.cts_operacional o
+                      JOIN {_i()}.sistema_topologia t ON t.componente_sistema_id = o.cts
+                      JOIN {_i()}.cidade_sistema s USING (sistema_id)
+                      JOIN ({_cidades_cte()}) c ON c.cidade_id = s.cidade_id""",
+                unidade_id,
+            )
+        }
     linhas = await db.buscar(
         f"""SELECT t.componente_sistema_id AS cts,
                    t.componente_sistema_nome AS nome,

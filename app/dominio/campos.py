@@ -15,13 +15,14 @@ aceitá-la — ou o contrário, que é pior.
 #: A INTERFACE PÚBLICA deste módulo. Tudo o que não está aqui é implementação,
 #: e pode mudar sem aviso — a lista é o contrato com quem importa.
 __all__ = [
-    "DO_DATABRICKS",
     "CAMPOS_DB",
     "CAMPOS_PARAMS",
-    "NAO_MODELADOS",
-    "OBRAS_SUBBACIA",
-    "OBRAS_CTS",
     "COLETA",
+    "DO_DATABRICKS",
+    "NAO_MODELADOS",
+    "OBRAS_CTS",
+    "OBRAS_DA_CTS",
+    "OBRAS_SUBBACIA",
 ]
 
 
@@ -75,7 +76,27 @@ NAO_MODELADOS = {"popN"}
 OBRAS_SUBBACIA = 5
 
 
-OBRAS_CTS = 4
+#: AS QUATRO OBRAS DE UMA CTS, com a unidade de medida de cada uma.
+#:
+#: Vocabulário, e não medida: as 337 CTS do banco têm exatamente estas quatro, com
+#: exatamente estas unidades — nenhuma linha destoa. Por isso a macrorregião pode
+#: nascer com as quatro (`_preparar_macrorregiao`) sem que isso seja inventar
+#: dado: os NÚMEROS nascem nulos, e é a Regional que os preenche.
+#:
+#: A ORDEM É A DO CAMINHO DO ESGOTO — coletor, tronco, elevatória, recalque —, que
+#: é a ordem em que a tela as apresenta.
+OBRAS_DA_CTS = (
+    ("Coletor de tempo seco", "ligacao"),
+    ("Tronco", "m"),
+    ("EEE", "un"),
+    ("Linha de recalque", "m"),
+)
+
+
+#: QUANTAS obras a ficha de CTS tem de ter — derivado dos nomes, e não repetido
+#: ao lado deles: um `4` escrito à mão discordaria da lista no dia em que ela
+#: mudasse, e a discordância apareceria como ficha eternamente incompleta.
+OBRAS_CTS = len(OBRAS_DA_CTS)
 
 
 #: Colunas da ficha de coleta -> nomes do front. Sub-bacia e CTS são idênticas:

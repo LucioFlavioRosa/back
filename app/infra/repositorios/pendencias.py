@@ -53,8 +53,10 @@ Duas sutilezas que vieram do outro lado e não são óbvias:
 from typing import Any
 
 from app.config import config
-from app.infra import db
+from app.dominio import macrorregiao_cts
 from app.dominio.campos import OBRAS_CTS, OBRAS_SUBBACIA
+from app.infra import db
+from app.infra.repositorios.recortes import CIDADES_DA_UNIDADE
 
 #: Campos de `params` que a ficha de coleta cobra sempre.
 _PARAMS = [
@@ -298,8 +300,100 @@ async def contar(unidade_id: str) -> dict[str, Any]:
                 ),
             }
             for c in sem_caminho
-        ],
+        ]
+        + await _macrorregioes_desatualizadas(unidade_id),
     }
+
+
+#: Quanto de uma medida a tela mostra ao dizer que ela mudou.
+_ROTULO_DA_MEDIDA = {
+    "receita_faturada_media_mensal": "receita faturada",
+    "receita_arrecadada_media_mensal": "receita arrecadada",
+    "universo_ligacoes": "universo de ligações",
+    "ligacoes_atuais": "ligações atuais",
+    "ligacoes_novas_obras": "ligações de novas obras",
+    "universo_economias": "universo de economias",
+    "economias_atuais": "economias atuais",
+    "economias_novas_obras": "economias de novas obras",
+    "universo_ligacoes_residencial": "universo de ligações residenciais",
+    "ligacoes_atuais_residencial": "ligações atuais residenciais",
+    "universo_economias_residencial": "universo de economias residenciais",
+    "economias_atuais_residencial": "economias atuais residenciais",
+    "populacao_novas_obras": "população de novas obras",
+}
+
+
+async def _macrorregioes_desatualizadas(unidade_id: str) -> list[dict[str, Any]]:
+    """Macrorregião colocada cuja ficha já não é a soma dos coletores de hoje.
+
+    É o alarme da escolha feita em `_preparar_macrorregiao`: colocada, a
+    macrorregião tem linha própria, e a linha não é recalculada a cada leitura —
+    senão a tela mostraria um número e a rodada usaria outro. O que essa escolha
+    custa é ficar para trás quando uma recarga do Databricks mexe nos membros, e
+    é isso que aqui se denuncia.
+
+    Não trava a simulação, e não conta pendência: os números continuam sendo
+    números que alguém informou, e a rodada com eles é uma rodada válida sobre uma
+    base anterior. O que ela não pode é acontecer sem ninguém saber.
+
+    Sai por `faltando`, ao lado do aviso de caminho que não chega à ETE — as duas
+    respondem a mesma pergunta, "o que a tela não tem como saber sozinha".
+    """
+    guardadas = await db.buscar(
+        f"""WITH cid AS ({CIDADES_DA_UNIDADE.format(i=_i())})
+            SELECT o.*
+              FROM {_i()}.cts_operacional o
+              JOIN cid ON cid.cidade_id = o.cidade_id
+              JOIN {_i()}.sistema_topologia t ON t.componente_sistema_id = o.cts
+             WHERE o.e_macrorregiao AND coalesce(t.sistema_id, '') <> ''
+             ORDER BY o.cts""",
+        unidade_id,
+    )
+    if not guardadas:
+        return []
+
+    membros = await db.buscar(
+        f"""WITH cid AS ({CIDADES_DA_UNIDADE.format(i=_i())})
+            SELECT o.*, cid.emp_codigo
+              FROM {_i()}.cts_operacional o
+              JOIN cid ON cid.cidade_id = o.cidade_id
+             WHERE o.sistema_cts = ANY($2::text[]) AND NOT o.e_macrorregiao""",
+        unidade_id,
+        [g["cts"] for g in guardadas],
+    )
+    por_macro: dict[str, list[dict[str, Any]]] = {}
+    for m in membros:
+        por_macro.setdefault(m["sistema_cts"], []).append(m)
+
+    saida: list[dict[str, Any]] = []
+    for g in guardadas:
+        grupo = por_macro.get(g["cts"])
+        if not grupo:
+            # SEM MEMBRO NENHUM a soma não existe, e não há com o que comparar.
+            # Acontece se a recarga tirar a coluna `sistema_cts` de todos eles; a
+            # ficha continua válida, e inventar "divergiu de tudo" seria ruído.
+            continue
+        fora = macrorregiao_cts.divergencias(dict(g), grupo)
+        if not fora:
+            continue
+        quais = ", ".join(
+            _ROTULO_DA_MEDIDA.get(coluna, coluna) for coluna in sorted(fora)
+        )
+        saida.append(
+            {
+                "tipo": "macrorregiao",
+                "id": g["cts"],
+                "componente": g["cts"],
+                "detalhe": (
+                    f"A ficha da macrorregião {g['cts']} foi somada quando ela foi "
+                    f"colocada no sistema, e os coletores mudaram desde então: "
+                    f"{quais}. A simulação roda com os números da ficha. Gravar a "
+                    f"ficha de novo refaz a soma a partir dos {len(grupo)} coletores "
+                    "de hoje."
+                ),
+            }
+        )
+    return saida
 
 
 #: O mesmo teto de saltos do motor (`caminho()`, em otimizador_capex_v62.py).
