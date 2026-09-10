@@ -16,6 +16,13 @@ colocadas, e as livres chegam por `semSistema` na hierarquia. Colocar uma CTS nu
 sistema é a única edição de topologia que a Regional faz — todo o resto vem do
 Databricks.
 
-Um sistema marcado como "usa sistema de CTS" aceita UMA CTS; desmarcado, aceita
-quantas forem colocadas. É regra de cadastro, e não do motor: para ele uma ou
-duas CTS são nós como quaisquer outros.
+Quantas CTS cabem num sistema é regra de cadastro, e não do motor: para ele uma
+ou duas são nós como quaisquer outros.
+
+A caixa que decide isso era POR SISTEMA quando esta ADR foi escrita — "este
+sistema usa sistema de CTS". Mudou em 09/2026 e hoje é **por unidade**, chamada
+`usa_macrorregiao_cts`: marcada, cada sistema da unidade aceita UMA CTS;
+desmarcada, aceitam várias. Duas razões, e as duas continuam valendo para quem
+for mexer nisso: "este sistema usa CTS?" é uma pergunta que ninguém tinha como
+responder 997 vezes, e o nome antigo dizia "sistema" com dois sentidos na mesma
+frase — o regime e o conjunto de sub-bacias que escoam para a mesma ETE.
