@@ -243,17 +243,28 @@ def livres(
     Ver `nomes_ambiguos`.
 
     `cidId` é a cidade de `agregar` — a do membro com mais ligações —, e não a
-    primeira que o banco devolveu: a tela usa esse campo para recortar, e duas
-    leituras da mesma base têm de dar a mesma resposta.
+    primeira que o banco devolveu: a ficha expõe uma cidade só, e duas leituras da
+    mesma base têm de dar a mesma resposta.
+
+    `empId` é a EMPRESA da macrorregião — a outra metade da chave —, e é por ela
+    que a tela recorta. Um coletor se recorta pela cidade do sistema; uma
+    macrorregião cruza município por definição, então cidade não é a régua dela.
+    Recortá-la pela cidade dominante a escondia dos sistemas dos demais municípios;
+    não recortar nada a oferecia a duas cidades de distância, e a lista do modo
+    macrorregião ficava MAIOR que a do modo coletor. A empresa é o recorte que a
+    chave `(sistema_cts, emp_codigo)` sempre disse: ela é ofertável nos sistemas
+    da empresa que a opera.
     """
     ambiguos = nomes_ambiguos(grupos)
     saida = []
-    for (macro, _empresa), membros in grupos.items():
+    for (macro, empresa), membros in grupos.items():
         if macro in ambiguos:
             continue
         if macro in ja_colocadas or any(m.get("colocada") for m in membros):
             continue
-        saida.append({"id": macro, "cidId": agregar(membros)["cidade_id"]})
+        saida.append(
+            {"id": macro, "cidId": agregar(membros)["cidade_id"], "empId": empresa}
+        )
     return sorted(saida, key=lambda m: m["id"])
 
 

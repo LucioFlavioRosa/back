@@ -412,10 +412,11 @@ async def hierarquia(unidade_id: str) -> dict[str, Any]:
                 "id": m["id"],
                 "nome": m["id"],
                 "tipo": "cts",
+                # `cidId` É A DOMINANTE — a que a ficha expõe. O RECORTE da tela
+                # é por `empId`: a macrorregião cruza município, e a empresa é a
+                # outra metade da chave dela.
                 "cidId": m["cidId"],
-                # A CIDADE É A DOMINANTE, e a macrorregião pode atender outras.
-                # Sem esta marca a tela a recortaria pela cidade do sistema, como
-                # faz com um coletor, e ela sumiria dos sistemas das demais.
+                "empId": m["empId"],
                 "macro": "true",
             }
             for m in await _macrorregioes_livres(unidade_id)

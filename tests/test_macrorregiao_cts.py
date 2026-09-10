@@ -260,7 +260,9 @@ def _membro(cts, *, colocada=False, cidade="c1", ligacoes=10, macro="MACRO_A",
 
 def test_macrorregiao_com_todos_os_membros_soltos_e_oferecida():
     grupos = agrupar([_membro("cts_1"), _membro("cts_2")])
-    assert livres(grupos, set()) == [{"id": "MACRO_A", "cidId": "c1"}]
+    assert livres(grupos, set()) == [
+        {"id": "MACRO_A", "cidId": "c1", "empId": "e1"}
+    ]
 
 
 def test_membro_ja_colocado_tira_a_macrorregiao_da_lista():
@@ -302,7 +304,9 @@ def test_a_cidade_oferecida_e_a_dominante_e_nao_a_primeira():
             _membro("cts_2", cidade="c9", ligacoes=90),
         ]
     )
-    assert livres(grupos, set()) == [{"id": "MACRO_A", "cidId": "c9"}]
+    assert livres(grupos, set()) == [
+        {"id": "MACRO_A", "cidId": "c9", "empId": "e1"}
+    ]
 
 
 def test_a_lista_sai_ordenada_pelo_id():

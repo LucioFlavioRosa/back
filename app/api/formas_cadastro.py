@@ -163,6 +163,11 @@ class ComponenteSemSistema(BaseModel):
     #: coletor; aplicado a ela, esconderia-a de todos os sistemas das outras
     #: cidades que ela atende.
     macro: str = "false"
+    #: A EMPRESA da macrorregião — a outra metade da chave `(sistema_cts,
+    #: emp_codigo)`, e a régua pela qual o seletor a recorta: ela cruza
+    #: município, então a cidade não serve. Vazio num coletor comum, que se
+    #: recorta por `cidId`.
+    empId: str = ""
 
 
 class Hierarquia(BaseModel):
