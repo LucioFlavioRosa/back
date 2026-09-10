@@ -938,19 +938,31 @@ async def cts(unidade_id: str) -> dict[str, Any]:
     # O front não distingue os dois casos, e não precisa: o payload tem a mesma
     # forma, e o `id` continua sendo um id opaco que ele devolve ao colocar o
     # componente num sistema.
+    # AS COLOCADAS, SEMPRE. Um coletor que está num sistema tem ficha para
+    # preencher, marcada a unidade ou não — ele é nó da simulação de qualquer
+    # forma, e uma ficha que a tela não serve é um nó que ninguém consegue
+    # preencher e que nada denuncia.
+    fichas = {
+        f["cts"]: f
+        for f in await db.buscar(
+            f"""SELECT o.* FROM {_i()}.cts_operacional o
+                  JOIN {_i()}.sistema_topologia t ON t.componente_sistema_id = o.cts
+                  JOIN {_i()}.cidade_sistema s USING (sistema_id)
+                  JOIN ({_cidades_cte()}) c ON c.cidade_id = s.cidade_id""",
+            unidade_id,
+        )
+    }
+    # E AS MACRORREGIÕES POR CIMA, quando a unidade trabalha nesse regime. Elas
+    # ACRESCENTAM, e não substituem: a macrorregião é o que se oferece para
+    # montar o sistema, mas um coletor que a origem não pôs em macrorregião
+    # nenhuma (`sistema_cts` nulo) continua colocável — a regra do regime é UMA
+    # CTS por sistema, e não "só macrorregiões". Substituir a lista fazia esse
+    # coletor sumir da tela no instante em que alguém marcava a caixa.
+    #
+    # Onde as duas se encontram — a linha da macrorregião já colocada — vence a
+    # versão daqui, que é a mesma linha lida pela regra da macrorregião.
     if await _usa_macrorregiao(unidade_id):
-        fichas = await _fichas_de_macrorregiao(unidade_id)
-    else:
-        fichas = {
-            f["cts"]: f
-            for f in await db.buscar(
-                f"""SELECT o.* FROM {_i()}.cts_operacional o
-                      JOIN {_i()}.sistema_topologia t ON t.componente_sistema_id = o.cts
-                      JOIN {_i()}.cidade_sistema s USING (sistema_id)
-                      JOIN ({_cidades_cte()}) c ON c.cidade_id = s.cidade_id""",
-                unidade_id,
-            )
-        }
+        fichas.update(await _fichas_de_macrorregiao(unidade_id))
     linhas = await db.buscar(
         f"""SELECT t.componente_sistema_id AS cts,
                    t.componente_sistema_nome AS nome,
