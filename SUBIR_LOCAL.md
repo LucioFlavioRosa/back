@@ -155,7 +155,7 @@ Databricks; aqui é este processo.
 cd otimizador-backend
 pip install -r requirements.txt ortools psycopg2-binary
 
-OTIMIZADOR_PACOTE="$HOME/pacote-otimizador" python -u dev/worker.py --tempo 1000
+python -u dev/worker.py --tempo 1000
 ```
 
 Deixe o terminal aberto. Ele imprime a batida e cada rodada que pega:
@@ -167,9 +167,15 @@ worker SEUPC/12345/abcdef
 
 > **`-u` importa.** Sem ele o Python bufferiza e o terminal fica mudo.
 >
-> **`OTIMIZADOR_PACOTE` importa mais ainda.** Sem a variável, o executor procura o pacote no
-> caminho padrão do Windows do autor e, se achar um antigo, roda com um motor velho **em
-> silêncio**.
+> **NÃO passe `OTIMIZADOR_PACOTE`.** O padrão — `projetos/pacote-motor-main` — é o pacote
+> certo: layout PLANO, com `carregar_postgres`, e alinhado com o repositório do motor. A
+> variável existe para medir uma alteração em outra cópia, e apontá-la para a cópia errada
+> quebra o executor no `import carregar_postgres`, que só aparece quando a PRIMEIRA rodada
+> chega — o worker sobe e fica ouvindo a fila como se estivesse bem.
+>
+> **Como saber qual motor subiu:** o executor imprime `codigo <hash>` na batida. Se a dúvida
+> for sobre a fórmula, `grep -c _vazao_por_obra` no pacote responde: zero é a régua de
+> 10/09/2026 (WACC só das obras da própria sub-bacia), qualquer número é a anterior.
 
 ## 6 · Usar
 
