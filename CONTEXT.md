@@ -119,6 +119,18 @@ atingida".
 A faixa que converte cobertura em paridade. Vive no cadastro, e não nas tabelas
 de resultado.
 
+**Rateio do CAPEX**:
+Quanto do preço de uma obra COMPARTILHADA cabe a cada sub-bacia que escoa por
+ela, na proporção da vazão. É atribuição de CUSTO — não é a ponderação do WACC,
+que desde 10/09/2026 olha só as obras da própria sub-bacia (ADR-0009).
+_Avoid_: partilha, divisão, share
+
+**WACC da receita**:
+A taxa que desconta a receita de uma sub-bacia no VPL: a média dos WACCs das
+obras DELA, ponderada pelo CAPEX de cada uma. Transporte a jusante e ETE ficam
+de fora.
+_Avoid_: taxa de desconto, custo de capital do sistema
+
 **Paridade**:
 A razão entre esgoto e água numa cidade. O degrau entre a inicial e a final é o
 efeito do plano sobre a base que já existia.

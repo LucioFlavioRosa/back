@@ -701,7 +701,18 @@ class SubBaciaDetalhe(BaseModel):
 #  §3.10 — elemento de obra
 # ===========================================================================
 class DependenciaDaObra(BaseModel):
-    """Uma sub-bacia que depende desta obra, e quanto do CAPEX cabe a ela."""
+    """Uma sub-bacia que depende desta obra, e quanto do CAPEX cabe a ela.
+
+    RATEIO É DE CUSTO, E NÃO DE DESCONTO. `fracaoRateio` diz quanto do preço de
+    uma obra compartilhada cabe a esta sub-bacia — a vazão que ela manda dividida
+    pela que passa ali —, e é o que faz a soma dos VPLs por sub-bacia reproduzir
+    o VPL do plano.
+
+    Não é a ponderação do WACC. Desde 10/09/2026 a taxa que desconta a receita de
+    uma sub-bacia sai só das obras DELA (`_wacc_receita`, no motor); obra
+    compartilhada a jusante e ETE não entram. As duas contas coincidiam antes
+    disso, e quem lia a tela podia supor que ainda coincidem.
+    """
 
     subbaciaId: str
     vazao: float | None
