@@ -126,12 +126,7 @@ async def contar(unidade_id: str) -> dict[str, Any]:
     # "2 campos a mais SE a cidade mede por populacao" dependia de uma escolha
     # que o cadastro nao conhece mais. Nao muda numero nenhum hoje — nenhuma
     # cidade da base media por populacao, entao a condicao ja valia zero.
-    cidades = f"""
-        SELECT c.cidade_id
-          FROM {_i()}.cidade_empresa c
-          JOIN {_i()}.empresa s USING (emp_codigo)
-         WHERE s.unidade_id = $1
-    """
+    cidades = CIDADES_DA_UNIDADE.format(i=_i())
     empresas = f"""
         SELECT (e.data_fim_concessao IS NULL)::int AS pend
           FROM {_i()}.empresa e
@@ -426,12 +421,7 @@ async def _caminho_ate_a_ete(unidade_id: str) -> list[dict[str, Any]]:
     """
     return await db.buscar(
         f"""
-        WITH RECURSIVE cidades AS (
-            SELECT c.cidade_id
-              FROM {_i()}.cidade_empresa c
-              JOIN {_i()}.empresa s USING (emp_codigo)
-             WHERE s.unidade_id = $1
-        ),
+        WITH RECURSIVE cidades AS ({CIDADES_DA_UNIDADE.format(i=_i())}),
         comps AS (
             SELECT t.componente_sistema_id AS id, t.componente_sistema_nome AS nome,
                    cs.sistema_name AS sistema
@@ -476,13 +466,12 @@ async def _quantos_precisam_de_caminho(unidade_id: str) -> int:
     proporcionalmente quando o caminho está pela metade.
     """
     linha = await db.buscar_um(
-        f"""SELECT count(*) AS n
+        f"""WITH cidades AS ({CIDADES_DA_UNIDADE.format(i=_i())})
+            SELECT count(*) AS n
               FROM {_i()}.sistema_topologia t
               JOIN {_i()}.cidade_sistema cs USING (sistema_id)
-              JOIN {_i()}.cidade_empresa c ON c.cidade_id = cs.cidade_id
-              JOIN {_i()}.empresa s USING (emp_codigo)
-             WHERE s.unidade_id = $1
-               AND NOT EXISTS (SELECT 1 FROM {_i()}.ete_capex e
+              JOIN cidades c ON c.cidade_id = cs.cidade_id
+             WHERE NOT EXISTS (SELECT 1 FROM {_i()}.ete_capex e
                                 WHERE e.ete_id = t.componente_sistema_id)""",
         unidade_id,
     )
@@ -527,12 +516,7 @@ async def componentes_faltando(unidade_id: str) -> list[dict[str, Any]]:
     """
     return await db.buscar(
         f"""
-        WITH cidades AS (
-            SELECT c.cidade_id
-              FROM {_i()}.cidade_empresa c
-              JOIN {_i()}.empresa s USING (emp_codigo)
-             WHERE s.unidade_id = $1
-        ),
+        WITH cidades AS ({CIDADES_DA_UNIDADE.format(i=_i())}),
         comps AS (
             SELECT t.componente_sistema_id AS id
               FROM {_i()}.sistema_topologia t

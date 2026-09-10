@@ -405,23 +405,21 @@ async def salvar_coleta(
         await con.execute("SELECT pg_advisory_xact_lock(hashtext($1))", ficha_id)
         exigir_ficha_inteira(corpo)
         bloco_db = corpo.get("db") or {}
-        if e_cts:
-            # GRAVAR A FICHA DE UMA MACRORREGIÃO REFAZ A SOMA.
-            #
-            # O bloco `db` que chega veio do último `GET`, e o `GET` mostra a linha
-            # gravada — que pode estar para trás de uma recarga do Databricks
-            # (`pendencias._macrorregioes_desatualizadas` é quem avisa). Regravá-lo
-            # como veio devolveria ao banco a soma velha, e a divergência
-            # sobreviveria à única ação que a pessoa tem para corrigi-la.
-            #
-            # As medidas do Databricks não são digitadas: são travadas na tela. Não
-            # há, portanto, nada que a pessoa tenha escrito aqui para ser
-            # descartado — o que se descarta é uma cópia envelhecida do que a base
-            # comercial já diz. A trilha registra a diferença com origem
-            # `databricks`, que é o que ela significa: correção de número que veio
-            # de fora.
-            if (frescas := await _somas_de_hoje(con, ficha_id)) is not None:
-                bloco_db = frescas
+        # GRAVAR A FICHA DE UMA MACRORREGIÃO REFAZ A SOMA.
+        #
+        # O bloco `db` que chega veio do último `GET`, e o `GET` mostra a linha
+        # gravada — que pode estar para trás de uma recarga do Databricks
+        # (`pendencias._macrorregioes_desatualizadas` é quem avisa). Regravá-lo
+        # como veio devolveria ao banco a soma velha, e a divergência
+        # sobreviveria à única ação que a pessoa tem para corrigi-la.
+        #
+        # As medidas do Databricks não são digitadas: são travadas na tela. Não
+        # há, portanto, nada que a pessoa tenha escrito aqui para ser descartado —
+        # o que se descarta é uma cópia envelhecida do que a base comercial já diz.
+        # A trilha registra a diferença com origem `databricks`, que é o que ela
+        # significa: correção de número que veio de fora.
+        if e_cts and (frescas := await _somas_de_hoje(con, ficha_id)) is not None:
+            bloco_db = frescas
         mudancas = await _gravar_coleta(
             con,
             tabela=tabela,
@@ -1372,13 +1370,12 @@ async def _sistemas_com_varias_cts(con: Any, unidade_id: str) -> dict[str, list[
     idas ao banco na unidade maior — por um clique numa caixa.
     """
     linhas = await con.fetch(
-        f"""SELECT t.sistema_id AS sis, array_agg(t.componente_sistema_id ORDER BY 1) AS cts
+        f"""WITH cidades AS ({CIDADES_DA_UNIDADE.format(i=_i())})
+            SELECT t.sistema_id AS sis, array_agg(t.componente_sistema_id ORDER BY 1) AS cts
               FROM {_i()}.sistema_topologia t
               JOIN {_i()}.cts_operacional o ON o.cts = t.componente_sistema_id
               JOIN {_i()}.cidade_sistema cs ON cs.sistema_id = t.sistema_id
-              JOIN {_i()}.cidade_empresa c ON c.cidade_id = cs.cidade_id
-              JOIN {_i()}.empresa e USING (emp_codigo)
-             WHERE e.unidade_id = $1
+              JOIN cidades c ON c.cidade_id = cs.cidade_id
              GROUP BY t.sistema_id
             HAVING count(*) > 1
              ORDER BY 1""",

@@ -2,7 +2,19 @@
 
 Um repositório não importa o outro para pegar um pedaço de SQL: `cadastro` já
 importa `pendencias`, e a primeira consulta que `pendencias` precisou do recorte
-de cidades fechou o ciclo. O pedaço mora aqui, e os três leem daqui.
+de cidades fechou o ciclo. O pedaço mora aqui, e todos leem daqui.
+
+ELE JÁ FOI SETE ESCRITAS: a definição que morava em `cadastro`, mais seis cópias
+à mão — quatro em `pendencias`, uma em `cadastro_escrita` e uma em `controle`.
+Todas equivalentes, e nenhuma igual à outra na forma: CTE ou JOIN, uma coluna ou
+três, saindo de `cidade` ou de `cidade_empresa`.
+Nenhuma divergia em resultado no dia em que foram unificadas, o que é justamente o
+que torna esse tipo de cópia perigoso: ela não erra hoje. Erra no dia em que a
+hierarquia ganha um nível — como ganhou a diretoria na migração 017 — e alguém
+corrige cinco das seis.
+
+O RECORTE ERRADO NÃO DÁ ERRO: ele mostra dado de outra unidade, sem sinal nenhum.
+`tests/test_recorte_da_unidade.py` é o guarda-corpo contra a sétima cópia.
 
 O recorte é `{i}`-parametrizado no schema e `$1` na unidade, como o resto do
 `infra`: schema entra por f-string porque não dá para parametrizá-lo, e o id da
