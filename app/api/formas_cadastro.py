@@ -145,12 +145,9 @@ class ComponenteSemSistema(BaseModel):
     id: str
     nome: str
     tipo: str
-    #: A cidade da CTS — é por ela que a tela recorta o seletor para a cidade do
-    #: sistema. Vazio quando a carga ainda não a trouxe: essas vêm mesmo assim, e
-    #: a tela as mostra separadas em vez de escondê-las.
-    #:
-    #: NA MACRORREGIÃO ela é a cidade DOMINANTE, e o recorte por cidade não vale:
-    #: ver `macro`.
+    #: A cidade da CTS — a dominante, na macrorregião. INFORMATIVA: o seletor da
+    #: tela recorta por `empId`, e não por ela, desde que o sistema pode estar em
+    #: várias cidades (migração 022). Vazio quando a carga não a trouxe.
     cidId: str
     #: ESTA LINHA É UMA MACRORREGIÃO? `"true"` ou `"false"`, como o resto desta
     #: resposta, que é toda de strings.
@@ -163,10 +160,11 @@ class ComponenteSemSistema(BaseModel):
     #: coletor; aplicado a ela, esconderia-a de todos os sistemas das outras
     #: cidades que ela atende.
     macro: str = "false"
-    #: A EMPRESA da macrorregião — a outra metade da chave `(sistema_cts,
-    #: emp_codigo)`, e a régua pela qual o seletor a recorta: ela cruza
-    #: município, então a cidade não serve. Vazio num coletor comum, que se
-    #: recorta por `cidId`.
+    #: A EMPRESA do componente — a régua pela qual o seletor da tela recorta,
+    #: para o coletor comum e para a macrorregião: um sistema pode estar em
+    #: cidades de mais de uma empresa, e o seletor casa contra o conjunto. Na
+    #: macrorregião é a outra metade da chave `(sistema_cts, emp_codigo)`. Vazio
+    #: quando o coletor não tem cidade, e portanto não tem empresa.
     empId: str = ""
 
 

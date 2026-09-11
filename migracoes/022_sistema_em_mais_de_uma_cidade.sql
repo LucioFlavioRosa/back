@@ -63,12 +63,20 @@ COMMENT ON TABLE input.cidade_sistema IS
 ALTER TABLE input.subbacia_operacional
   ADD COLUMN IF NOT EXISTS cidade_id text REFERENCES input.cidade (cidade_id);
 
+-- A PRIMEIRA CIDADE DO SISTEMA, EM ORDEM — e nao "uma delas". Numa base onde
+-- o sistema ja esteja em duas cidades e a sub-bacia ainda nao tenha a sua, um
+-- JOIN direto casaria a sub-bacia com duas linhas e o Postgres gravaria a que
+-- viesse primeiro no plano, que muda de execucao para execucao. `min` e
+-- determinístico; a escolha continua sendo um chute, mas e o mesmo chute toda
+-- vez, e a carga real escreve a coluna direto.
 UPDATE input.subbacia_operacional b
-   SET cidade_id = cs.cidade_id
-  FROM input.sistema_topologia t
-  JOIN input.cidade_sistema cs ON cs.sistema_id = t.sistema_id
- WHERE t.componente_sistema_id = b.sub_bacia
-   AND b.cidade_id IS NULL;
+   SET cidade_id = (SELECT min(cs.cidade_id)
+                      FROM input.sistema_topologia t
+                      JOIN input.cidade_sistema cs ON cs.sistema_id = t.sistema_id
+                     WHERE t.componente_sistema_id = b.sub_bacia)
+ WHERE b.cidade_id IS NULL
+   AND EXISTS (SELECT 1 FROM input.sistema_topologia t
+                WHERE t.componente_sistema_id = b.sub_bacia AND t.sistema_id IS NOT NULL);
 
 COMMENT ON COLUMN input.subbacia_operacional.cidade_id IS
   'A cidade da sub-bacia, vinda da origem. Nao se deduz mais do sistema: ele pode '

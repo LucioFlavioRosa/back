@@ -580,8 +580,18 @@ async def sub_bacias(unidade_id: str) -> dict[str, Any]:
               -- sistema pode estar em varias, e a arvore agrupa por cidade. Sem
               -- isto, uma sub-bacia de Mesquita apareceria sob Belford Roxo so
               -- porque o Sarapui comeca la.
+              --
+              -- SEM CIDADE, CAI NA DO SISTEMA — a primeira, em ordem. A coluna e
+              -- nulavel, e uma sub-bacia sem cidade que sumisse daqui sumiria
+              -- tambem do mapa de fichas (`subs` e montado a partir destas
+              -- linhas): existiria no banco, seria no do motor, e nao teria como
+              -- ser preenchida.
               JOIN {_i()}.subbacia_operacional b ON b.sub_bacia = t.componente_sistema_id
-              JOIN ({_cidades_cte()}) c ON c.cidade_id = b.cidade_id
+              JOIN ({_cidades_cte()}) c
+                ON c.cidade_id = coalesce(
+                       b.cidade_id,
+                       (SELECT min(cs.cidade_id) FROM {_i()}.cidade_sistema cs
+                         WHERE cs.sistema_id = s.sistema_id))
               JOIN {_i()}.empresa e USING (emp_codigo)
              ORDER BY e.empresa, c.cidade_name, s.sistema_name,
                       t.componente_sistema_id""",

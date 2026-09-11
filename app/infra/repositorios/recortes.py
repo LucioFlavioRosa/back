@@ -54,9 +54,14 @@ CIDADES_DA_UNIDADE = """
 #:
 #: Quem precisa da CIDADE do sistema (a lista de sistemas da hierarquia, o rail
 #: de navegação) não usa isto: para essas a linha por cidade é o que se quer.
+#:
+#: O NOME VEM DE `input.sistema`, a entidade — e não de `cidade_sistema`, que o
+#: repete numa linha por cidade e nada prende as cópias entre si. O par existe
+#: para dizer ONDE o sistema está; quem ele é mora na tabela dele.
 SISTEMAS_DA_UNIDADE = """
-    SELECT DISTINCT cs.sistema_id, cs.sistema_name
-      FROM {i}.cidade_sistema cs
+    SELECT DISTINCT s.sistema_id, s.sistema_name
+      FROM {i}.sistema s
+      JOIN {i}.cidade_sistema cs ON cs.sistema_id = s.sistema_id
       JOIN {i}.cidade_empresa ce ON ce.cidade_id = cs.cidade_id
       JOIN {i}.empresa e ON e.emp_codigo = ce.emp_codigo
      WHERE e.unidade_id = $1

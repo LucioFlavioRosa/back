@@ -52,6 +52,17 @@ BASE_MODELO = "otimizador"
 
 PASTA = Path(sys.argv[1]) if len(sys.argv) > 1 else Path.home() / "Downloads"
 BANCO = sys.argv[2] if len(sys.argv) > 2 else "otimizador_real"
+
+#: O QUE ESTE SCRIPT NUNCA APAGA. Ele faz `DROP DATABASE` no nome que receber, e
+#: um segundo argumento errado — `otimizador`, no cansaço — levaria a base de
+#: trabalho junto, com tudo que a Regional preencheu. A lista e curta e
+#: explicita; o nome tambem tem de dizer que e uma carga (`_real`, `_teste`...).
+INTOCAVEIS = {"", "otimizador", "otim_revisao", "postgres", "template0", "template1"}
+if BANCO in INTOCAVEIS or "_" not in BANCO:
+    raise SystemExit(
+        f"recusado: '{BANCO}' nao e nome de base de carga. Use um nome com sufixo, "
+        "como 'otimizador_real' — este script APAGA a base que receber."
+    )
 PREFIXO = "PORTFOLIO_INVEST_CAPEX_SUBBACIAS_v5_"
 
 #: As 5 obras de uma sub-bacia, no vocabulário da carga do mock — o mesmo que
