@@ -220,6 +220,15 @@ class Contrato(BaseModel):
 # ===========================================================================
 #  Fichas de coleta — sub-bacia e CTS têm a MESMA forma
 # ===========================================================================
+class MembroDaMacrorregiao(BaseModel):
+    """Um coletor dentro de uma macrorregião — o bastante para conferir a soma."""
+
+    id: str
+    nome: str
+    cidId: str
+    ligA: str
+
+
 class FichaDeColeta(BaseModel):
     id: str
     nome: str
@@ -241,6 +250,9 @@ class FichaDeColeta(BaseModel):
     sistemaCts: str = ""
     #: SÓ NA CTS: `"true"` quando a ficha é a linha da macrorregião.
     macro: str = "false"
+    #: SÓ NA MACRORREGIÃO: os coletores que a soma contém. É o que permite
+    #: CONFERIR a ficha somada em vez de acreditar nela. Vazio no resto.
+    membros: list[MembroDaMacrorregiao] = []
 
 
 class SistemaDaArvore(BaseModel):

@@ -877,6 +877,48 @@ async def _fichas_de_macrorregiao(unidade_id: str) -> dict[str, dict[str, Any]]:
     return fichas
 
 
+async def _membros_por_macrorregiao(unidade_id: str) -> dict[str, list[dict[str, Any]]]:
+    """Os coletores de cada macrorregião COLOCADA da unidade, para a ficha mostrar.
+
+    Pelo par `(sistema_cts, emp_codigo)`, como toda leitura de macrorregião: a
+    empresa da linha vem da cidade dominante dela, e só os coletores dessa
+    empresa contam. Traz o que se precisa para conferir a soma — id, nome e as
+    ligações atuais —, e não a ficha inteira de cada um.
+    """
+    linhas = await db.buscar(
+        f"""WITH cid AS ({_cidades_cte()}),
+             macros AS (
+                SELECT o.cts AS macro, ce.emp_codigo
+                  FROM {_i()}.cts_operacional o
+                  JOIN cid ON cid.cidade_id = o.cidade_id
+                  JOIN {_i()}.cidade_empresa ce ON ce.cidade_id = o.cidade_id
+                  JOIN {_i()}.sistema_topologia t ON t.componente_sistema_id = o.cts
+                 WHERE o.e_macrorregiao AND coalesce(t.sistema_id, '') <> ''
+             )
+            SELECT m.macro, o.cts AS id, t.componente_sistema_nome AS nome,
+                   o.cidade_id, o.ligacoes_atuais
+              FROM macros m
+              JOIN {_i()}.cts_operacional o ON o.sistema_cts = m.macro
+              JOIN {_i()}.cidade_empresa ce
+                ON ce.cidade_id = o.cidade_id AND ce.emp_codigo = m.emp_codigo
+              LEFT JOIN {_i()}.sistema_topologia t ON t.componente_sistema_id = o.cts
+             WHERE NOT o.e_macrorregiao
+             ORDER BY m.macro, o.cts""",
+        unidade_id,
+    )
+    saida: dict[str, list[dict[str, Any]]] = {}
+    for l in linhas:
+        saida.setdefault(l["macro"], []).append(
+            {
+                "id": l["id"],
+                "nome": l["nome"] or l["id"],
+                "cidId": l["cidade_id"] or "",
+                "ligA": pt_br(l["ligacoes_atuais"]),
+            }
+        )
+    return saida
+
+
 async def _macrorregioes_livres(unidade_id: str) -> list[dict[str, Any]]:
     """As macrorregiões que a tela de montar o sistema pode oferecer.
 
@@ -963,7 +1005,15 @@ async def cts(unidade_id: str) -> dict[str, Any]:
     # Onde as duas se encontram — a linha da macrorregião já colocada — vence a
     # versão daqui, que é a mesma linha lida pela regra da macrorregião.
     if await _usa_macrorregiao(unidade_id):
-        fichas.update(await _fichas_de_macrorregiao(unidade_id))
+        for cid, ficha in (await _fichas_de_macrorregiao(unidade_id)).items():
+            # UM COLETOR COLOCADO NUNCA É COBERTO POR UMA SOMA. Se um coletor de
+            # verdade tiver o mesmo id que o nome de uma macrorregião ainda não
+            # materializada, `update` cego trocaria a ficha real dele pela soma
+            # calculada — e a tela editaria um número que não é dele. A escrita
+            # recusa esse homônimo ao colocar; isto cobre o que a carga já trouxe.
+            if cid in fichas and not fichas[cid].get("e_macrorregiao"):
+                continue
+            fichas[cid] = ficha
     linhas = await db.buscar(
         f"""SELECT t.componente_sistema_id AS cts,
                    t.componente_sistema_nome AS nome,
@@ -979,6 +1029,7 @@ async def cts(unidade_id: str) -> dict[str, Any]:
     obras = await _obras_por_ficha(
         "componentes_cts_capex", "cts", list(fichas), _INDICE_CTS
     )
+    membros = await _membros_por_macrorregiao(unidade_id)
 
     ctss: dict[str, Any] = {}
     for l in linhas:
@@ -1004,6 +1055,11 @@ async def cts(unidade_id: str) -> dict[str, Any]:
                 or ""
             ),
             "macro": "true" if ficha.get("e_macrorregiao") else "false",
+            # OS COLETORES QUE A SOMA CONTÉM, com as ligações de cada um. É o que
+            # permite CONFERIR a macrorregião em vez de acreditar nela: sem isto a
+            # ficha somada é um número, e uma macrorregião de 29 coletores é
+            # indistinguível de uma de 1.
+            "membros": membros.get(cid, []),
         }
 
     return {

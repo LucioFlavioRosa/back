@@ -823,6 +823,61 @@ async def _travar_unidade(con: Any, unidade_id: str) -> None:
     await con.execute("SELECT pg_advisory_xact_lock(hashtext($1))", unidade_id)
 
 
+async def _empresa_do_sistema(con: Any, sistema_id: str) -> str | None:
+    """A empresa que opera o sistema — pela cidade dele, como toda empresa aqui."""
+    return await con.fetchval(
+        f"""SELECT ce.emp_codigo
+              FROM {_i()}.cidade_sistema cs
+              JOIN {_i()}.cidade_empresa ce ON ce.cidade_id = cs.cidade_id
+             WHERE cs.sistema_id = $1""",
+        sistema_id,
+    )
+
+
+async def _empresa_da_macrorregiao(con: Any, cts_id: str) -> str | None:
+    """A empresa da LINHA da macrorregião, ou `None` se `cts_id` não é uma.
+
+    Pela cidade dominante dela — que é de um membro, e todo membro é da empresa
+    do par. É a mesma leitura que `_somas_de_hoje` faz para recortar os membros.
+    """
+    return await con.fetchval(
+        f"""SELECT ce.emp_codigo
+              FROM {_i()}.cts_operacional o
+              JOIN {_i()}.cidade_empresa ce ON ce.cidade_id = o.cidade_id
+             WHERE o.cts = $1 AND o.e_macrorregiao""",
+        cts_id,
+    )
+
+
+async def _exigir_empresa_da_macrorregiao(
+    con: Any, *, componente_id: str, sistema_id: str
+) -> None:
+    """A MACRORREGIÃO SÓ ENTRA EM SISTEMA DA EMPRESA DELA.
+
+    A chave da macrorregião é `(sistema_cts, emp_codigo)`, e a segunda metade
+    não é decoração: a tela recorta o seletor por ela, e uma regra que só a tela
+    conhece é uma regra que a lista antiga aberta — ou uma chamada direta —
+    atravessa. Colocada num sistema de outra empresa, a macrorregião somaria os
+    coletores de uma operadora dentro do sistema de outra, e a rodada atribuiria
+    receita e obras a quem não as opera.
+
+    Não se aplica ao coletor comum: o recorte dele é por CIDADE, e a gravação
+    nunca o impôs — é escolha de quem monta, e a topologia tem componente de
+    outra cidade em estado legado. A macrorregião é diferente porque a empresa é
+    parte do que ela É.
+    """
+    empresa = await _empresa_da_macrorregiao(con, componente_id)
+    if empresa is None:
+        return
+    do_sistema = await _empresa_do_sistema(con, sistema_id)
+    if do_sistema != empresa:
+        raise TopologiaInvalida(
+            f"A macrorregião {componente_id!r} é da empresa {empresa!r}, e o sistema "
+            f"{sistema_id!r} é de {do_sistema!r}. Uma macrorregião só entra em "
+            "sistema da empresa que a opera — é a outra metade da chave dela."
+        )
+
+
 async def _unidade_do_sistema(con: Any, sistema_id: str) -> str | None:
     linha = await con.fetchrow(
         f"""SELECT s.unidade_id
@@ -1302,6 +1357,9 @@ async def salvar_topologia(
         # seletor, mas quem desmarcar a caixa, adicionar duas e marcar de volta
         # passaria pela tela sem passar por aqui.
         if await _e_cts(con, componente_id) and usa_macro:
+            await _exigir_empresa_da_macrorregiao(
+                con, componente_id=componente_id, sistema_id=sistema_id
+            )
             # MEMBRO NÃO SE COLOCA SOZINHO. A tela marcada oferece macrorregiões, e
             # não os coletores que as formam — colocar um deles é exatamente o que a
             # macrorregião existe para impedir. Chega aqui quem tinha a lista antiga
@@ -1875,6 +1933,14 @@ async def salvar_topologia_em_lote(
                     "a macrorregião no sistema — ela entra inteira, com os "
                     "coletores dentro."
                 )
+            # E A MACRORREGIÃO SÓ NO SISTEMA DA EMPRESA DELA — a mesma regra da
+            # rota de um componente, para cada macrorregião do envio.
+            for sistema_id, mapa in pedido.items():
+                for componente_id in mapa:
+                    if componente_id in ctss:
+                        await _exigir_empresa_da_macrorregiao(
+                            con, componente_id=componente_id, sistema_id=sistema_id
+                        )
 
         problemas: list[str] = []
         for sistema_id, mapa in pedido.items():
