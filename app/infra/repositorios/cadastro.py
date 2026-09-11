@@ -371,10 +371,16 @@ async def hierarquia(unidade_id: str) -> dict[str, Any]:
                         WHEN c.cts    IS NOT NULL THEN 'cts'
                         WHEN b.sub_bacia IS NOT NULL THEN 'sub-bacia'
                         ELSE '' END AS tipo,
-                   c.cidade_id AS "cidId"
+                   c.cidade_id AS "cidId",
+                   -- A EMPRESA do coletor, pela cidade dele: e por ela que o Fluxo
+                   -- recorta o seletor. Cidade deixou de ser a regua desde que o
+                   -- sistema pode estar em varias (migracao 022) — um coletor de
+                   -- Mesquita pertence ao Sarapui tanto quanto um de Belford Roxo.
+                   ce.emp_codigo AS "empId"
               FROM {_i()}.sistema_topologia t
               LEFT JOIN {_i()}.ete_capex e ON e.ete_id = t.componente_sistema_id
               LEFT JOIN {_i()}.cts_operacional c ON c.cts = t.componente_sistema_id
+              LEFT JOIN {_i()}.cidade_empresa ce ON ce.cidade_id = c.cidade_id
               LEFT JOIN {_i()}.subbacia_operacional b
                      ON b.sub_bacia = t.componente_sistema_id
              WHERE t.sistema_id IS NULL
