@@ -30,7 +30,12 @@ from app.dominio.campos import COLETA, DO_DATABRICKS
 from app.dominio.formato import SEM_SEPARADOR, pt_br, pt_br_ano
 from app.infra import db
 from app.infra.repositorios import pendencias
-from app.infra.repositorios.recortes import CIDADES_DA_UNIDADE, SISTEMAS_DA_UNIDADE
+from app.infra.repositorios.recortes import (
+    CIDADES_DA_UNIDADE,
+    MACRORREGIOES_COLOCADAS,
+    SISTEMAS_DA_UNIDADE,
+    USA_MACRORREGIAO,
+)
 
 log = logging.getLogger(__name__)
 
@@ -413,9 +418,7 @@ async def hierarquia(unidade_id: str) -> dict[str, Any]:
     if await _usa_macrorregiao(unidade_id):
         # `tipo` continua 'cts': para a tela, a macrorregião É o coletor daquele
         # sistema. Ela não aprende uma palavra nova, e `ehCts` continua valendo.
-        sem_sistema = [
-            {**l, "macro": "false"} for l in sem_sistema if l["tipo"] != "cts"
-        ] + [
+        sem_sistema = [l for l in sem_sistema if l["tipo"] != "cts"] + [
             {
                 "id": m["id"],
                 "nome": m["id"],
@@ -842,65 +845,8 @@ async def _usa_macrorregiao(unidade_id: str) -> bool:
     devolveria CTS individuais numa unidade marcada — sem erro, e com a tela
     oferecendo o que a unidade declarou não usar.
     """
-    linha = await db.buscar_um(
-        f"SELECT usa_macrorregiao_cts FROM {_i()}.unidade_regional WHERE unidade_id = $1",
-        unidade_id,
-    )
+    linha = await db.buscar_um(USA_MACRORREGIAO.format(i=_i()), unidade_id)
     return bool(linha and linha["usa_macrorregiao_cts"])
-
-
-async def _fichas_de_macrorregiao(unidade_id: str) -> dict[str, dict[str, Any]]:
-    """As fichas das macrorregiões desta unidade, já somadas.
-
-    A CHAVE é o id que a origem dá à macrorregião (`sistema_cts`), e não um id
-    inventado aqui: ele é o que a tela devolve ao colocar a macrorregião num
-    sistema, e um id gerado por nós teria de ser guardado em algum lugar só para
-    ser reconhecido de volta.
-
-    A soma é a de `dominio.macrorregiao_cts` — as medidas do Databricks
-    (`COLUNAS_QUE_SOMAM`: as doze que a ficha mostra, mais
-    `populacao_novas_obras`). Os `params` e as 4 obras NÃO saem daqui: são
-    preenchimento da macrorregião, e vêm da ficha dela.
-    """
-    membros = await db.buscar(
-        f"""SELECT o.*, ce.emp_codigo
-              FROM {_i()}.cts_operacional o
-              JOIN {_i()}.cidade_empresa ce ON ce.cidade_id = o.cidade_id
-              JOIN ({_cidades_cte()}) c ON c.cidade_id = o.cidade_id
-             WHERE o.sistema_cts IS NOT NULL AND btrim(o.sistema_cts) <> ''""",
-        unidade_id,
-    )
-    grupos = macrorregiao_cts.agrupar(membros)
-    # NOME QUE DUAS EMPRESAS USAM FICA DE FORA — ver `macrorregiao_cts.nomes_ambiguos`.
-    # As fichas são um MAPA POR ID, e o id é o nome: manter os dois faria o segundo
-    # sobrescrever o primeiro, que é a fusão silenciosa que a regra existe para
-    # impedir. Ele também não é oferecido para montar o sistema, então nunca chega
-    # a ter linha nem obras.
-    ambiguos = macrorregiao_cts.nomes_ambiguos(grupos)
-    fichas: dict[str, dict[str, Any]] = {}
-    for (macro, _empresa), grupo in grupos.items():
-        if macro in ambiguos:
-            continue
-        fichas[macro] = {**macrorregiao_cts.agregar(grupo), "cts": macro}
-
-    # A LINHA GRAVADA MANDA, quando existe. São dois estados, e cada um tem UMA
-    # verdade: enquanto a macrorregião não foi colocada num sistema ela não tem
-    # linha, e a ficha é a soma calculada agora; colocada, a soma virou linha
-    # (`_preparar_macrorregiao`) e é ela que a Regional preenche, que a trilha
-    # audita e que o MOTOR lê. Recalcular por cima faria a tela mostrar um número
-    # e a rodada usar outro no mesmo instante.
-    fichas.update(
-        {
-            l["cts"]: dict(l)
-            for l in await db.buscar(
-                f"""SELECT o.* FROM {_i()}.cts_operacional o
-                      JOIN ({_cidades_cte()}) c ON c.cidade_id = o.cidade_id
-                     WHERE o.e_macrorregiao""",
-                unidade_id,
-            )
-        }
-    )
-    return fichas
 
 
 async def _membros_por_macrorregiao(unidade_id: str) -> dict[str, list[dict[str, Any]]]:
@@ -912,14 +858,9 @@ async def _membros_por_macrorregiao(unidade_id: str) -> dict[str, list[dict[str,
     ligações atuais —, e não a ficha inteira de cada um.
     """
     linhas = await db.buscar(
-        f"""WITH cid AS ({_cidades_cte()}),
-             macros AS (
-                SELECT o.cts AS macro, ce.emp_codigo
-                  FROM {_i()}.cts_operacional o
-                  JOIN cid ON cid.cidade_id = o.cidade_id
-                  JOIN {_i()}.cidade_empresa ce ON ce.cidade_id = o.cidade_id
-                  JOIN {_i()}.sistema_topologia t ON t.componente_sistema_id = o.cts
-                 WHERE o.e_macrorregiao AND coalesce(t.sistema_id, '') <> ''
+        f"""WITH macros AS (
+                SELECT cts AS macro, emp_codigo
+                  FROM ({MACRORREGIOES_COLOCADAS.format(i=_i())}) m
              )
             SELECT m.macro, o.cts AS id, t.componente_sistema_nome AS nome,
                    o.cidade_id, o.ligacoes_atuais
@@ -954,10 +895,9 @@ async def _macrorregioes_livres(unidade_id: str) -> list[dict[str, Any]]:
     """
     membros = await db.buscar(
         f"""SELECT o.cts, o.cidade_id, o.ligacoes_atuais, o.sistema_cts,
-                   ce.emp_codigo,
+                   c.emp_codigo,
                    coalesce(t.sistema_id, '') <> '' AS colocada
               FROM {_i()}.cts_operacional o
-              JOIN {_i()}.cidade_empresa ce ON ce.cidade_id = o.cidade_id
               JOIN ({_cidades_cte()}) c ON c.cidade_id = o.cidade_id
               LEFT JOIN {_i()}.sistema_topologia t
                      ON t.componente_sistema_id = o.cts
@@ -971,11 +911,7 @@ async def _macrorregioes_livres(unidade_id: str) -> list[dict[str, Any]]:
     colocadas = {
         l["cts"]
         for l in await db.buscar(
-            f"""SELECT o.cts FROM {_i()}.cts_operacional o
-                  JOIN ({_cidades_cte()}) c ON c.cidade_id = o.cidade_id
-                  JOIN {_i()}.sistema_topologia t ON t.componente_sistema_id = o.cts
-                 WHERE o.e_macrorregiao AND coalesce(t.sistema_id, '') <> ''""",
-            unidade_id,
+            f"SELECT cts FROM ({MACRORREGIOES_COLOCADAS.format(i=_i())}) m", unidade_id
         )
     }
     return macrorregiao_cts.livres(macrorregiao_cts.agrupar(membros), colocadas)
@@ -1020,25 +956,12 @@ async def cts(unidade_id: str) -> dict[str, Any]:
             unidade_id,
         )
     }
-    # E AS MACRORREGIÕES POR CIMA, quando a unidade trabalha nesse regime. Elas
-    # ACRESCENTAM, e não substituem: a macrorregião é o que se oferece para
-    # montar o sistema, mas um coletor que a origem não pôs em macrorregião
-    # nenhuma (`sistema_cts` nulo) continua colocável — a regra do regime é UMA
-    # CTS por sistema, e não "só macrorregiões". Substituir a lista fazia esse
-    # coletor sumir da tela no instante em que alguém marcava a caixa.
-    #
-    # Onde as duas se encontram — a linha da macrorregião já colocada — vence a
-    # versão daqui, que é a mesma linha lida pela regra da macrorregião.
-    if await _usa_macrorregiao(unidade_id):
-        for cid, ficha in (await _fichas_de_macrorregiao(unidade_id)).items():
-            # UM COLETOR COLOCADO NUNCA É COBERTO POR UMA SOMA. Se um coletor de
-            # verdade tiver o mesmo id que o nome de uma macrorregião ainda não
-            # materializada, `update` cego trocaria a ficha real dele pela soma
-            # calculada — e a tela editaria um número que não é dele. A escrita
-            # recusa esse homônimo ao colocar; isto cobre o que a carga já trouxe.
-            if cid in fichas and not fichas[cid].get("e_macrorregiao"):
-                continue
-            fichas[cid] = ficha
+    # A MACRORREGIÃO NÃO PRECISA DE CAMINHO PRÓPRIO AQUI. Colocada, ela é uma
+    # linha de `cts_operacional` na topologia como qualquer coletor, e a consulta
+    # acima já a traz; não colocada, ela não tem linha nem está na topologia, e
+    # nada abaixo a emitiria. Um bloco que sobrepunha "as fichas de macrorregião"
+    # por cima destas existiu e não fazia nada — era o resto do modelo anterior
+    # à migração 021, em que a ficha era somada na leitura.
     linhas = await db.buscar(
         f"""SELECT t.componente_sistema_id AS cts,
                    t.componente_sistema_nome AS nome,
@@ -1073,12 +996,7 @@ async def cts(unidade_id: str) -> dict[str, Any]:
             # próprio id — ela É o sistema CTS, e a coluna dela fica nula por não
             # ser membro de si mesma (migração 021). Vazio num coletor que a
             # origem não pôs em macrorregião nenhuma.
-            "sistemaCts": (
-                ficha.get("sistema_cts")
-                or (cid if ficha.get("e_macrorregiao") else "")
-                or ""
-            ),
-            "macro": "true" if ficha.get("e_macrorregiao") else "false",
+            "sistemaCts": ficha.get("sistema_cts") or (cid if ficha.get("e_macrorregiao") else ""),
             # OS COLETORES QUE A SOMA CONTÉM, com as ligações de cada um. É o que
             # permite CONFERIR a macrorregião em vez de acreditar nela: sem isto a
             # ficha somada é um número, e uma macrorregião de 29 coletores é

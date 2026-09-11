@@ -43,7 +43,7 @@ from pathlib import Path
 import asyncpg
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from app.dominio.campos import OBRAS_DA_CTS  # noqa: E402
+from app.dominio.campos import OBRAS_DA_CTS, OBRAS_DA_SUBBACIA  # noqa: E402
 
 CONTAINER = "otimizador-backend-db-1"
 PORTA = 55432
@@ -64,16 +64,6 @@ if BANCO in INTOCAVEIS or "_" not in BANCO:
         "como 'otimizador_real' — este script APAGA a base que receber."
     )
 PREFIXO = "PORTFOLIO_INVEST_CAPEX_SUBBACIAS_v5_"
-
-#: As 5 obras de uma sub-bacia, no vocabulário da carga do mock — o mesmo que
-#: `_INDICE_SUBBACIA` reconhece. A ordem é a do caminho do esgoto.
-OBRAS_DA_SUBBACIA = (
-    ("Ligacao de esgoto", "ligacao"),
-    ("Rede coletora", "m"),
-    ("Coletor tronco", "m"),
-    ("Estacao elevatoria (EEE)", "un"),
-    ("Linha de recalque (LR)", "m"),
-)
 
 #: CSV -> coluna da ficha de coleta. As oito primeiras têm par `_COM_CTS` na
 #: sub-bacia, e o par vai para a coluna `*_com_cts` correspondente.

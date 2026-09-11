@@ -21,7 +21,7 @@ O recorte é `{i}`-parametrizado no schema e `$1` na unidade, como o resto do
 unidade entra como argumento porque dá.
 """
 
-__all__ = ["CIDADES_DA_UNIDADE", "SISTEMAS_DA_UNIDADE"]
+__all__ = ["CIDADES_DA_UNIDADE", "MACRORREGIOES_COLOCADAS", "SISTEMAS_DA_UNIDADE", "USA_MACRORREGIAO"]
 
 
 #: AS CIDADES DE UMA UNIDADE, pela hierarquia
@@ -65,4 +65,30 @@ SISTEMAS_DA_UNIDADE = """
       JOIN {i}.cidade_empresa ce ON ce.cidade_id = cs.cidade_id
       JOIN {i}.empresa e ON e.emp_codigo = ce.emp_codigo
      WHERE e.unidade_id = $1
+"""
+
+
+#: A UNIDADE TRABALHA EM MACRORREGIÃO DE CTS? A pergunta que decide a
+#: cardinalidade do que se serve — e que a leitura e a escrita faziam cada uma
+#: com o seu SQL. Uma só: se a política ganhar um segundo critério, as duas
+#: pontas mudam juntas, e a tela não oferece o que a unidade declarou não usar.
+USA_MACRORREGIAO = """
+    SELECT usa_macrorregiao_cts FROM {i}.unidade_regional WHERE unidade_id = $1
+"""
+
+
+#: AS MACRORREGIÕES COLOCADAS de uma unidade: a linha inteira, a empresa dela e
+#: o sistema em que está.
+#:
+#: "Colocada" é `e_macrorregiao` com `sistema_id` preenchido na topologia — e
+#: essa definição estava escrita quatro vezes (a oferta do Fluxo, os membros da
+#: ficha, a recusa de desmarcar, o alarme da prontidão), variando só a projeção.
+#: A empresa vem do recorte de cidades, que já a traz: é a outra metade da chave
+#: `(sistema_cts, emp_codigo)`, deduzida da cidade dominante da linha.
+MACRORREGIOES_COLOCADAS = """
+    SELECT o.*, c.emp_codigo, t.sistema_id
+      FROM {i}.cts_operacional o
+      JOIN (""" + CIDADES_DA_UNIDADE + """) c ON c.cidade_id = o.cidade_id
+      JOIN {i}.sistema_topologia t ON t.componente_sistema_id = o.cts
+     WHERE o.e_macrorregiao AND coalesce(t.sistema_id, '') <> ''
 """

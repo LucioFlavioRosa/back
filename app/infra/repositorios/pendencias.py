@@ -56,7 +56,11 @@ from app.config import config
 from app.dominio import macrorregiao_cts
 from app.dominio.campos import OBRAS_CTS, OBRAS_SUBBACIA
 from app.infra import db
-from app.infra.repositorios.recortes import CIDADES_DA_UNIDADE, SISTEMAS_DA_UNIDADE
+from app.infra.repositorios.recortes import (
+    CIDADES_DA_UNIDADE,
+    MACRORREGIOES_COLOCADAS,
+    SISTEMAS_DA_UNIDADE,
+)
 
 #: Campos de `params` que a ficha de coleta cobra sempre.
 _PARAMS = [
@@ -334,14 +338,7 @@ async def _macrorregioes_desatualizadas(unidade_id: str) -> list[dict[str, Any]]
     respondem a mesma pergunta, "o que a tela não tem como saber sozinha".
     """
     guardadas = await db.buscar(
-        f"""WITH cid AS ({CIDADES_DA_UNIDADE.format(i=_i())})
-            SELECT o.*, cid.emp_codigo
-              FROM {_i()}.cts_operacional o
-              JOIN cid ON cid.cidade_id = o.cidade_id
-              JOIN {_i()}.sistema_topologia t ON t.componente_sistema_id = o.cts
-             WHERE o.e_macrorregiao AND coalesce(t.sistema_id, '') <> ''
-             ORDER BY o.cts""",
-        unidade_id,
+        f"SELECT * FROM ({MACRORREGIOES_COLOCADAS.format(i=_i())}) m ORDER BY cts", unidade_id
     )
     if not guardadas:
         return []

@@ -244,8 +244,6 @@ class FichaDeColeta(BaseModel):
     #: sub-bacia e no coletor fora de macrorregião. Não entra no `PUT`: vem da
     #: origem, e a tela só mostra.
     sistemaCts: str = ""
-    #: SÓ NA CTS: `"true"` quando a ficha é a linha da macrorregião.
-    macro: str = "false"
     #: SÓ NA MACRORREGIÃO: os coletores que a soma contém. É o que permite
     #: CONFERIR a ficha somada em vez de acreditar nela. Vazio no resto.
     membros: list[MembroDaMacrorregiao] = []

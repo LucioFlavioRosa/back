@@ -169,6 +169,18 @@ def test_a_ordem_e_a_do_caminho_do_esgoto():
     assert [_INDICE_CTS[nome] for nome, _ in OBRAS_DA_CTS] == ["0", "1", "2", "3"]
 
 
+def test_as_cinco_da_subbacia_cobrem_os_cinco_indices_na_ordem():
+    """O par da sub-bacia: a lista que a carga grava tem de ser exatamente a que
+    `_INDICE_SUBBACIA` reconhece, na ordem em que a tela apresenta — e
+    `OBRAS_SUBBACIA` (o que a prontidão cobra) é o tamanho dela."""
+    from app.dominio.campos import OBRAS_DA_SUBBACIA, OBRAS_SUBBACIA
+    from app.infra.repositorios.cadastro import _INDICE_SUBBACIA
+
+    assert [_INDICE_SUBBACIA[nome] for nome, _ in OBRAS_DA_SUBBACIA] == [
+        str(n) for n in range(OBRAS_SUBBACIA)
+    ]
+
+
 def test_a_obra_da_macrorregiao_nasce_so_com_vocabulario():
     """O `INSERT` que cria as quatro não pode escrever NÚMERO nenhum.
 

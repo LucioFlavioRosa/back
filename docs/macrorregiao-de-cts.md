@@ -250,8 +250,9 @@ estar em cidades de empresas diferentes (`Saracuruna`: Duque de Caxias e Magé),
 o seletor casa contra o **conjunto** de empresas do sistema. `semSistema` traz
 `empId` em todo componente solto, e `macro: "true"` na macrorregião — o `tipo`
 continua `"cts"`, porque para montar o sistema ela **é** o coletor daquele
-sistema. O backend impõe a mesma régua ao gravar
-(`_exigir_empresa_da_macrorregiao`).
+sistema. Ao gravar, o backend impõe a régua **só à macrorregião**
+(`_exigir_empresa_das_macrorregioes`): o coletor comum fora da empresa é
+escolha de quem monta, e a topologia tem componente assim em estado legado.
 
 A **barra de escopo** das abas segue a mesma lógica: o eixo grosso é a empresa,
 e não a cidade, em todas as abas que a têm — incluindo as duas da CTS.

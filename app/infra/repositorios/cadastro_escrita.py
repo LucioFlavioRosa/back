@@ -49,7 +49,12 @@ from app.dominio.topologia import (
 )
 from app.dominio.trilha import REGIONAL, Alteracao, diferencas, origem_do_campo
 from app.infra import db
-from app.infra.repositorios.recortes import CIDADES_DA_UNIDADE, SISTEMAS_DA_UNIDADE
+from app.infra.repositorios.recortes import (
+    CIDADES_DA_UNIDADE,
+    MACRORREGIOES_COLOCADAS,
+    SISTEMAS_DA_UNIDADE,
+    USA_MACRORREGIAO,
+)
 
 
 def _i() -> str:
@@ -823,43 +828,57 @@ async def _travar_unidade(con: Any, unidade_id: str) -> None:
     await con.execute("SELECT pg_advisory_xact_lock(hashtext($1))", unidade_id)
 
 
-async def _empresas_do_sistema(con: Any, sistema_id: str) -> set[str]:
-    """As empresas que operam o sistema — uma por cidade dele.
+async def _empresas_dos_sistemas(con: Any, sistemas: list[str]) -> dict[str, set[str]]:
+    """As empresas que operam cada sistema — um CONJUNTO por sistema.
 
-    Um CONJUNTO, e não um valor: um sistema pode estar em várias cidades
-    (migração 022), e as cidades podem ser de empresas diferentes — `Saracuruna`
-    está em Duque de Caxias (57) e em Magé (56). "A empresa do sistema" deixou de
-    ser pergunta com uma resposta.
+    Conjunto, e não valor: um sistema pode estar em várias cidades (migração
+    022), e as cidades podem ser de empresas diferentes — `Saracuruna` está em
+    Duque de Caxias (57) e em Magé (56). "A empresa do sistema" deixou de ser
+    pergunta com uma resposta.
+
+    Recebe a LISTA e responde numa consulta: o desenho de um sistema chega com
+    dezenas de componentes, e perguntar por componente era uma ida ao banco por
+    CTS, dentro do lock.
     """
+    if not sistemas:
+        return {}
     linhas = await con.fetch(
-        f"""SELECT DISTINCT ce.emp_codigo
+        f"""SELECT DISTINCT cs.sistema_id, ce.emp_codigo
               FROM {_i()}.cidade_sistema cs
               JOIN {_i()}.cidade_empresa ce ON ce.cidade_id = cs.cidade_id
-             WHERE cs.sistema_id = $1""",
-        sistema_id,
+             WHERE cs.sistema_id = ANY($1::text[])""",
+        sistemas,
     )
-    return {l["emp_codigo"] for l in linhas}
+    saida: dict[str, set[str]] = {}
+    for l in linhas:
+        saida.setdefault(l["sistema_id"], set()).add(l["emp_codigo"])
+    return saida
 
 
-async def _empresa_da_macrorregiao(con: Any, cts_id: str) -> str | None:
-    """A empresa da LINHA da macrorregião, ou `None` se `cts_id` não é uma.
+async def _empresas_das_macrorregioes(con: Any, ids: list[str]) -> dict[str, str]:
+    """A empresa da LINHA de cada macrorregião entre `ids`; quem não é macrorregião
+    não aparece.
 
     Pela cidade dominante dela — que é de um membro, e todo membro é da empresa
     do par. É a mesma leitura que `_somas_de_hoje` faz para recortar os membros.
     """
-    return await con.fetchval(
-        f"""SELECT ce.emp_codigo
+    if not ids:
+        return {}
+    linhas = await con.fetch(
+        f"""SELECT o.cts, ce.emp_codigo
               FROM {_i()}.cts_operacional o
               JOIN {_i()}.cidade_empresa ce ON ce.cidade_id = o.cidade_id
-             WHERE o.cts = $1 AND o.e_macrorregiao""",
-        cts_id,
+             WHERE o.cts = ANY($1::text[]) AND o.e_macrorregiao""",
+        ids,
     )
+    return {l["cts"]: l["emp_codigo"] for l in linhas}
 
 
-async def _exigir_empresa_da_macrorregiao(
-    con: Any, *, componente_id: str, sistema_id: str
+async def _exigir_empresa_das_macrorregioes(
+    con: Any, colocacoes: list[tuple[str, str]]
 ) -> None:
-    """A MACRORREGIÃO SÓ ENTRA EM SISTEMA DA EMPRESA DELA.
+    """A MACRORREGIÃO SÓ ENTRA EM SISTEMA DA EMPRESA DELA — para cada par
+    `(componente_id, sistema_id)` da lista, em duas consultas no total.
 
     A chave da macrorregião é `(sistema_cts, emp_codigo)`, e a segunda metade
     não é decoração: a tela recorta o seletor por ela, e uma regra que só a tela
@@ -868,19 +887,25 @@ async def _exigir_empresa_da_macrorregiao(
     coletores de uma operadora dentro do sistema de outra, e a rodada atribuiria
     receita e obras a quem não as opera.
 
-    Não se aplica ao coletor comum: o recorte dele é por CIDADE, e a gravação
-    nunca o impôs — é escolha de quem monta, e a topologia tem componente de
-    outra cidade em estado legado. A macrorregião é diferente porque a empresa é
-    parte do que ela É.
+    Não se aplica ao coletor comum: o recorte dele na tela é por empresa, mas a
+    gravação nunca o impôs — é escolha de quem monta, e a topologia tem
+    componente fora da empresa em estado legado. A macrorregião é diferente
+    porque a empresa é parte do que ela É.
     """
-    empresa = await _empresa_da_macrorregiao(con, componente_id)
-    if empresa is None:
+    empresas = await _empresas_das_macrorregioes(con, sorted({c for c, _s in colocacoes}))
+    if not empresas:
         return
-    do_sistema = await _empresas_do_sistema(con, sistema_id)
-    if empresa not in do_sistema:
+    do_sistema = await _empresas_dos_sistemas(
+        con, sorted({sis for c, sis in colocacoes if c in empresas})
+    )
+    for componente_id, sistema_id in colocacoes:
+        empresa = empresas.get(componente_id)
+        if empresa is None or empresa in do_sistema.get(sistema_id, set()):
+            continue
         raise TopologiaInvalida(
             f"A macrorregião {componente_id!r} é da empresa {empresa!r}, e o sistema "
-            f"{sistema_id!r} é de " + ", ".join(repr(e) for e in sorted(do_sistema))
+            f"{sistema_id!r} é de "
+            + ", ".join(repr(e) for e in sorted(do_sistema.get(sistema_id, set())))
             + ". Uma macrorregião só entra em sistema da empresa que a opera — é a "
             "outra metade da chave dela."
         )
@@ -912,16 +937,44 @@ async def _cts_do_sistema(con: Any, sistema_id: str, exceto: str = "") -> list[s
     return [l["id"] for l in linhas]
 
 
+async def _exigir_que_nao_sejam_membros(
+    con: Any, ids: list[str], unidade_id: str
+) -> None:
+    """MEMBRO NÃO SE COLOCA SOZINHO.
+
+    A tela marcada oferece macrorregiões, e não os coletores que as formam —
+    colocar um deles é exatamente o que a macrorregião existe para impedir.
+    Chega aqui quem tinha a lista antiga aberta quando a caixa foi marcada, ou
+    quem chama a rota direto.
+
+    Uma consulta para todos os `ids`: o desenho de um sistema chega com dezenas
+    de componentes, e a rota de um componente só passa a lista de um.
+    """
+    membros = await con.fetch(
+        f"""SELECT cts, sistema_cts FROM {_i()}.cts_operacional
+             WHERE cts = ANY($1::text[]) AND sistema_cts IS NOT NULL
+               AND btrim(sistema_cts) <> ''
+             ORDER BY 1""",
+        ids,
+    )
+    if membros:
+        raise TopologiaInvalida(
+            "; ".join(
+                f"{l['cts']!r} faz parte da macrorregião {l['sistema_cts']!r}"
+                for l in membros
+            )
+            + f". A unidade {unidade_id!r} trabalha em macrorregião: coloque a "
+            "macrorregião no sistema — ela entra inteira, com os coletores dentro."
+        )
+
+
 async def _unidade_usa_cts(con: Any, unidade_id: str) -> bool:
     """A unidade usa MACRORREGIÃO DE CTS — e com isso cada sistema dela aceita uma?
 
     A pergunta era do sistema e passou a ser da unidade: a política é uma, e vale
     para todos os sistemas dentro dela.
     """
-    linha = await con.fetchrow(
-        f"SELECT usa_macrorregiao_cts FROM {_i()}.unidade_regional WHERE unidade_id = $1",
-        unidade_id,
-    )
+    linha = await con.fetchrow(USA_MACRORREGIAO.format(i=_i()), unidade_id)
     return bool(linha and linha["usa_macrorregiao_cts"])
 
 
@@ -1015,29 +1068,21 @@ async def _somas_de_hoje(con: Any, ficha_id: str) -> dict[str, Any] | None:
     duas tabelas de coleta, para ganhar uma coluna que o motor deriva de
     `universo - atuais` de qualquer jeito.
     """
-    linha = await con.fetchrow(
-        f"SELECT e_macrorregiao FROM {_i()}.cts_operacional WHERE cts = $1", ficha_id
-    )
-    if not linha or not linha["e_macrorregiao"]:
-        return None
     # A CHAVE É O PAR, TAMBÉM AQUI. Somar todo mundo que tem aquele `sistema_cts`
     # é somar por NOME, e nome não é chave: bastaria uma recarga dar o mesmo nome
     # a coletores de outra empresa para esta gravação substituir a ficha pela soma
-    # de um grupo que não é o dela. A empresa da macrorregião vem da cidade dela,
-    # e é ela que recorta os membros.
+    # de um grupo que não é o dela. A empresa da macrorregião — que também
+    # responde "isto é uma macrorregião?" — recorta os membros.
+    empresa = (await _empresas_das_macrorregioes(con, [ficha_id])).get(ficha_id)
+    if empresa is None:
+        return None
     membros = await con.fetch(
-        f"""WITH minha AS (
-                SELECT ce.emp_codigo
-                  FROM {_i()}.cts_operacional o
-                  JOIN {_i()}.cidade_empresa ce ON ce.cidade_id = o.cidade_id
-                 WHERE o.cts = $1 AND o.e_macrorregiao
-            )
-            SELECT o.*
+        f"""SELECT o.*
               FROM {_i()}.cts_operacional o
               JOIN {_i()}.cidade_empresa ce ON ce.cidade_id = o.cidade_id
-              JOIN minha ON minha.emp_codigo = ce.emp_codigo
-             WHERE o.sistema_cts = $1 AND NOT o.e_macrorregiao""",
+             WHERE o.sistema_cts = $1 AND ce.emp_codigo = $2 AND NOT o.e_macrorregiao""",
         ficha_id,
+        empresa,
     )
     if not membros:
         # Sem coletor nenhum não há soma. A ficha continua como está — o que ela
@@ -1110,8 +1155,8 @@ async def _preparar_macrorregiao(
     # A tela nem chega a oferecer um nome assim (`macrorregiao_cts.livres`); a
     # recusa aqui é para quem chama a rota direto, e para o dia em que a carga
     # criar a ambiguidade com a lista já aberta.
-    empresas = sorted({m["emp_codigo"] for m in membros})
-    if len(empresas) > 1:
+    if macrorregiao_cts.nomes_ambiguos(macrorregiao_cts.agrupar(membros)):
+        empresas = sorted({m["emp_codigo"] for m in membros})
         raise TopologiaInvalida(
             f"{componente_id!r} é o nome de uma macrorregião em mais de uma "
             f"empresa da unidade (" + ", ".join(repr(e) for e in empresas) + "). "
@@ -1365,25 +1410,8 @@ async def salvar_topologia(
         # seletor, mas quem desmarcar a caixa, adicionar duas e marcar de volta
         # passaria pela tela sem passar por aqui.
         if await _e_cts(con, componente_id) and usa_macro:
-            await _exigir_empresa_da_macrorregiao(
-                con, componente_id=componente_id, sistema_id=sistema_id
-            )
-            # MEMBRO NÃO SE COLOCA SOZINHO. A tela marcada oferece macrorregiões, e
-            # não os coletores que as formam — colocar um deles é exatamente o que a
-            # macrorregião existe para impedir. Chega aqui quem tinha a lista antiga
-            # aberta quando a caixa foi marcada, ou quem chama a rota direto.
-            dono = await con.fetchval(
-                f"""SELECT sistema_cts FROM {_i()}.cts_operacional
-                     WHERE cts = $1 AND sistema_cts IS NOT NULL
-                       AND btrim(sistema_cts) <> ''""",
-                componente_id,
-            )
-            if dono:
-                raise TopologiaInvalida(
-                    f"{componente_id!r} faz parte da macrorregião {dono!r}, e a "
-                    f"unidade {unidade_id!r} trabalha em macrorregião. Coloque "
-                    f"{dono!r} no sistema — ela entra inteira, com os coletores dentro."
-                )
+            await _exigir_empresa_das_macrorregioes(con, [(componente_id, sistema_id)])
+            await _exigir_que_nao_sejam_membros(con, [componente_id], unidade_id)
             if ja := await _cts_do_sistema(con, sistema_id, exceto=componente_id):
                 raise TopologiaInvalida(
                     f"A unidade {unidade_id!r} usa macrorregião de CTS, e o sistema "
@@ -1463,13 +1491,7 @@ async def _macrorregioes_colocadas(con: Any, unidade_id: str) -> dict[str, str]:
     coletor comum, com números que ninguém reconhece como soma de outros quatro.
     """
     linhas = await con.fetch(
-        f"""WITH cid AS ({CIDADES_DA_UNIDADE.format(i=_i())})
-            SELECT o.cts, t.sistema_id
-              FROM {_i()}.cts_operacional o
-              JOIN cid ON cid.cidade_id = o.cidade_id
-              JOIN {_i()}.sistema_topologia t ON t.componente_sistema_id = o.cts
-             WHERE o.e_macrorregiao AND coalesce(t.sistema_id, '') <> ''
-             ORDER BY 1""",
+        f"SELECT cts, sistema_id FROM ({MACRORREGIOES_COLOCADAS.format(i=_i())}) m ORDER BY 1",
         unidade_id,
     )
     return {l["cts"]: l["sistema_id"] for l in linhas}
@@ -1919,35 +1941,14 @@ async def salvar_topologia_em_lote(
         etes = await _quais_sao(con, "ete_capex", "ete_id", enviados)
         ctss = await _quais_sao(con, "cts_operacional", "cts", enviados)
 
-        # MEMBRO NÃO SE COLOCA SOZINHO — a mesma regra de `salvar_topologia`, na
-        # rota que grava o sistema inteiro. Uma consulta para todos os enviados:
-        # a lista de um sistema grande chega com dezenas de componentes.
         if usa_macro:
-            membros = await con.fetch(
-                f"""SELECT cts, sistema_cts FROM {_i()}.cts_operacional
-                     WHERE cts = ANY($1::text[]) AND sistema_cts IS NOT NULL
-                       AND btrim(sistema_cts) <> ''
-                     ORDER BY 1""",
-                enviados,
-            )
-            if membros:
-                raise TopologiaInvalida(
-                    "; ".join(
-                        f"{l['cts']!r} faz parte da macrorregião {l['sistema_cts']!r}"
-                        for l in membros
-                    )
-                    + f". A unidade {unidade_id!r} trabalha em macrorregião: coloque "
-                    "a macrorregião no sistema — ela entra inteira, com os "
-                    "coletores dentro."
-                )
+            await _exigir_que_nao_sejam_membros(con, enviados, unidade_id)
             # E A MACRORREGIÃO SÓ NO SISTEMA DA EMPRESA DELA — a mesma regra da
             # rota de um componente, para cada macrorregião do envio.
-            for sistema_id, mapa in pedido.items():
-                for componente_id in mapa:
-                    if componente_id in ctss:
-                        await _exigir_empresa_da_macrorregiao(
-                            con, componente_id=componente_id, sistema_id=sistema_id
-                        )
+            await _exigir_empresa_das_macrorregioes(
+                con,
+                [(c, sis) for sis, mapa in pedido.items() for c in mapa if c in ctss],
+            )
 
         problemas: list[str] = []
         for sistema_id, mapa in pedido.items():
