@@ -234,6 +234,13 @@ class FichaDeColeta(BaseModel):
     obrasOverride: dict[str, dict[str, str]]
     atualizadoEm: str
     atualizadoPor: str
+    #: SÓ NA CTS: a macrorregião a que a ficha pertence — o `sistema_cts` de um
+    #: coletor membro, ou o próprio id quando a ficha É a macrorregião. Vazio na
+    #: sub-bacia e no coletor fora de macrorregião. Não entra no `PUT`: vem da
+    #: origem, e a tela só mostra.
+    sistemaCts: str = ""
+    #: SÓ NA CTS: `"true"` quando a ficha é a linha da macrorregião.
+    macro: str = "false"
 
 
 class SistemaDaArvore(BaseModel):

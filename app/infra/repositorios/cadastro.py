@@ -985,13 +985,25 @@ async def cts(unidade_id: str) -> dict[str, Any]:
         cid = l["cts"]
         if cid not in fichas:
             continue
+        ficha = fichas[cid]
         ctss[cid] = {
-            **_ficha_coleta(fichas[cid], "cts"),
+            **_ficha_coleta(ficha, "cts"),
             "nome": l["nome"] or cid,
             "sisId": l["sistema_id"],
             "sistema": l["sistema_name"] or l["sistema_id"],
             "jusante": l["jusante"] or "",
             "obrasOverride": obras.get(cid, {}),
+            # A MACRORREGIÃO A QUE A FICHA PERTENCE, para a tela mostrar. Num
+            # coletor membro é o `sistema_cts` dele; na linha da macrorregião é o
+            # próprio id — ela É o sistema CTS, e a coluna dela fica nula por não
+            # ser membro de si mesma (migração 021). Vazio num coletor que a
+            # origem não pôs em macrorregião nenhuma.
+            "sistemaCts": (
+                ficha.get("sistema_cts")
+                or (cid if ficha.get("e_macrorregiao") else "")
+                or ""
+            ),
+            "macro": "true" if ficha.get("e_macrorregiao") else "false",
         }
 
     return {
