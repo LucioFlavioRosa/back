@@ -231,25 +231,30 @@ A comparação tem folga de 0,01: as receitas são `double precision`, e somar q
 delas em ordens diferentes pode diferir na última casa. Um alarme que dispara por
 0,0000001 é um alarme que ninguém lê depois da terceira vez.
 
-## A macrorregião não é recortada por município
+## O seletor recorta pela empresa, e não pela cidade
 
-`AdicionarCts.tsx` oferece só coletores da cidade do sistema — proteção legítima,
-e medida: antes dela, 151 CTS livres de uma unidade eram oferecidas às cinco, e
-duas foram efetivamente colocadas em sistema de outra cidade.
+`AdicionarCts.tsx` já ofereceu só coletores da cidade do sistema — proteção
+legítima na época, e medida: sem recorte, 151 CTS livres de uma unidade eram
+oferecidas às cinco, e duas foram efetivamente colocadas em sistema de outra
+cidade.
 
-A macrorregião é a **exceção**, e a única. Ela atende à região e pode cruzar
-município por definição, mas expõe uma cidade só, a dominante. Recortada como
-coletor, sumia dos sistemas das demais cidades que atende: na base de 03/09/2026,
-`MACRO_A` abrange `d1c1`, `d1c5` e `d1c13`, reporta `d1c1`, e ficava invisível nos
-**20 sistemas** que a unidade tem nas outras duas — enquanto o backend a aceitava
-sem reclamar.
+A cidade deixou de ser a régua quando o sistema passou a poder estar em várias
+(migração 022): um coletor de Mesquita pertence ao Sarapuí tanto quanto um de
+Belford Roxo, e recortar pela cidade o esconderia de metade dos sistemas em que
+ele cabe. A macrorregião tornava isso visível primeiro — ela cruza município por
+definição e expõe uma cidade só —, mas a regra vale para o coletor comum também.
 
-A hierarquia passou a marcar a linha com `macro: "true"`, e o seletor deixa a
-macrorregião passar pelo recorte. O `tipo` continua `"cts"`: para montar o sistema
-ela **é** o coletor daquele sistema, e a tela não precisa de palavra nova para
-colocá-la. O campo existe por essa razão só, e o rótulo do seletor diz que as
-macrorregiões estão ali — um recorte descrito errado é pior que recorte nenhum,
-porque quem procura entende que a lista está completa.
+**A régua é a empresa**, para os dois. Sub-bacia, coletor e macrorregião carregam
+`emp_codigo`, e é a mesma chave que agrupa a macrorregião. Como um sistema pode
+estar em cidades de empresas diferentes (`Saracuruna`: Duque de Caxias e Magé),
+o seletor casa contra o **conjunto** de empresas do sistema. `semSistema` traz
+`empId` em todo componente solto, e `macro: "true"` na macrorregião — o `tipo`
+continua `"cts"`, porque para montar o sistema ela **é** o coletor daquele
+sistema. O backend impõe a mesma régua ao gravar
+(`_exigir_empresa_da_macrorregiao`).
+
+A **barra de escopo** das abas segue a mesma lógica: o eixo grosso é a empresa,
+e não a cidade, em todas as abas que a têm — incluindo as duas da CTS.
 
 ## O par `(sistema_cts, emp_codigo)` vale em toda consulta
 

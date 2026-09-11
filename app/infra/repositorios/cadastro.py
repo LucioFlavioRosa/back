@@ -857,9 +857,10 @@ async def _fichas_de_macrorregiao(unidade_id: str) -> dict[str, dict[str, Any]]:
     sistema, e um id gerado por nós teria de ser guardado em algum lugar só para
     ser reconhecido de volta.
 
-    A soma é a de `dominio.macrorregiao_cts` — as 12 medidas do Databricks. Os
-    `params` e as 4 obras NÃO saem daqui: são preenchimento da macrorregião, e
-    vêm da ficha dela.
+    A soma é a de `dominio.macrorregiao_cts` — as medidas do Databricks
+    (`COLUNAS_QUE_SOMAM`: as doze que a ficha mostra, mais
+    `populacao_novas_obras`). Os `params` e as 4 obras NÃO saem daqui: são
+    preenchimento da macrorregião, e vêm da ficha dela.
     """
     membros = await db.buscar(
         f"""SELECT o.*, ce.emp_codigo

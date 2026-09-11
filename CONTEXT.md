@@ -79,9 +79,10 @@ R$ 3.049 por ligação; mediá-lo daria um número plausível que ninguém digit
 _Avoid_: agregação (sozinho, não diz qual das duas)
 
 **Microrregião de CTS**:
-O outro regime: cada sistema comporta quantas CTS forem colocadas nele. É o
-estado da unidade com a macrorregião desmarcada — um regime, e não a ausência de
-um.
+O outro regime: cada sistema comporta quantas CTS forem colocadas nele, e
+**nada agrega** — cada coletor é oferecido, colocado e preenchido sozinho, com
+a ficha dele. É o estado da unidade com a macrorregião desmarcada — um regime, e
+não a ausência de um.
 _Avoid_: sem macrorregião, desmarcado
 
 **Usar CTS**:

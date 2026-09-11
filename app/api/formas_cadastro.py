@@ -154,11 +154,9 @@ class ComponenteSemSistema(BaseModel):
     #:
     #: O `tipo` continua `"cts"` de propósito — para montar o sistema, a
     #: macrorregião É o coletor daquele sistema, e a tela não precisa de uma
-    #: palavra nova para colocá-la. Este campo existe por UMA razão só: a
-    #: macrorregião pode cruzar município, e a ficha expõe uma cidade só. O
-    #: recorte "só os coletores da cidade do sistema" protege quem coloca um
-    #: coletor; aplicado a ela, esconderia-a de todos os sistemas das outras
-    #: cidades que ela atende.
+    #: palavra nova para colocá-la. O campo diz à tela o que a linha É — para o
+    #: rótulo do seletor, para a coluna da ficha —, e não como recortá-la: o
+    #: recorte é por `empId`, igual para coletor e macrorregião.
     macro: str = "false"
     #: A EMPRESA do componente — a régua pela qual o seletor da tela recorta,
     #: para o coletor comum e para a macrorregião: um sistema pode estar em
