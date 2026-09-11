@@ -745,10 +745,14 @@ async def etes(unidade_id: str) -> dict[str, Any]:
     unidade — o motor a identifica assim (`otimizador_capex_v62.py:1111`).
     """
     linhas = await db.buscar(
-        f"""SELECT e.ete_id, t.componente_sistema_id AS sub, s.cidade_id,
-                   -- O SISTEMA da ETE. O join com `cidade_sistema` ja existia
-                   -- (e por ele que a ETE chega a uma unidade); faltava trazer a
-                   -- coluna, e a tela mostrava "ID Sistema" vazio nas 474.
+        f"""SELECT e.ete_id, t.componente_sistema_id AS sub,
+                   -- A CIDADE DA ETE e a do sistema dela — e o sistema pode estar
+                   -- em varias (migracao 022). A ETE nao tem cidade propria no
+                   -- esquema; a primeira, em ordem, e o que da para mostrar sem
+                   -- inventar. Um sistema em uma cidade so (a base mockada
+                   -- inteira) devolve exatamente o que devolvia antes.
+                   (SELECT min(cs.cidade_id) FROM {_i()}.cidade_sistema cs
+                     WHERE cs.sistema_id = s.sistema_id) AS cidade_id,
                    s.sistema_id, s.sistema_name,
                    e.capacidade_por_modulo, e.capex_por_modulo, e.opex_por_modulo,
                    e.tempo_de_execucao, e.capacidade_nominal_atual,
