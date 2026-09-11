@@ -49,7 +49,7 @@ from app.dominio.topologia import (
 )
 from app.dominio.trilha import REGIONAL, Alteracao, diferencas, origem_do_campo
 from app.infra import db
-from app.infra.repositorios.recortes import CIDADES_DA_UNIDADE
+from app.infra.repositorios.recortes import CIDADES_DA_UNIDADE, SISTEMAS_DA_UNIDADE
 
 
 def _i() -> str:
@@ -281,7 +281,7 @@ _DONO = {
     "empresa": """
         SELECT e.unidade_id FROM {i}.empresa e WHERE e.emp_codigo = $1""",
     "sub-bacia": """
-        SELECT s.unidade_id
+        SELECT DISTINCT s.unidade_id
           FROM {i}.sistema_topologia t
           JOIN {i}.cidade_sistema cs USING (sistema_id)
           JOIN {i}.cidade_empresa c ON c.cidade_id = cs.cidade_id
@@ -303,7 +303,7 @@ _DONO = {
     # ela tambem nao aparece no Grupo 05, que so lista as colocadas. Adiciona-la a
     # um sistema (Grupo 01) e o que a torna editavel.
     "cts": """
-        SELECT s.unidade_id
+        SELECT DISTINCT s.unidade_id
           FROM {i}.sistema_topologia t
           JOIN {i}.cts_operacional o ON o.cts = t.componente_sistema_id
           JOIN {i}.cidade_sistema cs USING (sistema_id)
@@ -321,7 +321,7 @@ _DONO = {
     # de `sistema_topologia`. O `JOIN` com `ete_capex` no fim garante que o id
     # pedido e mesmo uma ETE, e nao uma sub-bacia entrando pela rota errada.
     "ete": """
-        SELECT s.unidade_id
+        SELECT DISTINCT s.unidade_id
           FROM {i}.sistema_topologia t
           JOIN {i}.ete_capex e ON e.ete_id = t.componente_sistema_id
           JOIN {i}.cidade_sistema cs USING (sistema_id)
@@ -823,15 +823,22 @@ async def _travar_unidade(con: Any, unidade_id: str) -> None:
     await con.execute("SELECT pg_advisory_xact_lock(hashtext($1))", unidade_id)
 
 
-async def _empresa_do_sistema(con: Any, sistema_id: str) -> str | None:
-    """A empresa que opera o sistema — pela cidade dele, como toda empresa aqui."""
-    return await con.fetchval(
-        f"""SELECT ce.emp_codigo
+async def _empresas_do_sistema(con: Any, sistema_id: str) -> set[str]:
+    """As empresas que operam o sistema — uma por cidade dele.
+
+    Um CONJUNTO, e não um valor: um sistema pode estar em várias cidades
+    (migração 022), e as cidades podem ser de empresas diferentes — `Saracuruna`
+    está em Duque de Caxias (57) e em Magé (56). "A empresa do sistema" deixou de
+    ser pergunta com uma resposta.
+    """
+    linhas = await con.fetch(
+        f"""SELECT DISTINCT ce.emp_codigo
               FROM {_i()}.cidade_sistema cs
               JOIN {_i()}.cidade_empresa ce ON ce.cidade_id = cs.cidade_id
              WHERE cs.sistema_id = $1""",
         sistema_id,
     )
+    return {l["emp_codigo"] for l in linhas}
 
 
 async def _empresa_da_macrorregiao(con: Any, cts_id: str) -> str | None:
@@ -869,18 +876,19 @@ async def _exigir_empresa_da_macrorregiao(
     empresa = await _empresa_da_macrorregiao(con, componente_id)
     if empresa is None:
         return
-    do_sistema = await _empresa_do_sistema(con, sistema_id)
-    if do_sistema != empresa:
+    do_sistema = await _empresas_do_sistema(con, sistema_id)
+    if empresa not in do_sistema:
         raise TopologiaInvalida(
             f"A macrorregião {componente_id!r} é da empresa {empresa!r}, e o sistema "
-            f"{sistema_id!r} é de {do_sistema!r}. Uma macrorregião só entra em "
-            "sistema da empresa que a opera — é a outra metade da chave dela."
+            f"{sistema_id!r} é de " + ", ".join(repr(e) for e in sorted(do_sistema))
+            + ". Uma macrorregião só entra em sistema da empresa que a opera — é a "
+            "outra metade da chave dela."
         )
 
 
 async def _unidade_do_sistema(con: Any, sistema_id: str) -> str | None:
     linha = await con.fetchrow(
-        f"""SELECT s.unidade_id
+        f"""SELECT DISTINCT s.unidade_id
               FROM {_i()}.cidade_sistema cs
               JOIN {_i()}.cidade_empresa c ON c.cidade_id = cs.cidade_id
               JOIN {_i()}.empresa s USING (emp_codigo)
@@ -1428,12 +1436,11 @@ async def _sistemas_com_varias_cts(con: Any, unidade_id: str) -> dict[str, list[
     idas ao banco na unidade maior — por um clique numa caixa.
     """
     linhas = await con.fetch(
-        f"""WITH cidades AS ({CIDADES_DA_UNIDADE.format(i=_i())})
+        f"""WITH sistemas AS ({SISTEMAS_DA_UNIDADE.format(i=_i())})
             SELECT t.sistema_id AS sis, array_agg(t.componente_sistema_id ORDER BY 1) AS cts
               FROM {_i()}.sistema_topologia t
               JOIN {_i()}.cts_operacional o ON o.cts = t.componente_sistema_id
-              JOIN {_i()}.cidade_sistema cs ON cs.sistema_id = t.sistema_id
-              JOIN cidades c ON c.cidade_id = cs.cidade_id
+              JOIN sistemas s ON s.sistema_id = t.sistema_id
              GROUP BY t.sistema_id
             HAVING count(*) > 1
              ORDER BY 1""",
@@ -1696,7 +1703,7 @@ async def _unidades_dos_sistemas(con: Any, ids: list[str]) -> dict[str, str]:
     if not ids:
         return {}
     linhas = await con.fetch(
-        f"""SELECT cs.sistema_id AS sis, s.unidade_id AS uni
+        f"""SELECT DISTINCT cs.sistema_id AS sis, s.unidade_id AS uni
               FROM {_i()}.cidade_sistema cs
               JOIN {_i()}.cidade_empresa c ON c.cidade_id = cs.cidade_id
               JOIN {_i()}.empresa s USING (emp_codigo)

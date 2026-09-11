@@ -56,7 +56,7 @@ from app.config import config
 from app.dominio import macrorregiao_cts
 from app.dominio.campos import OBRAS_CTS, OBRAS_SUBBACIA
 from app.infra import db
-from app.infra.repositorios.recortes import CIDADES_DA_UNIDADE
+from app.infra.repositorios.recortes import CIDADES_DA_UNIDADE, SISTEMAS_DA_UNIDADE
 
 #: Campos de `params` que a ficha de coleta cobra sempre.
 _PARAMS = [
@@ -138,8 +138,7 @@ async def contar(unidade_id: str) -> dict[str, Any]:
     subs = f"""
         SELECT t.componente_sistema_id AS id
           FROM {_i()}.sistema_topologia t
-          JOIN {_i()}.cidade_sistema cs USING (sistema_id)
-          JOIN cidades cid ON cid.cidade_id = cs.cidade_id
+          JOIN ({SISTEMAS_DA_UNIDADE.format(i=_i())}) s USING (sistema_id)
     """
 
     linha = await db.buscar_um(
@@ -421,13 +420,12 @@ async def _caminho_ate_a_ete(unidade_id: str) -> list[dict[str, Any]]:
     """
     return await db.buscar(
         f"""
-        WITH RECURSIVE cidades AS ({CIDADES_DA_UNIDADE.format(i=_i())}),
+        WITH RECURSIVE cs AS ({SISTEMAS_DA_UNIDADE.format(i=_i())}),
         comps AS (
             SELECT t.componente_sistema_id AS id, t.componente_sistema_nome AS nome,
                    cs.sistema_name AS sistema
               FROM {_i()}.sistema_topologia t
-              JOIN {_i()}.cidade_sistema cs USING (sistema_id)
-              JOIN cidades c ON c.cidade_id = cs.cidade_id
+              JOIN cs USING (sistema_id)
              WHERE NOT EXISTS (SELECT 1 FROM {_i()}.ete_capex e
                                 WHERE e.ete_id = t.componente_sistema_id)
         ),
@@ -466,11 +464,10 @@ async def _quantos_precisam_de_caminho(unidade_id: str) -> int:
     proporcionalmente quando o caminho está pela metade.
     """
     linha = await db.buscar_um(
-        f"""WITH cidades AS ({CIDADES_DA_UNIDADE.format(i=_i())})
+        f"""WITH cs AS ({SISTEMAS_DA_UNIDADE.format(i=_i())})
             SELECT count(*) AS n
               FROM {_i()}.sistema_topologia t
-              JOIN {_i()}.cidade_sistema cs USING (sistema_id)
-              JOIN cidades c ON c.cidade_id = cs.cidade_id
+              JOIN cs USING (sistema_id)
              WHERE NOT EXISTS (SELECT 1 FROM {_i()}.ete_capex e
                                 WHERE e.ete_id = t.componente_sistema_id)""",
         unidade_id,
@@ -516,12 +513,11 @@ async def componentes_faltando(unidade_id: str) -> list[dict[str, Any]]:
     """
     return await db.buscar(
         f"""
-        WITH cidades AS ({CIDADES_DA_UNIDADE.format(i=_i())}),
+        WITH sistemas AS ({SISTEMAS_DA_UNIDADE.format(i=_i())}),
         comps AS (
             SELECT t.componente_sistema_id AS id
               FROM {_i()}.sistema_topologia t
-              JOIN {_i()}.cidade_sistema cs USING (sistema_id)
-              JOIN cidades c ON c.cidade_id = cs.cidade_id
+              JOIN sistemas s USING (sistema_id)
         ),
         -- O que uma ficha DEVE ter é o que as fichas têm — não uma lista aqui.
         esperado_sub AS (SELECT DISTINCT componente FROM {_i()}.componentes_subbacias_capex),

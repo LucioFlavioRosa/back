@@ -19,13 +19,11 @@ incompleta e nunca cria a obra que falta (`obras_da_ficha`), então cada
 sub-bacia nasce com as 5 e cada coletor com as 4 — nome e unidade de medida, e
 nenhum número. É a mesma regra da macrorregião (`_preparar_macrorregiao`).
 
-UM SES EM VÁRIAS CIDADES VIRA UM SISTEMA POR CIDADE. A origem tem 12 assim
-(Sarapuí em 5 cidades, Pavuna em 3), e o esquema de hoje guarda UMA cidade por
-sistema (`cidade_sistema` tem PK em `sistema_id`). Fundir num sistema só
-esconderia as outras cidades do recorte; separar é fiel ao esquema e ao que a
-tela consegue mostrar — ao custo de o nome carregar a cidade entre parênteses.
-É a trilha "sistema em mais de uma cidade", que ficou para depois; quando ela
-chegar, esta função é o lugar a mudar.
+UM SES EM VÁRIAS CIDADES É UM SISTEMA SÓ, em várias cidades. A origem tem 12
+assim (Sarapuí em 5, Pavuna em 3) e um deles atravessa empresa (Saracuruna: Duque
+de Caxias é a 57, Magé é a 56). Desde a migração 022 o esquema comporta isso:
+`input.sistema` é a entidade, `cidade_sistema` tem uma linha por cidade que o
+sistema atende, e cada sub-bacia sabe a própria cidade.
 
 OS IDS SAEM DOS NOMES, por `slug`: a origem não manda id de sub-bacia, de
 sistema nem de cidade, e um id gerado por sequência mudaria a cada carga. O
@@ -185,19 +183,14 @@ async def carregar() -> None:
             await con.executemany("INSERT INTO input.cidade_empresa (cidade_id, emp_codigo) VALUES ($1,$2)",
                                   sorted({(i, e) for _n, (i, e) in cidades.items()}))
 
-            # UM SES EM VÁRIAS CIDADES VIRA UM SISTEMA POR CIDADE — ver o cabeçalho.
-            cidades_do_ses: dict[str, set[str]] = {}
-            for x in subs:
-                cidades_do_ses.setdefault(x["SES"], set()).add(x["CIDADE"])
-            sistemas = {}
-            for x in subs:
-                multi = len(cidades_do_ses[x["SES"]]) > 1
-                sid = slug(x["SES"]) + ("__" + slug(x["CIDADE"]) if multi else "")
-                nome = x["SES"] + (f" ({x['CIDADE']})" if multi else "")
-                sistemas[(x["SES"], x["CIDADE"])] = (sid, nome, cidades[x["CIDADE"]][0])
+            # UM SES E UM SISTEMA, em quantas cidades a origem disser — ver o cabeçalho.
+            sistemas = {x["SES"]: (slug(x["SES"]), x["SES"]) for x in subs}
+            await con.executemany(
+                "INSERT INTO input.sistema (sistema_id, sistema_name) VALUES ($1,$2)",
+                sorted(set(sistemas.values())))
             await con.executemany(
                 "INSERT INTO input.cidade_sistema (sistema_id, sistema_name, cidade_id) VALUES ($1,$2,$3)",
-                sorted(set(sistemas.values())))
+                sorted({(sistemas[x["SES"]][0], x["SES"], cidades[x["CIDADE"]][0]) for x in subs}))
 
             # ---- sub-bacias -----------------------------------------------
             colunas = None
@@ -207,10 +200,11 @@ async def carregar() -> None:
                 m = {**medidas(x), **medidas(x, "_COM_CTS")}
                 m["ligacoes_novas_obras"] = (m["universo_ligacoes"] or 0) - (m["ligacoes_atuais"] or 0)
                 m["economias_novas_obras"] = (m["universo_economias"] or 0) - (m["economias_atuais"] or 0)
+                m["cidade_id"] = cidades[x["CIDADE"]][0]
                 if colunas is None:
                     colunas = list(m)
                 linhas_sb.append((sb, *[m[c] for c in colunas]))
-                topo_sb.append((sb, x["SUB_BACIA"], sistemas[(x["SES"], x["CIDADE"])][0]))
+                topo_sb.append((sb, x["SUB_BACIA"], sistemas[x["SES"]][0]))
                 obras_sb += [(sb, nome, un) for nome, un in OBRAS_DA_SUBBACIA]
             marc = ", ".join(f"${i + 2}" for i in range(len(colunas)))
             await con.executemany(
@@ -250,7 +244,8 @@ async def carregar() -> None:
             ("unidades", "SELECT count(*) FROM input.unidade_regional"),
             ("empresas", "SELECT count(*) FROM input.empresa"),
             ("cidades", "SELECT count(*) FROM input.cidade"),
-            ("sistemas", "SELECT count(*) FROM input.cidade_sistema"),
+            ("sistemas", "SELECT count(*) FROM input.sistema"),
+            ("sistemas em >1 cidade", "SELECT count(*) FROM (SELECT sistema_id FROM input.cidade_sistema GROUP BY 1 HAVING count(*) > 1) t"),
             ("sub-bacias", "SELECT count(*) FROM input.subbacia_operacional"),
             ("coletores", "SELECT count(*) FROM input.cts_operacional"),
             ("macrorregiões (pares)", "SELECT count(*) FROM (SELECT DISTINCT o.sistema_cts, ce.emp_codigo FROM input.cts_operacional o JOIN input.cidade_empresa ce USING (cidade_id) WHERE o.sistema_cts IS NOT NULL) t"),

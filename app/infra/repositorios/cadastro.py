@@ -30,7 +30,7 @@ from app.dominio.campos import COLETA, DO_DATABRICKS
 from app.dominio.formato import SEM_SEPARADOR, pt_br, pt_br_ano
 from app.infra import db
 from app.infra.repositorios import pendencias
-from app.infra.repositorios.recortes import CIDADES_DA_UNIDADE
+from app.infra.repositorios.recortes import CIDADES_DA_UNIDADE, SISTEMAS_DA_UNIDADE
 
 log = logging.getLogger(__name__)
 
@@ -72,6 +72,10 @@ def _auditoria(linha: dict[str, Any]) -> dict[str, Any]:
 
 def _cidades_cte() -> str:
     return CIDADES_DA_UNIDADE.format(i=_i())
+
+
+def _sistemas_cte() -> str:
+    return SISTEMAS_DA_UNIDADE.format(i=_i())
 
 
 # ---------------------------------------------------------------- organização
@@ -189,8 +193,7 @@ async def unidade(unidade_id: str) -> dict[str, Any] | None:
     # idas ao banco para montar um cartão.
     c = await db.buscar_um(
         f"""WITH cid AS ({_cidades_cte()}),
-                 sis AS (SELECT s.sistema_id FROM {_i()}.cidade_sistema s
-                          JOIN cid ON cid.cidade_id = s.cidade_id),
+                 sis AS ({_sistemas_cte()}),
                  sub AS (SELECT t.componente_sistema_id FROM {_i()}.sistema_topologia t
                           JOIN sis ON sis.sistema_id = t.sistema_id),
                  -- Os componentes de CAPEX das duas fichas, no mesmo formato: o
@@ -321,8 +324,7 @@ async def hierarquia(unidade_id: str) -> dict[str, Any]:
                         WHEN k.cts    IS NOT NULL THEN 'cts'
                         ELSE 'sub-bacia' END AS tipo
               FROM {_i()}.sistema_topologia t
-              JOIN {_i()}.cidade_sistema s USING (sistema_id)
-              JOIN ({_cidades_cte()}) c ON c.cidade_id = s.cidade_id
+              JOIN ({_sistemas_cte()}) s USING (sistema_id)
               LEFT JOIN {_i()}.ete_capex e ON e.ete_id = t.componente_sistema_id
               LEFT JOIN {_i()}.cts_operacional k ON k.cts = t.componente_sistema_id
              ORDER BY t.sistema_id, t.componente_sistema_id""",
@@ -567,8 +569,13 @@ async def sub_bacias(unidade_id: str) -> dict[str, Any]:
                    c.cidade_id, c.cidade_name, c.emp_codigo,
                    e.empresa
               FROM {_i()}.sistema_topologia t
-              JOIN {_i()}.cidade_sistema s USING (sistema_id)
-              JOIN ({_cidades_cte()}) c ON c.cidade_id = s.cidade_id
+              JOIN ({_sistemas_cte()}) s USING (sistema_id)
+              -- A CIDADE E A DA SUB-BACIA (migracao 022), e nao a do sistema: o
+              -- sistema pode estar em varias, e a arvore agrupa por cidade. Sem
+              -- isto, uma sub-bacia de Mesquita apareceria sob Belford Roxo so
+              -- porque o Sarapui comeca la.
+              JOIN {_i()}.subbacia_operacional b ON b.sub_bacia = t.componente_sistema_id
+              JOIN ({_cidades_cte()}) c ON c.cidade_id = b.cidade_id
               JOIN {_i()}.empresa e USING (emp_codigo)
              ORDER BY e.empresa, c.cidade_name, s.sistema_name,
                       t.componente_sistema_id""",
@@ -581,8 +588,7 @@ async def sub_bacias(unidade_id: str) -> dict[str, Any]:
                  WHERE b.sub_bacia IN (
                        SELECT t.componente_sistema_id
                          FROM {_i()}.sistema_topologia t
-                         JOIN {_i()}.cidade_sistema s USING (sistema_id)
-                         JOIN ({_cidades_cte()}) c ON c.cidade_id = s.cidade_id)""",
+                         JOIN ({_sistemas_cte()}) s USING (sistema_id))""",
             unidade_id,
         )
     }
@@ -751,8 +757,7 @@ async def etes(unidade_id: str) -> dict[str, Any]:
                    e.nova, e.atualizado_em, e.atualizado_por
               FROM {_i()}.ete_capex e
               JOIN {_i()}.sistema_topologia t ON t.componente_sistema_id = e.ete_id
-              JOIN {_i()}.cidade_sistema s USING (sistema_id)
-              JOIN ({_cidades_cte()}) c ON c.cidade_id = s.cidade_id
+              JOIN ({_sistemas_cte()}) s USING (sistema_id)
              ORDER BY e.ete_id""",
         unidade_id,
     )
@@ -990,8 +995,7 @@ async def cts(unidade_id: str) -> dict[str, Any]:
         for f in await db.buscar(
             f"""SELECT o.* FROM {_i()}.cts_operacional o
                   JOIN {_i()}.sistema_topologia t ON t.componente_sistema_id = o.cts
-                  JOIN {_i()}.cidade_sistema s USING (sistema_id)
-                  JOIN ({_cidades_cte()}) c ON c.cidade_id = s.cidade_id""",
+                  JOIN ({_sistemas_cte()}) s USING (sistema_id)""",
             unidade_id,
         )
     }
@@ -1021,8 +1025,7 @@ async def cts(unidade_id: str) -> dict[str, Any]:
                    s.sistema_id, s.sistema_name
               FROM {_i()}.sistema_topologia t
               JOIN {_i()}.cts_operacional o ON o.cts = t.componente_sistema_id
-              JOIN {_i()}.cidade_sistema s USING (sistema_id)
-              JOIN ({_cidades_cte()}) c ON c.cidade_id = s.cidade_id
+              JOIN ({_sistemas_cte()}) s USING (sistema_id)
              ORDER BY s.sistema_name, t.componente_sistema_id""",
         unidade_id,
     )
@@ -1101,8 +1104,7 @@ async def _cts_inconsistentes(unidade_id: str) -> list[dict[str, Any]]:
                'Esta num sistema e nao tem ficha em lugar nenhum. '
                'Entra na simulacao com demanda zero.' AS detalhe
           FROM {_i()}.sistema_topologia t
-          JOIN {_i()}.cidade_sistema s USING (sistema_id)
-          JOIN ({_cidades_cte()}) c ON c.cidade_id = s.cidade_id
+          JOIN ({_sistemas_cte()}) s USING (sistema_id)
          WHERE NOT EXISTS (SELECT 1 FROM {_i()}.cts_operacional o
                             WHERE o.cts = t.componente_sistema_id)
            AND NOT EXISTS (SELECT 1 FROM {_i()}.subbacia_operacional b

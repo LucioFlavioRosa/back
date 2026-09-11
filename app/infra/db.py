@@ -148,6 +148,9 @@ _EXIGIDO = [
     # coloca-la num sistema falha no `INSERT`, e as consultas que a excluem dos
     # membros passariam a soma-la dentro da propria soma.
     ("input", "cts_operacional", "e_macrorregiao", "021_a_linha_da_macrorregiao.sql"),
+    # Sistema em mais de uma cidade: a sub-bacia passou a ter a propria cidade, e
+    # a arvore de navegacao a le. Sem a coluna, `GET /sub-bacias` responde 500.
+    ("input", "subbacia_operacional", "cidade_id", "022_sistema_em_mais_de_uma_cidade.sql"),
 ]
 
 #: Migracao que nao cria tabela nem coluna: a regra vive numa CONSTRAINT, sobre

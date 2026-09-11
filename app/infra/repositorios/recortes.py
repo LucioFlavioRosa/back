@@ -21,7 +21,7 @@ O recorte é `{i}`-parametrizado no schema e `$1` na unidade, como o resto do
 unidade entra como argumento porque dá.
 """
 
-__all__ = ["CIDADES_DA_UNIDADE"]
+__all__ = ["CIDADES_DA_UNIDADE", "SISTEMAS_DA_UNIDADE"]
 
 
 #: AS CIDADES DE UMA UNIDADE, pela hierarquia
@@ -38,6 +38,26 @@ CIDADES_DA_UNIDADE = """
     SELECT c.cidade_id, c.cidade_name, ce.emp_codigo
       FROM {i}.cidade c
       JOIN {i}.cidade_empresa ce ON ce.cidade_id = c.cidade_id
+      JOIN {i}.empresa e ON e.emp_codigo = ce.emp_codigo
+     WHERE e.unidade_id = $1
+"""
+
+
+#: OS SISTEMAS DE UMA UNIDADE — um por linha, e não um por cidade.
+#:
+#: Desde a migração 022 um sistema pode estar em várias cidades, e
+#: `cidade_sistema` tem uma linha por par. Juntar `sistema_topologia` a ela pelo
+#: `sistema_id`, como toda consulta fazia, passou a MULTIPLICAR o componente pelo
+#: número de cidades do sistema: pendência em dobro, árvore duplicada, trilha
+#: contada duas vezes. Este recorte é o `DISTINCT` que cada uma delas teria de
+#: escrever — e que uma esqueceria.
+#:
+#: Quem precisa da CIDADE do sistema (a lista de sistemas da hierarquia, o rail
+#: de navegação) não usa isto: para essas a linha por cidade é o que se quer.
+SISTEMAS_DA_UNIDADE = """
+    SELECT DISTINCT cs.sistema_id, cs.sistema_name
+      FROM {i}.cidade_sistema cs
+      JOIN {i}.cidade_empresa ce ON ce.cidade_id = cs.cidade_id
       JOIN {i}.empresa e ON e.emp_codigo = ce.emp_codigo
      WHERE e.unidade_id = $1
 """
