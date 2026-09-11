@@ -1,0 +1,14 @@
+# A BASE REAL, por cima da pilha e2e.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.real.yml up -d api web
+#
+# Aponta a API para `otimizador_real` — a base que `dev/carregar_portfolio.py`
+# cria a partir dos três CSV do Databricks. A base mockada (`otimizador`) continua
+# intacta no mesmo servidor; voltar para ela é subir sem este arquivo.
+#
+# O worker roda fora do Docker e le a mesma variavel: para rodar contra a base
+# real, exporte POSTGRES_URL=postgresql://otim:otim@localhost:55432/otimizador_real.
+services:
+  api:
+    environment:
+      POSTGRES_URL: postgresql://otim:otim@db:5432/otimizador_real
