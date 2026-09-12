@@ -49,13 +49,40 @@ _Avoid_: coletor, interceptor
 **Macrorregião de CTS**:
 O regime em que um coletor atende à região inteira, e por isso cada sistema da
 unidade comporta UMA CTS. É decisão da unidade, não de cada sistema, e é dado de
-cadastro: o motor não conta CTS por sistema.
+cadastro: o motor não conta CTS por sistema. Marcada, a tela de montar o sistema
+deixa de oferecer coletores e passa a oferecer macrorregiões — e é a macrorregião
+que ganha ficha e as quatro obras.
 _Avoid_: sistema de CTS (colide com **Sistema**, que é outra coisa), usa CTS
 
+**Membro**:
+Cada coletor que forma uma macrorregião — as linhas de `cts_operacional` com o
+mesmo `sistema_cts` (e a mesma empresa). O membro não é colocado em sistema
+nenhum, não tem obra cobrada e não aparece na tela quando a unidade está marcada:
+quem faz as três coisas é a macrorregião a que ele pertence.
+_Avoid_: CTS filha, CTS individual
+
+**Linha da macrorregião**:
+A linha de `cts_operacional` que REPRESENTA a macrorregião, marcada com
+`e_macrorregiao`. Nasce no instante em que a macrorregião é colocada num sistema,
+com as medidas do Databricks já somadas, os `params` vazios e as quatro
+obras em branco. É ela que a Regional preenche, que a prontidão cobra e que o
+motor lê como nó — os membros continuam soltos, e é assim que devem ficar.
+_Avoid_: CTS agregada, CTS virtual
+
+**Somar e preencher**:
+As duas metades da ficha de uma macrorregião, e a fronteira entre elas.
+SOMA-SE o que o Databricks mede sobre uma área — receitas, ligações, economias —,
+porque a área da macrorregião é a união das áreas dos membros. PREENCHE-SE o
+resto: preço por ligação, prazos, vazão e as quatro obras são informação de quem
+cadastra sobre o conjunto, e a Regional as informa uma vez. Somar preço daria
+R$ 3.049 por ligação; mediá-lo daria um número plausível que ninguém digitou.
+_Avoid_: agregação (sozinho, não diz qual das duas)
+
 **Microrregião de CTS**:
-O outro regime: cada sistema comporta quantas CTS forem colocadas nele. É o
-estado da unidade com a macrorregião desmarcada — um regime, e não a ausência de
-um.
+O outro regime: cada sistema comporta quantas CTS forem colocadas nele, e
+**nada agrega** — cada coletor é oferecido, colocado e preenchido sozinho, com
+a ficha dele. É o estado da unidade com a macrorregião desmarcada — um regime, e
+não a ausência de um.
 _Avoid_: sem macrorregião, desmarcado
 
 **Usar CTS**:

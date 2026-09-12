@@ -13,6 +13,7 @@ from app.dominio.parametros import CHAVES_DO_JOB
 from app.dominio.status import Status
 from app.infra import db
 from app.infra.repositorios import pendencias
+from app.infra.repositorios.recortes import CIDADES_DA_UNIDADE, SISTEMAS_DA_UNIDADE
 
 
 def _c() -> str:
@@ -165,17 +166,12 @@ def digest(params: dict[str, Any]) -> str:
 #: Existe por causa da dedupe de rodada CONCLUÍDA, e é o que a torna correta. Ver
 #: `rodada_identica`. As colunas vêm de `migracoes/006_auditoria_cadastro.sql`.
 _CADASTRO_ALTERADO_EM = """
-WITH cidades AS (
-    SELECT c.cidade_id
-      FROM {i}.cidade_empresa c
-      JOIN {i}.empresa s USING (emp_codigo)
-     WHERE s.unidade_id = $1
-),
+WITH cidades AS (%CIDADES%),
+sistemas AS (%SISTEMAS%),
 comps AS (
     SELECT t.componente_sistema_id AS id
       FROM {i}.sistema_topologia t
-      JOIN {i}.cidade_sistema cs USING (sistema_id)
-      JOIN cidades c ON c.cidade_id = cs.cidade_id
+      JOIN sistemas s USING (sistema_id)
 )
 SELECT max(quando) AS em FROM (
     SELECT max(b.atualizado_em)
@@ -193,7 +189,7 @@ SELECT max(quando) AS em FROM (
     SELECT max(o.atualizado_em)
       FROM {i}.cidade_operacional o JOIN cidades c USING (cidade_id)
 ) t(quando)
-"""
+""".replace("%CIDADES%", CIDADES_DA_UNIDADE).replace("%SISTEMAS%", SISTEMAS_DA_UNIDADE)
 
 
 async def rodada_identica(

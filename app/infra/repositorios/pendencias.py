@@ -53,8 +53,14 @@ Duas sutilezas que vieram do outro lado e não são óbvias:
 from typing import Any
 
 from app.config import config
-from app.infra import db
+from app.dominio import macrorregiao_cts
 from app.dominio.campos import OBRAS_CTS, OBRAS_SUBBACIA
+from app.infra import db
+from app.infra.repositorios.recortes import (
+    CIDADES_DA_UNIDADE,
+    MACRORREGIOES_COLOCADAS,
+    SISTEMAS_DA_UNIDADE,
+)
 
 #: Campos de `params` que a ficha de coleta cobra sempre.
 _PARAMS = [
@@ -124,12 +130,7 @@ async def contar(unidade_id: str) -> dict[str, Any]:
     # "2 campos a mais SE a cidade mede por populacao" dependia de uma escolha
     # que o cadastro nao conhece mais. Nao muda numero nenhum hoje — nenhuma
     # cidade da base media por populacao, entao a condicao ja valia zero.
-    cidades = f"""
-        SELECT c.cidade_id
-          FROM {_i()}.cidade_empresa c
-          JOIN {_i()}.empresa s USING (emp_codigo)
-         WHERE s.unidade_id = $1
-    """
+    cidades = CIDADES_DA_UNIDADE.format(i=_i())
     empresas = f"""
         SELECT (e.data_fim_concessao IS NULL)::int AS pend
           FROM {_i()}.empresa e
@@ -141,8 +142,7 @@ async def contar(unidade_id: str) -> dict[str, Any]:
     subs = f"""
         SELECT t.componente_sistema_id AS id
           FROM {_i()}.sistema_topologia t
-          JOIN {_i()}.cidade_sistema cs USING (sistema_id)
-          JOIN cidades cid ON cid.cidade_id = cs.cidade_id
+          JOIN ({SISTEMAS_DA_UNIDADE.format(i=_i())}) s USING (sistema_id)
     """
 
     linha = await db.buscar_um(
@@ -298,8 +298,95 @@ async def contar(unidade_id: str) -> dict[str, Any]:
                 ),
             }
             for c in sem_caminho
-        ],
+        ]
+        + await _macrorregioes_desatualizadas(unidade_id),
     }
+
+
+#: Quanto de uma medida a tela mostra ao dizer que ela mudou.
+_ROTULO_DA_MEDIDA = {
+    "receita_faturada_media_mensal": "receita faturada",
+    "receita_arrecadada_media_mensal": "receita arrecadada",
+    "universo_ligacoes": "universo de ligações",
+    "ligacoes_atuais": "ligações atuais",
+    "ligacoes_novas_obras": "ligações de novas obras",
+    "universo_economias": "universo de economias",
+    "economias_atuais": "economias atuais",
+    "economias_novas_obras": "economias de novas obras",
+    "universo_ligacoes_residencial": "universo de ligações residenciais",
+    "ligacoes_atuais_residencial": "ligações atuais residenciais",
+    "universo_economias_residencial": "universo de economias residenciais",
+    "economias_atuais_residencial": "economias atuais residenciais",
+    "populacao_novas_obras": "população de novas obras",
+}
+
+
+async def _macrorregioes_desatualizadas(unidade_id: str) -> list[dict[str, Any]]:
+    """Macrorregião colocada cuja ficha já não é a soma dos coletores de hoje.
+
+    É o alarme da escolha feita em `_preparar_macrorregiao`: colocada, a
+    macrorregião tem linha própria, e a linha não é recalculada a cada leitura —
+    senão a tela mostraria um número e a rodada usaria outro. O que essa escolha
+    custa é ficar para trás quando uma recarga do Databricks mexe nos membros, e
+    é isso que aqui se denuncia.
+
+    Não trava a simulação, e não conta pendência: os números continuam sendo
+    números que alguém informou, e a rodada com eles é uma rodada válida sobre uma
+    base anterior. O que ela não pode é acontecer sem ninguém saber.
+
+    Sai por `faltando`, ao lado do aviso de caminho que não chega à ETE — as duas
+    respondem a mesma pergunta, "o que a tela não tem como saber sozinha".
+    """
+    guardadas = await db.buscar(
+        f"SELECT * FROM ({MACRORREGIOES_COLOCADAS.format(i=_i())}) m ORDER BY cts", unidade_id
+    )
+    if not guardadas:
+        return []
+
+    membros = await db.buscar(
+        f"""WITH cid AS ({CIDADES_DA_UNIDADE.format(i=_i())})
+            SELECT o.*, cid.emp_codigo
+              FROM {_i()}.cts_operacional o
+              JOIN cid ON cid.cidade_id = o.cidade_id
+             WHERE o.sistema_cts = ANY($2::text[]) AND NOT o.e_macrorregiao""",
+        unidade_id,
+        [g["cts"] for g in guardadas],
+    )
+    # POR PAR, e não por nome: `agrupar` é quem define a chave da macrorregião, e
+    # comparar contra a soma de "todo mundo que tem este `sistema_cts`" mediria a
+    # ficha contra um grupo que pode não ser o dela — o mesmo defeito que
+    # `_somas_de_hoje` tinha.
+    por_macro = macrorregiao_cts.agrupar(membros)
+
+    saida: list[dict[str, Any]] = []
+    for g in guardadas:
+        grupo = por_macro.get((g["cts"], g["emp_codigo"]))
+        if not grupo:
+            # SEM MEMBRO NENHUM a soma não existe, e não há com o que comparar.
+            # Acontece se a recarga tirar a coluna `sistema_cts` de todos eles; a
+            # ficha continua válida, e inventar "divergiu de tudo" seria ruído.
+            continue
+        fora = macrorregiao_cts.divergencias(dict(g), grupo)
+        if not fora:
+            continue
+        quais = ", ".join(
+            _ROTULO_DA_MEDIDA.get(coluna, coluna) for coluna in sorted(fora)
+        )
+        saida.append(
+            {
+                "tipo": "macrorregiao",
+                "id": g["cts"],
+                "componente": g["cts"],
+                "detalhe": (
+                    f"A ficha da macrorregião {g['cts']} foi somada quando ela foi "
+                    f"colocada no sistema, e os coletores mudaram desde então: "
+                    f"{quais}. A simulação roda com os números da ficha. Gravar a "
+                    f"ficha de novo refaz a soma a partir dos {len(grupo)} coletores "
+                    "de hoje."
+                ),
+            }
+        )
+    return saida
 
 
 #: O mesmo teto de saltos do motor (`caminho()`, em otimizador_capex_v62.py).
@@ -330,18 +417,12 @@ async def _caminho_ate_a_ete(unidade_id: str) -> list[dict[str, Any]]:
     """
     return await db.buscar(
         f"""
-        WITH RECURSIVE cidades AS (
-            SELECT c.cidade_id
-              FROM {_i()}.cidade_empresa c
-              JOIN {_i()}.empresa s USING (emp_codigo)
-             WHERE s.unidade_id = $1
-        ),
+        WITH RECURSIVE cs AS ({SISTEMAS_DA_UNIDADE.format(i=_i())}),
         comps AS (
             SELECT t.componente_sistema_id AS id, t.componente_sistema_nome AS nome,
                    cs.sistema_name AS sistema
               FROM {_i()}.sistema_topologia t
-              JOIN {_i()}.cidade_sistema cs USING (sistema_id)
-              JOIN cidades c ON c.cidade_id = cs.cidade_id
+              JOIN cs USING (sistema_id)
              WHERE NOT EXISTS (SELECT 1 FROM {_i()}.ete_capex e
                                 WHERE e.ete_id = t.componente_sistema_id)
         ),
@@ -380,13 +461,11 @@ async def _quantos_precisam_de_caminho(unidade_id: str) -> int:
     proporcionalmente quando o caminho está pela metade.
     """
     linha = await db.buscar_um(
-        f"""SELECT count(*) AS n
+        f"""WITH cs AS ({SISTEMAS_DA_UNIDADE.format(i=_i())})
+            SELECT count(*) AS n
               FROM {_i()}.sistema_topologia t
-              JOIN {_i()}.cidade_sistema cs USING (sistema_id)
-              JOIN {_i()}.cidade_empresa c ON c.cidade_id = cs.cidade_id
-              JOIN {_i()}.empresa s USING (emp_codigo)
-             WHERE s.unidade_id = $1
-               AND NOT EXISTS (SELECT 1 FROM {_i()}.ete_capex e
+              JOIN cs USING (sistema_id)
+             WHERE NOT EXISTS (SELECT 1 FROM {_i()}.ete_capex e
                                 WHERE e.ete_id = t.componente_sistema_id)""",
         unidade_id,
     )
@@ -431,17 +510,11 @@ async def componentes_faltando(unidade_id: str) -> list[dict[str, Any]]:
     """
     return await db.buscar(
         f"""
-        WITH cidades AS (
-            SELECT c.cidade_id
-              FROM {_i()}.cidade_empresa c
-              JOIN {_i()}.empresa s USING (emp_codigo)
-             WHERE s.unidade_id = $1
-        ),
+        WITH sistemas AS ({SISTEMAS_DA_UNIDADE.format(i=_i())}),
         comps AS (
             SELECT t.componente_sistema_id AS id
               FROM {_i()}.sistema_topologia t
-              JOIN {_i()}.cidade_sistema cs USING (sistema_id)
-              JOIN cidades c ON c.cidade_id = cs.cidade_id
+              JOIN sistemas s USING (sistema_id)
         ),
         -- O que uma ficha DEVE ter é o que as fichas têm — não uma lista aqui.
         esperado_sub AS (SELECT DISTINCT componente FROM {_i()}.componentes_subbacias_capex),

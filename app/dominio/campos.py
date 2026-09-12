@@ -15,13 +15,15 @@ aceitá-la — ou o contrário, que é pior.
 #: A INTERFACE PÚBLICA deste módulo. Tudo o que não está aqui é implementação,
 #: e pode mudar sem aviso — a lista é o contrato com quem importa.
 __all__ = [
-    "DO_DATABRICKS",
     "CAMPOS_DB",
     "CAMPOS_PARAMS",
-    "NAO_MODELADOS",
-    "OBRAS_SUBBACIA",
-    "OBRAS_CTS",
     "COLETA",
+    "DO_DATABRICKS",
+    "NAO_MODELADOS",
+    "OBRAS_CTS",
+    "OBRAS_DA_CTS",
+    "OBRAS_DA_SUBBACIA",
+    "OBRAS_SUBBACIA",
 ]
 
 
@@ -68,14 +70,44 @@ CAMPOS_PARAMS = ["preco", "tarr", "ramp", "vaz", "pot", "popU", "popA"]
 NAO_MODELADOS = {"popN"}
 
 
-#: Campos de obra que a simulação exige. `wacc` fora, de propósito.
-#: Quantas obras cada ficha TEM DE ter. E a base do cadastro (5 para sub-bacia,
-#: 4 para CTS), e o que permite contar a obra AUSENTE — que nao aparece em
-#: `componentes_*_capex` e por isso passava despercebida.
-OBRAS_SUBBACIA = 5
+#: As 5 obras de uma sub-bacia, no vocabulário da carga — o mesmo que
+#: `_INDICE_SUBBACIA` reconhece. A ordem é a do caminho do esgoto: ligação,
+#: rede, tronco, elevatória, recalque. É o par de `OBRAS_DA_CTS`, e pela mesma
+#: razão mora aqui e não na carga: quantas obras a ficha TEM DE ter
+#: (`OBRAS_SUBBACIA`) é o que permite contar a obra AUSENTE — que não aparece em
+#: `componentes_*_capex` e por isso passava despercebida —, e o número tem de
+#: ser derivado da lista, ou discorda dela no dia em que ela mudar.
+OBRAS_DA_SUBBACIA = (
+    ("Ligacao de esgoto", "ligacao"),
+    ("Rede coletora", "m"),
+    ("Coletor tronco", "m"),
+    ("Estacao elevatoria (EEE)", "un"),
+    ("Linha de recalque (LR)", "m"),
+)
+OBRAS_SUBBACIA = len(OBRAS_DA_SUBBACIA)
 
 
-OBRAS_CTS = 4
+#: AS QUATRO OBRAS DE UMA CTS, com a unidade de medida de cada uma.
+#:
+#: Vocabulário, e não medida: as 337 CTS do banco têm exatamente estas quatro, com
+#: exatamente estas unidades — nenhuma linha destoa. Por isso a macrorregião pode
+#: nascer com as quatro (`_preparar_macrorregiao`) sem que isso seja inventar
+#: dado: os NÚMEROS nascem nulos, e é a Regional que os preenche.
+#:
+#: A ORDEM É A DO CAMINHO DO ESGOTO — coletor, tronco, elevatória, recalque —, que
+#: é a ordem em que a tela as apresenta.
+OBRAS_DA_CTS = (
+    ("Coletor de tempo seco", "ligacao"),
+    ("Tronco", "m"),
+    ("EEE", "un"),
+    ("Linha de recalque", "m"),
+)
+
+
+#: QUANTAS obras a ficha de CTS tem de ter — derivado dos nomes, e não repetido
+#: ao lado deles: um `4` escrito à mão discordaria da lista no dia em que ela
+#: mudasse, e a discordância apareceria como ficha eternamente incompleta.
+OBRAS_CTS = len(OBRAS_DA_CTS)
 
 
 #: Colunas da ficha de coleta -> nomes do front. Sub-bacia e CTS são idênticas:

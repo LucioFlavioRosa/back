@@ -145,10 +145,25 @@ class ComponenteSemSistema(BaseModel):
     id: str
     nome: str
     tipo: str
-    #: A cidade da CTS — é por ela que a tela recorta o seletor para a cidade do
-    #: sistema. Vazio quando a carga ainda não a trouxe: essas vêm mesmo assim, e
-    #: a tela as mostra separadas em vez de escondê-las.
+    #: A cidade da CTS — a dominante, na macrorregião. INFORMATIVA: o seletor da
+    #: tela recorta por `empId`, e não por ela, desde que o sistema pode estar em
+    #: várias cidades (migração 022). Vazio quando a carga não a trouxe.
     cidId: str
+    #: ESTA LINHA É UMA MACRORREGIÃO? `"true"` ou `"false"`, como o resto desta
+    #: resposta, que é toda de strings.
+    #:
+    #: O `tipo` continua `"cts"` de propósito — para montar o sistema, a
+    #: macrorregião É o coletor daquele sistema, e a tela não precisa de uma
+    #: palavra nova para colocá-la. O campo diz à tela o que a linha É — para o
+    #: rótulo do seletor, para a coluna da ficha —, e não como recortá-la: o
+    #: recorte é por `empId`, igual para coletor e macrorregião.
+    macro: str = "false"
+    #: A EMPRESA do componente — a régua pela qual o seletor da tela recorta,
+    #: para o coletor comum e para a macrorregião: um sistema pode estar em
+    #: cidades de mais de uma empresa, e o seletor casa contra o conjunto. Na
+    #: macrorregião é a outra metade da chave `(sistema_cts, emp_codigo)`. Vazio
+    #: quando o coletor não tem cidade, e portanto não tem empresa.
+    empId: str = ""
 
 
 class Hierarquia(BaseModel):
@@ -201,6 +216,15 @@ class Contrato(BaseModel):
 # ===========================================================================
 #  Fichas de coleta — sub-bacia e CTS têm a MESMA forma
 # ===========================================================================
+class MembroDaMacrorregiao(BaseModel):
+    """Um coletor dentro de uma macrorregião — o bastante para conferir a soma."""
+
+    id: str
+    nome: str
+    cidId: str
+    ligA: str
+
+
 class FichaDeColeta(BaseModel):
     id: str
     nome: str
@@ -215,6 +239,14 @@ class FichaDeColeta(BaseModel):
     obrasOverride: dict[str, dict[str, str]]
     atualizadoEm: str
     atualizadoPor: str
+    #: SÓ NA CTS: a macrorregião a que a ficha pertence — o `sistema_cts` de um
+    #: coletor membro, ou o próprio id quando a ficha É a macrorregião. Vazio na
+    #: sub-bacia e no coletor fora de macrorregião. Não entra no `PUT`: vem da
+    #: origem, e a tela só mostra.
+    sistemaCts: str = ""
+    #: SÓ NA MACRORREGIÃO: os coletores que a soma contém. É o que permite
+    #: CONFERIR a ficha somada em vez de acreditar nela. Vazio no resto.
+    membros: list[MembroDaMacrorregiao] = []
 
 
 class SistemaDaArvore(BaseModel):

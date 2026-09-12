@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from app.dominio.campos import OBRAS_CTS, OBRAS_SUBBACIA
+from app.dominio.campos import OBRAS_CTS, OBRAS_DA_CTS, OBRAS_SUBBACIA
 from app.dominio.erros import ValorInvalido
 from app.dominio.ficha import obras_da_ficha
 
@@ -125,6 +125,88 @@ def test_lista_antiga_continua_passando():
 # --------------------------------------------- 3. o literal não voltou
 BACKEND = Path(__file__).resolve().parents[1]
 FRONT = BACKEND.parent / "otimizador-cadastro-web"
+
+
+# --------------------------------------------------------------------------
+# AS QUATRO OBRAS COM QUE A MACRORREGIÃO NASCE
+#
+# `OBRAS_DA_CTS` é a única lista de obras que o backend escreve — e escreve
+# porque a macrorregião não vem de carga nenhuma (`_preparar_macrorregiao`). Ela
+# não é base literal: traz NOME e UNIDADE DE MEDIDA, e nenhum número. A diferença
+# é a mesma que `test_o_backend_nao_tem_mais_base_literal_de_obra` guarda — o que
+# corrompe em silêncio é o valor plausível, e não o vocabulário.
+#
+# O risco dela é outro: divergir do de-para que a LEITURA usa. Uma obra escrita
+# com nome que `_INDICE_CTS` não conhece some do `GET` sem erro nenhum, e a
+# Regional preencheria três das quatro sem saber da quarta.
+# --------------------------------------------------------------------------
+
+
+def test_cada_obra_com_que_a_macrorregiao_nasce_e_conhecida_pela_leitura():
+    """Nome fora do de-para = obra que o `GET` ignora e a tela nunca mostra."""
+    from app.infra.repositorios.cadastro import _INDICE_CTS
+
+    for nome, _unidade in OBRAS_DA_CTS:
+        assert nome in _INDICE_CTS, (
+            f"{nome!r} não está em `_INDICE_CTS`: a macrorregião nasceria com uma "
+            "obra que a leitura descarta em silêncio."
+        )
+
+
+def test_as_quatro_cobrem_os_quatro_indices_do_front_uma_vez_cada():
+    """O front indexa o override por POSIÇÃO. Duas obras no mesmo índice se
+    sobrescrevem na tela, e um índice vazio é um campo que ninguém preenche."""
+    from app.infra.repositorios.cadastro import _INDICE_CTS
+
+    indices = [_INDICE_CTS[nome] for nome, _ in OBRAS_DA_CTS]
+    assert sorted(indices) == [str(n) for n in range(OBRAS_CTS)]
+
+
+def test_a_ordem_e_a_do_caminho_do_esgoto():
+    """A ordem da lista é a ordem em que a tela apresenta — coletor a recalque."""
+    from app.infra.repositorios.cadastro import _INDICE_CTS
+
+    assert [_INDICE_CTS[nome] for nome, _ in OBRAS_DA_CTS] == ["0", "1", "2", "3"]
+
+
+def test_as_cinco_da_subbacia_cobrem_os_cinco_indices_na_ordem():
+    """O par da sub-bacia: a lista que a carga grava tem de ser exatamente a que
+    `_INDICE_SUBBACIA` reconhece, na ordem em que a tela apresenta — e
+    `OBRAS_SUBBACIA` (o que a prontidão cobra) é o tamanho dela."""
+    from app.dominio.campos import OBRAS_DA_SUBBACIA, OBRAS_SUBBACIA
+    from app.infra.repositorios.cadastro import _INDICE_SUBBACIA
+
+    assert [_INDICE_SUBBACIA[nome] for nome, _ in OBRAS_DA_SUBBACIA] == [
+        str(n) for n in range(OBRAS_SUBBACIA)
+    ]
+
+
+def test_a_obra_da_macrorregiao_nasce_so_com_vocabulario():
+    """O `INSERT` que cria as quatro não pode escrever NÚMERO nenhum.
+
+    Duas versões deste teste não mordiam. A primeira conferia que nome e unidade
+    eram `str` — o que passa com qualquer implementação, inclusive uma que
+    gravasse `quantidade` junto. A segunda procurava a lista de colunas com regex
+    na fonte: mordia, mas quebrava com qualquer mudança de formatação, e pegaria o
+    `INSERT` errado se outro fosse acrescentado antes.
+
+    A terceira aponta para a CONSTANTE de onde o `INSERT` monta a lista. É a
+    fronteira entre vocabulário e medida escrita num lugar só, e é ela que a base
+    literal atravessaria ao voltar.
+    """
+    from app.infra.repositorios.cadastro_escrita import COLUNAS_DA_OBRA_NOVA
+
+    assert set(COLUNAS_DA_OBRA_NOVA) == {"cts", "componente", "unidade"}, (
+        f"a obra da macrorregião passou a nascer com "
+        f"{set(COLUNAS_DA_OBRA_NOVA) - {'cts', 'componente', 'unidade'}}: número que "
+        "ninguém digitou entra na simulação com cara de cadastro."
+    )
+    # E o `INSERT` monta a lista DA CONSTANTE — senão o teste guardaria uma
+    # constante que o código não usa.
+    fonte = (
+        BACKEND / "app/infra/repositorios/cadastro_escrita.py"
+    ).read_text(encoding="utf-8")
+    assert 'componentes_cts_capex\n                ({", ".join(COLUNAS_DA_OBRA_NOVA)})' in fonte
 
 
 def test_o_backend_nao_tem_mais_base_literal_de_obra():

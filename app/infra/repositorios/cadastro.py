@@ -12,7 +12,7 @@ eles são o caminho até ela, e quem escolhe a unidade já passou por eles.
 
 Não há coluna `unidade_id` nas tabelas de baixo: quem pertence a quem sai do
 encadeamento de FKs. Por isso quase toda consulta aqui carrega o mesmo CTE de
-cidades da unidade — extraí-lo em `_CIDADES_DA_UNIDADE` mantém o recorte escrito
+cidades da unidade — extraí-lo em `CIDADES_DA_UNIDADE` mantém o recorte escrito
 uma vez só, e é o recorte que, errado, faria a tela mostrar cidade de outra
 unidade sem nenhum sinal.
 
@@ -25,11 +25,17 @@ import logging
 from typing import Any
 
 from app.config import config
-from app.infra import db
-from app.infra.repositorios import pendencias
+from app.dominio import macrorregiao_cts
 from app.dominio.campos import COLETA, DO_DATABRICKS
 from app.dominio.formato import SEM_SEPARADOR, pt_br, pt_br_ano
-
+from app.infra import db
+from app.infra.repositorios import pendencias
+from app.infra.repositorios.recortes import (
+    CIDADES_DA_UNIDADE,
+    MACRORREGIOES_COLOCADAS,
+    SISTEMAS_DA_UNIDADE,
+    USA_MACRORREGIAO,
+)
 
 log = logging.getLogger(__name__)
 
@@ -44,13 +50,6 @@ def _i() -> str:
 #: existir só como linha de vínculo e ganhou tabela própria, então o caminho
 #: passa por `cidade_empresa` (o vínculo) até `cidade` (o município). A
 #: superintendência virou `empresa`, campo a campo.
-_CIDADES_DA_UNIDADE = """
-    SELECT c.cidade_id, c.cidade_name, ce.emp_codigo
-      FROM {i}.cidade c
-      JOIN {i}.cidade_empresa ce ON ce.cidade_id = c.cidade_id
-      JOIN {i}.empresa e ON e.emp_codigo = ce.emp_codigo
-     WHERE e.unidade_id = $1
-"""
 
 
 def _auditoria(linha: dict[str, Any]) -> dict[str, Any]:
@@ -77,7 +76,11 @@ def _auditoria(linha: dict[str, Any]) -> dict[str, Any]:
 
 
 def _cidades_cte() -> str:
-    return _CIDADES_DA_UNIDADE.format(i=_i())
+    return CIDADES_DA_UNIDADE.format(i=_i())
+
+
+def _sistemas_cte() -> str:
+    return SISTEMAS_DA_UNIDADE.format(i=_i())
 
 
 # ---------------------------------------------------------------- organização
@@ -195,8 +198,7 @@ async def unidade(unidade_id: str) -> dict[str, Any] | None:
     # idas ao banco para montar um cartão.
     c = await db.buscar_um(
         f"""WITH cid AS ({_cidades_cte()}),
-                 sis AS (SELECT s.sistema_id FROM {_i()}.cidade_sistema s
-                          JOIN cid ON cid.cidade_id = s.cidade_id),
+                 sis AS ({_sistemas_cte()}),
                  sub AS (SELECT t.componente_sistema_id FROM {_i()}.sistema_topologia t
                           JOIN sis ON sis.sistema_id = t.sistema_id),
                  -- Os componentes de CAPEX das duas fichas, no mesmo formato: o
@@ -327,8 +329,7 @@ async def hierarquia(unidade_id: str) -> dict[str, Any]:
                         WHEN k.cts    IS NOT NULL THEN 'cts'
                         ELSE 'sub-bacia' END AS tipo
               FROM {_i()}.sistema_topologia t
-              JOIN {_i()}.cidade_sistema s USING (sistema_id)
-              JOIN ({_cidades_cte()}) c ON c.cidade_id = s.cidade_id
+              JOIN ({_sistemas_cte()}) s USING (sistema_id)
               LEFT JOIN {_i()}.ete_capex e ON e.ete_id = t.componente_sistema_id
               LEFT JOIN {_i()}.cts_operacional k ON k.cts = t.componente_sistema_id
              ORDER BY t.sistema_id, t.componente_sistema_id""",
@@ -375,19 +376,63 @@ async def hierarquia(unidade_id: str) -> dict[str, Any]:
                         WHEN c.cts    IS NOT NULL THEN 'cts'
                         WHEN b.sub_bacia IS NOT NULL THEN 'sub-bacia'
                         ELSE '' END AS tipo,
-                   c.cidade_id AS "cidId"
+                   c.cidade_id AS "cidId",
+                   -- A EMPRESA do coletor, pela cidade dele: e por ela que o Fluxo
+                   -- recorta o seletor. Cidade deixou de ser a regua desde que o
+                   -- sistema pode estar em varias (migracao 022) — um coletor de
+                   -- Mesquita pertence ao Sarapui tanto quanto um de Belford Roxo.
+                   ce.emp_codigo AS "empId"
               FROM {_i()}.sistema_topologia t
               LEFT JOIN {_i()}.ete_capex e ON e.ete_id = t.componente_sistema_id
               LEFT JOIN {_i()}.cts_operacional c ON c.cts = t.componente_sistema_id
+              LEFT JOIN {_i()}.cidade_empresa ce ON ce.cidade_id = c.cidade_id
               LEFT JOIN {_i()}.subbacia_operacional b
                      ON b.sub_bacia = t.componente_sistema_id
              WHERE t.sistema_id IS NULL
+               -- A LINHA DA MACRORREGIÃO NUNCA ENTRA AQUI, marcada a unidade ou
+               -- não. Ela é um AGREGADO: oferecida como coletor comum — o que
+               -- aconteceria com a unidade desmarcada, onde `_macrorregioes_livres`
+               -- nem roda —, poderia ser colocada ao lado dos coletores que ela
+               -- soma, e a rodada contaria as mesmas ligações duas vezes. Marcada
+               -- a unidade, ela volta à lista por `_macrorregioes_livres`, que é o
+               -- único caminho por onde ela deve aparecer.
+               AND NOT coalesce(c.e_macrorregiao, false)
                AND (c.cts IS NULL
                     OR c.cidade_id IS NULL
                     OR c.cidade_id IN (SELECT cidade_id FROM cid))
              ORDER BY 3, 2, 1""",
         unidade_id,
     )
+
+    # MACRORREGIAO NO LUGAR DAS CTS SOLTAS.
+    #
+    # Marcada a unidade, a tela de montar o sistema oferece MACRORREGIOES — e nao
+    # os coletores que as compoem. Oferecer os membros contradiria o regime que a
+    # propria unidade declarou: colocar um deles sozinho num sistema e exatamente
+    # o que a macrorregiao existe para impedir.
+    #
+    # DISPONIVEL MUDA DE SIGNIFICADO. Para uma CTS, disponivel e "a linha dela na
+    # topologia nao tem sistema"; para a macrorregiao sao duas condicoes, e a
+    # regra inteira esta em `_macrorregioes_livres`. Uma delas some da lista em
+    # vez de ser oferecida e recusada na hora de colocar, longe daqui.
+    if await _usa_macrorregiao(unidade_id):
+        # `tipo` continua 'cts': para a tela, a macrorregião É o coletor daquele
+        # sistema. Ela não aprende uma palavra nova, e `ehCts` continua valendo.
+        sem_sistema = [l for l in sem_sistema if l["tipo"] != "cts"] + [
+            {
+                "id": m["id"],
+                "nome": m["id"],
+                "tipo": "cts",
+                # `cidId` É A DOMINANTE — a que a ficha expõe. O RECORTE da tela
+                # é por `empId`: a macrorregião cruza município, e a empresa é a
+                # outra metade da chave dela.
+                "cidId": m["cidId"],
+                "empId": m["empId"],
+                "macro": "true",
+            }
+            for m in await _macrorregioes_livres(unidade_id)
+        ]
+        sem_sistema.sort(key=lambda l: (l["tipo"] or "", l["nome"] or "", l["id"] or ""))
 
     def txt(linhas):
         return [{k: ("" if v is None else str(v)) for k, v in l.items()} for l in linhas]
@@ -533,8 +578,23 @@ async def sub_bacias(unidade_id: str) -> dict[str, Any]:
                    c.cidade_id, c.cidade_name, c.emp_codigo,
                    e.empresa
               FROM {_i()}.sistema_topologia t
-              JOIN {_i()}.cidade_sistema s USING (sistema_id)
-              JOIN ({_cidades_cte()}) c ON c.cidade_id = s.cidade_id
+              JOIN ({_sistemas_cte()}) s USING (sistema_id)
+              -- A CIDADE E A DA SUB-BACIA (migracao 022), e nao a do sistema: o
+              -- sistema pode estar em varias, e a arvore agrupa por cidade. Sem
+              -- isto, uma sub-bacia de Mesquita apareceria sob Belford Roxo so
+              -- porque o Sarapui comeca la.
+              --
+              -- SEM CIDADE, CAI NA DO SISTEMA — a primeira, em ordem. A coluna e
+              -- nulavel, e uma sub-bacia sem cidade que sumisse daqui sumiria
+              -- tambem do mapa de fichas (`subs` e montado a partir destas
+              -- linhas): existiria no banco, seria no do motor, e nao teria como
+              -- ser preenchida.
+              JOIN {_i()}.subbacia_operacional b ON b.sub_bacia = t.componente_sistema_id
+              JOIN ({_cidades_cte()}) c
+                ON c.cidade_id = coalesce(
+                       b.cidade_id,
+                       (SELECT min(cs.cidade_id) FROM {_i()}.cidade_sistema cs
+                         WHERE cs.sistema_id = s.sistema_id))
               JOIN {_i()}.empresa e USING (emp_codigo)
              ORDER BY e.empresa, c.cidade_name, s.sistema_name,
                       t.componente_sistema_id""",
@@ -547,8 +607,7 @@ async def sub_bacias(unidade_id: str) -> dict[str, Any]:
                  WHERE b.sub_bacia IN (
                        SELECT t.componente_sistema_id
                          FROM {_i()}.sistema_topologia t
-                         JOIN {_i()}.cidade_sistema s USING (sistema_id)
-                         JOIN ({_cidades_cte()}) c ON c.cidade_id = s.cidade_id)""",
+                         JOIN ({_sistemas_cte()}) s USING (sistema_id))""",
             unidade_id,
         )
     }
@@ -705,10 +764,14 @@ async def etes(unidade_id: str) -> dict[str, Any]:
     unidade — o motor a identifica assim (`otimizador_capex_v62.py:1111`).
     """
     linhas = await db.buscar(
-        f"""SELECT e.ete_id, t.componente_sistema_id AS sub, s.cidade_id,
-                   -- O SISTEMA da ETE. O join com `cidade_sistema` ja existia
-                   -- (e por ele que a ETE chega a uma unidade); faltava trazer a
-                   -- coluna, e a tela mostrava "ID Sistema" vazio nas 474.
+        f"""SELECT e.ete_id, t.componente_sistema_id AS sub,
+                   -- A CIDADE DA ETE e a do sistema dela — e o sistema pode estar
+                   -- em varias (migracao 022). A ETE nao tem cidade propria no
+                   -- esquema; a primeira, em ordem, e o que da para mostrar sem
+                   -- inventar. Um sistema em uma cidade so (a base mockada
+                   -- inteira) devolve exatamente o que devolvia antes.
+                   (SELECT min(cs.cidade_id) FROM {_i()}.cidade_sistema cs
+                     WHERE cs.sistema_id = s.sistema_id) AS cidade_id,
                    s.sistema_id, s.sistema_name,
                    e.capacidade_por_modulo, e.capex_por_modulo, e.opex_por_modulo,
                    e.tempo_de_execucao, e.capacidade_nominal_atual,
@@ -717,8 +780,7 @@ async def etes(unidade_id: str) -> dict[str, Any]:
                    e.nova, e.atualizado_em, e.atualizado_por
               FROM {_i()}.ete_capex e
               JOIN {_i()}.sistema_topologia t ON t.componente_sistema_id = e.ete_id
-              JOIN {_i()}.cidade_sistema s USING (sistema_id)
-              JOIN ({_cidades_cte()}) c ON c.cidade_id = s.cidade_id
+              JOIN ({_sistemas_cte()}) s USING (sistema_id)
              ORDER BY e.ete_id""",
         unidade_id,
     )
@@ -775,6 +837,86 @@ async def etes(unidade_id: str) -> dict[str, Any]:
     return {"etes": etes}
 
 
+async def _usa_macrorregiao(unidade_id: str) -> bool:
+    """A unidade trabalha em macrorregião de CTS?
+
+    Uma consulta minúscula, e não um parâmetro que os chamadores passem adiante:
+    a flag decide a CARDINALIDADE do que se serve, e um chamador que a esquecesse
+    devolveria CTS individuais numa unidade marcada — sem erro, e com a tela
+    oferecendo o que a unidade declarou não usar.
+    """
+    linha = await db.buscar_um(USA_MACRORREGIAO.format(i=_i()), unidade_id)
+    return bool(linha and linha["usa_macrorregiao_cts"])
+
+
+async def _membros_por_macrorregiao(unidade_id: str) -> dict[str, list[dict[str, Any]]]:
+    """Os coletores de cada macrorregião COLOCADA da unidade, para a ficha mostrar.
+
+    Pelo par `(sistema_cts, emp_codigo)`, como toda leitura de macrorregião: a
+    empresa da linha vem da cidade dominante dela, e só os coletores dessa
+    empresa contam. Traz o que se precisa para conferir a soma — id, nome e as
+    ligações atuais —, e não a ficha inteira de cada um.
+    """
+    linhas = await db.buscar(
+        f"""WITH macros AS (
+                SELECT cts AS macro, emp_codigo
+                  FROM ({MACRORREGIOES_COLOCADAS.format(i=_i())}) m
+             )
+            SELECT m.macro, o.cts AS id, t.componente_sistema_nome AS nome,
+                   o.cidade_id, o.ligacoes_atuais
+              FROM macros m
+              JOIN {_i()}.cts_operacional o ON o.sistema_cts = m.macro
+              JOIN {_i()}.cidade_empresa ce
+                ON ce.cidade_id = o.cidade_id AND ce.emp_codigo = m.emp_codigo
+              LEFT JOIN {_i()}.sistema_topologia t ON t.componente_sistema_id = o.cts
+             WHERE NOT o.e_macrorregiao
+             ORDER BY m.macro, o.cts""",
+        unidade_id,
+    )
+    saida: dict[str, list[dict[str, Any]]] = {}
+    for l in linhas:
+        saida.setdefault(l["macro"], []).append(
+            {
+                "id": l["id"],
+                "nome": l["nome"] or l["id"],
+                "cidId": l["cidade_id"] or "",
+                "ligA": pt_br(l["ligacoes_atuais"]),
+            }
+        )
+    return saida
+
+
+async def _macrorregioes_livres(unidade_id: str) -> list[dict[str, Any]]:
+    """As macrorregiões que a tela de montar o sistema pode oferecer.
+
+    As DUAS consultas que a regra precisa: os membros de cada macrorregião (com
+    "este está em sistema?" junto) e as macrorregiões que já foram colocadas. Quem
+    decide é `dominio.macrorregiao_cts.livres`.
+    """
+    membros = await db.buscar(
+        f"""SELECT o.cts, o.cidade_id, o.ligacoes_atuais, o.sistema_cts,
+                   c.emp_codigo,
+                   coalesce(t.sistema_id, '') <> '' AS colocada
+              FROM {_i()}.cts_operacional o
+              JOIN ({_cidades_cte()}) c ON c.cidade_id = o.cidade_id
+              LEFT JOIN {_i()}.sistema_topologia t
+                     ON t.componente_sistema_id = o.cts
+             WHERE o.sistema_cts IS NOT NULL AND btrim(o.sistema_cts) <> ''
+               AND NOT o.e_macrorregiao""",
+        unidade_id,
+    )
+    # RECORTADA PELA UNIDADE, como tudo aqui. Sem o recorte, uma macrorregião de
+    # nome igual colocada NOUTRA unidade apagaria esta da lista — os membros daqui
+    # livres, e a opção sumindo sem nada dizer por quê.
+    colocadas = {
+        l["cts"]
+        for l in await db.buscar(
+            f"SELECT cts FROM ({MACRORREGIOES_COLOCADAS.format(i=_i())}) m", unidade_id
+        )
+    }
+    return macrorregiao_cts.livres(macrorregiao_cts.agrupar(membros), colocadas)
+
+
 async def cts(unidade_id: str) -> dict[str, Any]:
     """Grupo 05 — as CTS COLOCADAS nos sistemas desta unidade.
 
@@ -794,16 +936,32 @@ async def cts(unidade_id: str) -> dict[str, Any]:
     ver `_cts_inconsistentes`. Ela NAO cruza com `ctss`: sao justamente os que
     nao tem ficha para editar.
     """
+    # A CARDINALIDADE VEM DA UNIDADE. Marcada a macrorregião, o que se serve é uma
+    # ficha por macrorregião — as CTS membro deixam de aparecer sozinhas, porque
+    # não é nelas que a Regional preenche nada. Desmarcada, é a leitura de sempre.
+    #
+    # O front não distingue os dois casos, e não precisa: o payload tem a mesma
+    # forma, e o `id` continua sendo um id opaco que ele devolve ao colocar o
+    # componente num sistema.
+    # AS COLOCADAS, SEMPRE. Um coletor que está num sistema tem ficha para
+    # preencher, marcada a unidade ou não — ele é nó da simulação de qualquer
+    # forma, e uma ficha que a tela não serve é um nó que ninguém consegue
+    # preencher e que nada denuncia.
     fichas = {
         f["cts"]: f
         for f in await db.buscar(
             f"""SELECT o.* FROM {_i()}.cts_operacional o
                   JOIN {_i()}.sistema_topologia t ON t.componente_sistema_id = o.cts
-                  JOIN {_i()}.cidade_sistema s USING (sistema_id)
-                  JOIN ({_cidades_cte()}) c ON c.cidade_id = s.cidade_id""",
+                  JOIN ({_sistemas_cte()}) s USING (sistema_id)""",
             unidade_id,
         )
     }
+    # A MACRORREGIÃO NÃO PRECISA DE CAMINHO PRÓPRIO AQUI. Colocada, ela é uma
+    # linha de `cts_operacional` na topologia como qualquer coletor, e a consulta
+    # acima já a traz; não colocada, ela não tem linha nem está na topologia, e
+    # nada abaixo a emitiria. Um bloco que sobrepunha "as fichas de macrorregião"
+    # por cima destas existiu e não fazia nada — era o resto do modelo anterior
+    # à migração 021, em que a ficha era somada na leitura.
     linhas = await db.buscar(
         f"""SELECT t.componente_sistema_id AS cts,
                    t.componente_sistema_nome AS nome,
@@ -811,27 +969,39 @@ async def cts(unidade_id: str) -> dict[str, Any]:
                    s.sistema_id, s.sistema_name
               FROM {_i()}.sistema_topologia t
               JOIN {_i()}.cts_operacional o ON o.cts = t.componente_sistema_id
-              JOIN {_i()}.cidade_sistema s USING (sistema_id)
-              JOIN ({_cidades_cte()}) c ON c.cidade_id = s.cidade_id
+              JOIN ({_sistemas_cte()}) s USING (sistema_id)
              ORDER BY s.sistema_name, t.componente_sistema_id""",
         unidade_id,
     )
     obras = await _obras_por_ficha(
         "componentes_cts_capex", "cts", list(fichas), _INDICE_CTS
     )
+    membros = await _membros_por_macrorregiao(unidade_id)
 
     ctss: dict[str, Any] = {}
     for l in linhas:
         cid = l["cts"]
         if cid not in fichas:
             continue
+        ficha = fichas[cid]
         ctss[cid] = {
-            **_ficha_coleta(fichas[cid], "cts"),
+            **_ficha_coleta(ficha, "cts"),
             "nome": l["nome"] or cid,
             "sisId": l["sistema_id"],
             "sistema": l["sistema_name"] or l["sistema_id"],
             "jusante": l["jusante"] or "",
             "obrasOverride": obras.get(cid, {}),
+            # A MACRORREGIÃO A QUE A FICHA PERTENCE, para a tela mostrar. Num
+            # coletor membro é o `sistema_cts` dele; na linha da macrorregião é o
+            # próprio id — ela É o sistema CTS, e a coluna dela fica nula por não
+            # ser membro de si mesma (migração 021). Vazio num coletor que a
+            # origem não pôs em macrorregião nenhuma.
+            "sistemaCts": ficha.get("sistema_cts") or (cid if ficha.get("e_macrorregiao") else ""),
+            # OS COLETORES QUE A SOMA CONTÉM, com as ligações de cada um. É o que
+            # permite CONFERIR a macrorregião em vez de acreditar nela: sem isto a
+            # ficha somada é um número, e uma macrorregião de 29 coletores é
+            # indistinguível de uma de 1.
+            "membros": membros.get(cid, []),
         }
 
     return {
@@ -873,8 +1043,7 @@ async def _cts_inconsistentes(unidade_id: str) -> list[dict[str, Any]]:
                'Esta num sistema e nao tem ficha em lugar nenhum. '
                'Entra na simulacao com demanda zero.' AS detalhe
           FROM {_i()}.sistema_topologia t
-          JOIN {_i()}.cidade_sistema s USING (sistema_id)
-          JOIN ({_cidades_cte()}) c ON c.cidade_id = s.cidade_id
+          JOIN ({_sistemas_cte()}) s USING (sistema_id)
          WHERE NOT EXISTS (SELECT 1 FROM {_i()}.cts_operacional o
                             WHERE o.cts = t.componente_sistema_id)
            AND NOT EXISTS (SELECT 1 FROM {_i()}.subbacia_operacional b

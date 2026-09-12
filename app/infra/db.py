@@ -140,6 +140,17 @@ _EXIGIDO = [
     ("input", "cts_operacional", "atualizado_por", "006_auditoria_cadastro.sql"),
     ("input", "ete_capex", "atualizado_por", "006_auditoria_cadastro.sql"),
     ("input", "cidade_operacional", "atualizado_por", "006_auditoria_cadastro.sql"),
+    # A macrorregiao de CTS: a coluna que diz QUAIS CTS formam cada uma. Sem ela
+    # o cadastro de uma unidade marcada nao tem como agrupar, e a tela ofereceria
+    # CTS individuais onde deveria oferecer macrorregioes — sem erro nenhum.
+    ("input", "cts_operacional", "sistema_cts", "020_macrorregiao_de_cts.sql"),
+    # E a coluna que distingue a LINHA DA MACRORREGIAO dos coletores. Sem ela,
+    # coloca-la num sistema falha no `INSERT`, e as consultas que a excluem dos
+    # membros passariam a soma-la dentro da propria soma.
+    ("input", "cts_operacional", "e_macrorregiao", "021_a_linha_da_macrorregiao.sql"),
+    # Sistema em mais de uma cidade: a sub-bacia passou a ter a propria cidade, e
+    # a arvore de navegacao a le. Sem a coluna, `GET /sub-bacias` responde 500.
+    ("input", "subbacia_operacional", "cidade_id", "022_sistema_em_mais_de_uma_cidade.sql"),
 ]
 
 #: Migracao que nao cria tabela nem coluna: a regra vive numa CONSTRAINT, sobre
