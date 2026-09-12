@@ -98,4 +98,8 @@ resultado em `public.otim_*`. **Não escreve no cadastro.** Precisa de `ortools`
 `psycopg2-binary` no host, e do pacote do motor em layout plano — por padrão
 `projetos/pacote-motor-main`, ou o que `OTIMIZADOR_PACOTE` apontar.
 
+> Na dúvida, **não passe a variável**. Apontá-la para uma cópia sem
+> `carregar_postgres.py` quebra no primeiro disparo, e não na subida: o executor
+> fica ouvindo a fila como se estivesse bem.
+
 Unidades: `uA1` (5 cidades, 142 sub-bacias — a mais rápida) até `uB2` (27/1116).

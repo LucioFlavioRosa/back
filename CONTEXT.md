@@ -46,6 +46,25 @@ obras próprias, e um nó do sistema como ela. Diferente de todo o resto, é a
 Regional quem escolhe em que sistema cada uma entra.
 _Avoid_: coletor, interceptor
 
+**Macrorregião de CTS**:
+O regime em que um coletor atende à região inteira, e por isso cada sistema da
+unidade comporta UMA CTS. É decisão da unidade, não de cada sistema, e é dado de
+cadastro: o motor não conta CTS por sistema.
+_Avoid_: sistema de CTS (colide com **Sistema**, que é outra coisa), usa CTS
+
+**Microrregião de CTS**:
+O outro regime: cada sistema comporta quantas CTS forem colocadas nele. É o
+estado da unidade com a macrorregião desmarcada — um regime, e não a ausência de
+um.
+_Avoid_: sem macrorregião, desmarcado
+
+**Usar CTS**:
+Parâmetro da RODADA que decide se a CTS existe na simulação. Desligado, o coletor
+não vira nó e quem atende a área sobreposta é a sub-bacia, pelas colunas
+`*_com_cts`. Nada a ver com **Macrorregião de CTS**, que é cadastro e limita
+quantas cabem por sistema.
+_Avoid_: usa CTS, considerar CTS
+
 **ETE**:
 A Estação de Tratamento que fecha o caminho de um sistema. Um sistema tem uma
 ETE só.
@@ -118,6 +137,18 @@ atingida".
 **Fator de esgoto**:
 A faixa que converte cobertura em paridade. Vive no cadastro, e não nas tabelas
 de resultado.
+
+**Rateio do CAPEX**:
+Quanto do preço de uma obra COMPARTILHADA cabe a cada sub-bacia que escoa por
+ela, na proporção da vazão. É atribuição de CUSTO — não é a ponderação do WACC,
+que desde 10/09/2026 olha só as obras da própria sub-bacia (ADR-0009).
+_Avoid_: partilha, divisão, share
+
+**WACC da receita**:
+A taxa que desconta a receita de uma sub-bacia no VPL: a média dos WACCs das
+obras DELA, ponderada pelo CAPEX de cada uma. Transporte a jusante e ETE ficam
+de fora.
+_Avoid_: taxa de desconto, custo de capital do sistema
 
 **Paridade**:
 A razão entre esgoto e água numa cidade. O degrau entre a inicial e a final é o
