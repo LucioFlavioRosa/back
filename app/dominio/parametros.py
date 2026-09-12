@@ -307,9 +307,12 @@ def mes_ano(data_inicio: str | None) -> tuple[int, int] | None:
     Mora aqui, e nao no worker, pela razao do docstring do modulo: e a traducao
     entre a convencao da tela e a do job, e ela nao pode ter duas casas.
     """
-    if not data_inicio:
+    # Vazio E so-espacos sao "ninguem digitou": o motor deriva a data sozinho
+    # (primeiro ano do CAPEX x dia da rodada). Falhar em `"  "` seria recusar uma
+    # rodada por um espaco que a pessoa nao ve.
+    if not data_inicio or not str(data_inicio).strip():
         return None
-    partes = str(data_inicio).replace("/", "-").split("-")
+    partes = str(data_inicio).strip().replace("/", "-").split("-")
     if len(partes) != 2:
         raise ParametrosInvalidos(f"Data de início fora do formato AAAA-MM: {data_inicio!r}")
     try:

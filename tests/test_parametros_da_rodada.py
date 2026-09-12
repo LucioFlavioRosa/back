@@ -194,8 +194,12 @@ class TestDataInicio:
         assert mes_ano("2026/06") == (6, 2026)
 
     def test_vazio_e_ausente_viram_none(self):
+        """`None` = a data automatica do motor (primeiro ano do CAPEX x dia da
+        rodada); so-espacos e o mesmo que vazio."""
         assert mes_ano(None) is None
         assert mes_ano("") is None
+        assert mes_ano("   ") is None
+        assert mes_ano(" 2027-01 ") == (1, 2027)
 
     def test_mes_impossivel_falha_alto(self):
         # `"01-2027"` (MM-AAAA, invertido) daria mes 1 e ano 2027 por acidente no
