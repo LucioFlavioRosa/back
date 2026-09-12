@@ -647,6 +647,13 @@ def executar(run_id: str, tempo: int) -> None:
         # `app/dominio/parametros.py`.
     )
     log(run_id, f"cenario: {len(cen.obras)} obras, {len(cen.sistemas)} sistemas")
+    # A DATA DE INICIO DAS OBRAS vai para o historico da rodada: sem `DATA_INICIO`
+    # no pedido (a tela nao a oferece) o motor a deriva do primeiro ano do CAPEX e do
+    # dia da rodada, e quem le o resultado precisa saber de que mes o plano partiu.
+    _ab = min(cen.ano_base.values()) if getattr(cen, "ano_base", None) else 2026
+    _mi = int(getattr(cen, "mes_inicio", 0) or 0)
+    log(run_id, f"obras a partir de {(_mi % 12) + 1:02d}/{_ab + _mi // 12}"
+        + ("" if p.get("DATA_INICIO") else " (automatico: primeiro ano do CAPEX x dia da rodada)"))
     andar(run_id, MODELO)
     # Antes do solver, que e a etapa cara: cancelar durante a leitura do banco tem
     # de evitar os minutos seguintes, e nao so o passo final.
