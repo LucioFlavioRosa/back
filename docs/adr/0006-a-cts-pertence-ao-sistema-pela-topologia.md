@@ -6,8 +6,9 @@ tempo o produto o tratou como se significasse — era por ele que o servidor
 decidia de que unidade a CTS era, e isso errava de duas formas: CTS sem par não
 pertencia a unidade nenhuma, e CTS pareada herdava a unidade da irmã mesmo
 estando num sistema de outra. Hoje a leitura é pela topologia
-(`input.sistema_topologia`), e a sobreposição virou dado da própria sub-bacia,
-nas colunas `*_com_cts`.
+(`input.sistema_topologia`), e a sobreposição virou dado da própria sub-bacia:
+as colunas `*_com_cts` são a sub-bacia com a CTS considerada à parte, e as sem
+sufixo a sub-bacia inteira.
 
 ## Consequences
 

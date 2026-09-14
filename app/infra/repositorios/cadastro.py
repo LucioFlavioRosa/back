@@ -26,7 +26,7 @@ from typing import Any
 
 from app.config import config
 from app.dominio import macrorregiao_cts
-from app.dominio.campos import COLETA, DO_DATABRICKS
+from app.dominio.campos import COLETA, DO_DATABRICKS, SO_DA_SUBBACIA
 from app.dominio.formato import SEM_SEPARADOR, pt_br, pt_br_ano
 from app.infra import db
 from app.infra.repositorios import pendencias
@@ -549,6 +549,11 @@ def _ficha_coleta(linha: dict[str, Any], chave: str) -> dict[str, Any]:
     db_bloco = {v: pt_br(linha[k]) for k, v in COLETA.items() if v in DO_DATABRICKS}
     params = {v: pt_br(linha[k]) for k, v in COLETA.items() if v not in DO_DATABRICKS}
     db_bloco["ticket"] = _ticket(linha)
+    # AS `*_com_cts`, SÓ NA SUB-BACIA: a CTS não tem essas colunas, e `COLETA` é a
+    # ficha das duas. Vão no bloco `db` como o `ticket` — a tela mostra, o `PUT`
+    # não as exige nem as grava (ver `campos.SO_DA_SUBBACIA`).
+    if chave == "sub_bacia":
+        db_bloco.update({v: pt_br(linha[k]) for k, v in SO_DA_SUBBACIA.items()})
     # A auditoria fica FORA de `db` e de `params`: os dois blocos são o contrato do
     # que o `PUT` devolve inteiro (`exigir_ficha_inteira`), e quem gravou não é
     # campo de ficha — é fato sobre a ficha. Dentro de um bloco, o cliente passaria

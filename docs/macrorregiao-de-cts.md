@@ -176,7 +176,8 @@ O motor **não sabe o que é macrorregião**, e não precisa saber. Ele lê
 - os **membros** não estão → não viram nós, e os dados deles não são lidos para
   nada;
 - com `USAR_CTS=false`, qualquer CTS na topologia é pulada, e quem atende a área
-  é a sub-bacia pelas colunas `*_com_cts`.
+  é a sub-bacia inteira (colunas sem sufixo); com `true`, a sub-bacia lê as
+  `*_com_cts` — o que sobra para ela com a CTS à parte.
 
 Por isso a etapa 1 recusa desmarcar com macrorregião colocada: é o único caminho
 por onde a macrorregião e um membro dela estariam na topologia ao mesmo tempo.

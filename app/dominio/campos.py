@@ -24,6 +24,7 @@ __all__ = [
     "OBRAS_DA_CTS",
     "OBRAS_DA_SUBBACIA",
     "OBRAS_SUBBACIA",
+    "SO_DA_SUBBACIA",
 ]
 
 
@@ -61,6 +62,38 @@ CAMPOS_DB = sorted(DO_DATABRICKS)
 
 
 CAMPOS_PARAMS = ["preco", "tarr", "ramp", "vaz", "pot", "popU", "popA"]
+
+
+#: AS COLUNAS `*_com_cts` — SÓ DA SUB-BACIA, E SÓ DE LEITURA.
+#:
+#: A exportação do Databricks traz cada medida da sub-bacia em duas versões: a
+#: sem sufixo é a sub-bacia INTEIRA, sem considerar a CTS (a área do coletor está
+#: dentro); a `_com_cts` é a sub-bacia com a CTS considerada à parte — só o que
+#: não é área do coletor, vazia quando ele levou tudo. O motor lê a `_com_cts`
+#: quando a rodada tem CTS ligada, e a sem sufixo quando não.
+#:
+#: Ficam FORA de `COLETA`, de propósito, por três razões:
+#:   * a CTS não as tem — `COLETA` é a ficha que sub-bacia e CTS compartilham, e
+#:     lê-las na CTS quebraria a leitura por coluna inexistente;
+#:   * não entram no `PUT` (`CAMPOS_DB` não as exige, `gravar_coleta` não as
+#:     grava): são medida da base comercial, como o `ticket` é conta do servidor,
+#:     e a tela só as mostra ao lado das colunas sem sufixo para se poder conferir
+#:     quanto da sub-bacia é área do coletor;
+#:   * não geram trilha: ninguém as edita.
+#:
+#: A tela as recebe no bloco `db` da ficha da sub-bacia, com estes nomes.
+SO_DA_SUBBACIA = {
+    "receita_faturada_media_mensal_com_cts": "fatCts",
+    "receita_arrecadada_media_mensal_com_cts": "arrCts",
+    "universo_ligacoes_com_cts": "ligUCts",
+    "ligacoes_atuais_com_cts": "ligACts",
+    "universo_economias_com_cts": "ecoUCts",
+    "economias_atuais_com_cts": "ecoACts",
+    "universo_ligacoes_residencial_com_cts": "ligUResCts",
+    "ligacoes_atuais_residencial_com_cts": "ligAResCts",
+    "universo_economias_residencial_com_cts": "ecoUResCts",
+    "economias_atuais_residencial_com_cts": "ecoAResCts",
+}
 
 
 #: `popN` (`populacao_novas_obras`) existe na tabela e NÃO é modelado pelo front:

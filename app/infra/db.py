@@ -151,6 +151,11 @@ _EXIGIDO = [
     # Sistema em mais de uma cidade: a sub-bacia passou a ter a propria cidade, e
     # a arvore de navegacao a le. Sem a coluna, `GET /sub-bacias` responde 500.
     ("input", "subbacia_operacional", "cidade_id", "022_sistema_em_mais_de_uma_cidade.sql"),
+    # A receita da sub-bacia com a CTS a parte: a carga do Databricks a grava e o
+    # motor a le com a CTS ligada. Sem a coluna, `carregar_portfolio.py` falha no
+    # INSERT — e uma rodada numa base carregada sem ela faturaria a area do
+    # coletor duas vezes.
+    ("input", "subbacia_operacional", "receita_faturada_media_mensal_com_cts", "023_receita_com_cts.sql"),
 ]
 
 #: Migracao que nao cria tabela nem coluna: a regra vive numa CONSTRAINT, sobre

@@ -65,8 +65,15 @@ if BANCO in INTOCAVEIS or "_" not in BANCO:
     )
 PREFIXO = "PORTFOLIO_INVEST_CAPEX_SUBBACIAS_v5_"
 
-#: CSV -> coluna da ficha de coleta. As oito primeiras têm par `_COM_CTS` na
+#: CSV -> coluna da ficha de coleta. Todas as dez têm par `_COM_CTS` na
 #: sub-bacia, e o par vai para a coluna `*_com_cts` correspondente.
+#:
+#: A SEMÂNTICA DAS DUAS VERSÕES (conferida em 09/2026 contra a planilha de CTS,
+#: cidade a cidade): a coluna sem sufixo é a sub-bacia INTEIRA, sem considerar a
+#: CTS — a área do coletor está dentro; a `_COM_CTS` é a sub-bacia com a CTS
+#: considerada à parte, só o que não é área do coletor, e vem VAZIA quando a CTS
+#: levou tudo (Nilópolis tem seis assim). A carga grava as duas como vêm; quem
+#: escolhe qual ler é o motor, pela chave `usar_cts` da rodada.
 MEDIDAS = {
     "QTD_LIGACOES_TOTAL": "universo_ligacoes",
     "QTD_LIGACOES_AGUA": "ligacoes_atuais",
@@ -105,13 +112,13 @@ def num(v: str, inteira: bool):
 
 
 def medidas(x: dict[str, str], sufixo: str = "") -> dict[str, object]:
-    """As medidas da linha. Com `sufixo`, as versões `_COM_CTS` — só as OITO de
-    quantidade: a origem manda receita e adimplência `_COM_CTS` também, mas a
-    sub-bacia só tem coluna para as quantidades (é o que o motor consome)."""
+    """As medidas da linha. Com `sufixo`, as versões `_COM_CTS` — as oito de
+    quantidade e as duas de receita (migração 023). A adimplência `_COM_CTS` a
+    origem manda também, mas o motor não a consome, e a sub-bacia não tem coluna."""
     return {
         col + ("_com_cts" if sufixo else ""): num(x.get(csv_col + sufixo, ""), col in INTEIRAS)
         for csv_col, col in MEDIDAS.items()
-        if not sufixo or (col in INTEIRAS and csv_col + sufixo in x)
+        if not sufixo or csv_col + sufixo in x
     }
 
 

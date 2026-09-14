@@ -231,7 +231,10 @@ class FichaDeColeta(BaseModel):
     sisId: str
     sistema: str
     jusante: str
-    #: Veio do Databricks, travado na tela.
+    #: Veio do Databricks, travado na tela. Traz também o que o servidor deriva
+    #: (`ticket`) e, SÓ NA SUB-BACIA, as dez `*_com_cts` (`campos.SO_DA_SUBBACIA`:
+    #: `ligUCts`, `fatCts`…) — a sub-bacia com a CTS à parte. Essas não voltam no
+    #: `PUT`: o contrato da ficha inteira é `CAMPOS_DB`, e elas ficam fora dele.
     db: dict[str, str]
     #: A Regional preenche.
     params: dict[str, str]
