@@ -86,10 +86,11 @@ não a ausência de um.
 _Avoid_: sem macrorregião, desmarcado
 
 **Usar CTS**:
-Parâmetro da RODADA que decide se a CTS existe na simulação. Desligado, o coletor
-não vira nó e quem atende a área sobreposta é a sub-bacia, pelas colunas
-`*_com_cts`. Nada a ver com **Macrorregião de CTS**, que é cadastro e limita
-quantas cabem por sistema.
+Parâmetro da RODADA que decide se a CTS existe na simulação. Ligado, o coletor
+vira nó e a sub-bacia lê as colunas `*_com_cts` (a sub-bacia com a CTS à parte);
+desligado, o coletor não vira nó e a sub-bacia inteira (colunas sem sufixo)
+atende a área dele. Nada a ver com **Macrorregião de CTS**, que é cadastro e
+limita quantas cabem por sistema.
 _Avoid_: usa CTS, considerar CTS
 
 **ETE**:
