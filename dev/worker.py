@@ -48,6 +48,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, ".")
 
 import rodar_simulacao_real as R  # noqa: E402
+from app.dominio.causa import causa_segura  # noqa: E402
 from app.dominio.parametros import mes_ano  # noqa: E402
 from azure.servicebus.aio import ServiceBusClient  # noqa: E402
 from sqlalchemy import text  # noqa: E402
@@ -936,7 +937,9 @@ async def processar(msg, tempo: int) -> None:
         # vaga, que e o resto do que se deve a quem clicou.
         log(run_id, f"parou sem publicar: status virou {c.encontrado}")
     except Exception as e:  # noqa: BLE001 — a causa vai para o banco e para a tela
-        marcar(run_id, "ERRO", f"{type(e).__name__}: {e}"[:500])
+        # A causa vai para a tela pelo historico: sem credencial nem caminho de
+        # maquina (`dominio.causa`). O traceback inteiro fica no log, abaixo.
+        marcar(run_id, "ERRO", causa_segura(f"{type(e).__name__}: {e}"))
         log(run_id, f"ERRO: {type(e).__name__}: {e}")
         traceback.print_exc()
     finally:

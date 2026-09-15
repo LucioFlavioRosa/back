@@ -14,6 +14,7 @@ Duas regras do contrato moldam todo SELECT daqui:
 from typing import Any
 
 from app.config import config
+from app.dominio.causa import causa_segura
 from app.infra import db
 from app.infra.repositorios import cascata
 
@@ -179,9 +180,12 @@ async def em_voo(
             "duracaoS": None,
             "status": l["status"],
             "progresso": l.get("progresso") or 0,
-            "erro": l.get("erro"),
+            # A causa vai para a tela: sem credencial nem caminho de maquina (ver
+            # `dominio.causa`). O worker ja grava limpo; isto cobre o que outro
+            # executor gravou.
+            "erro": causa_segura(l.get("erro")),
             # Ausente quando o solver nem chegou a rodar — e a ausencia diz isso.
-            "solver": l.get("solver"),
+            "solver": causa_segura(l.get("solver")),
             "favorita": l["run_id"] in (favoritas or set()),
             "comentario": _comentario(l),
             "publicada": False,

@@ -28,6 +28,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Response, status
 from app.api.deps import Quem, Usuario, exigir_unidade, guarda_de_rota
 from app.api import formas_cadastro as formas
 from app.dominio import run_id as rid
+from app.dominio.causa import causa_segura
 from app.dominio import status as st
 from app.dominio.parametros import montar_params
 from app.dominio import variacao as variacao_dom
@@ -220,7 +221,7 @@ async def status_da_rodada(run_id: str) -> dict[str, Any]:
         "runId": run_id,
         "status": linha["status"],
         "progresso": linha.get("progresso") or 0,
-        "erro": linha.get("erro"),
+        "erro": causa_segura(linha.get("erro")),
         # Desde quando ela existe. A tela precisa disto para mostrar tempo
         # decorrido: sem ele, "esperando" com dois segundos e "esperando" com
         # quarenta minutos sao a mesma frase.
