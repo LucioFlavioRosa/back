@@ -39,6 +39,7 @@ __all__ = [
     "segundos_da_estimativa",
     "Modo",
     "MODOS",
+    "fator_canonico",
     "params_da_variacao",
 ]
 
@@ -113,6 +114,33 @@ Modo = Literal["rapido", "completo"]
 MODOS: tuple[str, ...] = ("rapido", "completo")
 
 
+def fator_canonico(fator: float) -> float:
+    """O fator como a curva o conhece: `1 + degrau / 100`, com o degrau inteiro.
+
+    A MESMA FAIXA DA CURVA, e no POST também: a tela só oferece -95%..+500%,
+    mas esta rota existe fora da tela, e um fator de 10 (+900%) ou de 1.004
+    (degrau zero) entraria na linhagem da rodada como um ponto que a curva não
+    sabe desenhar. O degrau é `round((fator - 1) * 100)`, como o GET lê.
+
+    E CANONIZA: 1.10 e 1.104 são o MESMO degrau (+10%) para a curva, mas
+    escalariam o orçamento em centavos diferentes — dois `params` diferentes,
+    duas execuções de solver para desenhar o mesmo ponto, porque a dedupe de
+    `abrir_rodada` compara `params`. Devolver `1 + degrau / 100` é o que faz o
+    segundo pedido encontrar o primeiro.
+    """
+    degrau = round((fator - 1) * 100)
+    if degrau < MENOR_DEGRAU or degrau > MAIOR_DEGRAU:
+        raise ParametrosInvalidos(
+            f"A variação fica entre {MENOR_DEGRAU}% e +{MAIOR_DEGRAU}% do CAPEX "
+            f"(fator entre {1 + MENOR_DEGRAU / 100:.2f} e {1 + MAIOR_DEGRAU / 100:.2f})."
+        )
+    if degrau == 0:
+        raise ParametrosInvalidos(
+            "Este fator arredonda para 0% — é a própria rodada de origem, que a curva já traz."
+        )
+    return 1 + degrau / 100
+
+
 def params_da_variacao(
     base: dict[str, Any],
     *,
@@ -138,20 +166,7 @@ def params_da_variacao(
         raise ParametrosInvalidos(
             "O fator do orçamento precisa ser um número maior que zero — 1.1 é +10%."
         )
-    # A MESMA FAIXA DA CURVA, e no POST também: a tela só oferece -95%..+500%,
-    # mas esta rota existe fora da tela, e um fator de 10 (+900%) ou de 0.995
-    # (degrau zero) entraria na linhagem da rodada como um ponto que a curva
-    # não sabe desenhar. O degrau é `round((fator - 1) * 100)`, como o GET lê.
-    degrau = round((fator - 1) * 100)
-    if degrau < MENOR_DEGRAU or degrau > MAIOR_DEGRAU:
-        raise ParametrosInvalidos(
-            f"A variação fica entre {MENOR_DEGRAU}% e +{MAIOR_DEGRAU}% do CAPEX "
-            f"(fator entre {1 + MENOR_DEGRAU / 100:.2f} e {1 + MAIOR_DEGRAU / 100:.2f})."
-        )
-    if degrau == 0:
-        raise ParametrosInvalidos(
-            "Este fator arredonda para 0% — é a própria rodada de origem, que a curva já traz."
-        )
+    fator = fator_canonico(fator)
     if modo not in MODOS:
         raise ParametrosInvalidos('O modo precisa ser "rapido" ou "completo".')
 
