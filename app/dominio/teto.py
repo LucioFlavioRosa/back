@@ -56,6 +56,7 @@ __all__ = [
     "DEGRAUS",
     "MINIMO_DE_PONTOS",
     "MAXIMO_DE_PONTOS",
+    "MENOR_DEGRAU",
     "MAIOR_DEGRAU",
     "FaixaInvalida",
     "pontos_da_faixa",
@@ -90,10 +91,22 @@ DEGRAUS = (10, 20, 30, 40, 50)
 MINIMO_DE_PONTOS = 1
 MAXIMO_DE_PONTOS = 5
 
-#: O maior degrau aceito. Acima disso a pergunta deixa de ser sensibilidade e
-#: vira outro plano: o orcamento nao e um dial que a operacao gira, e uma curva
-#: que sugere +500% convida a uma leitura que a realidade nao autoriza.
-MAIOR_DEGRAU = 200
+#: A FAIXA DE VARIACAO ACEITA, em % do CAPEX anual: de -95% a +500%.
+#:
+#: A variacao pode ser NEGATIVA — "e se o CAPEX fosse menor?" e pergunta tao
+#: legitima quanto a outra, e o motor a responde do mesmo jeito (o fator escala
+#: o orcamento de cada ano; ver `dominio/variacao.params_da_variacao`). O piso
+#: e -95%, e nao -100%: fator zero nao e uma simulacao, e uma rodada sem
+#: orcamento nenhum nao mede sensibilidade — mede a ausencia de plano.
+#:
+#: O teto de +500% e o pedido do dono do produto (17/09/2026); acima disso a
+#: pergunta deixa de ser sensibilidade e vira outro plano.
+#:
+#: O ZERO NUNCA E DEGRAU: e a propria rodada de origem, que a curva ja traz como
+#: ponto de partida. Uma faixa que passa por ele (-10 a +10) simplesmente o
+#: pula.
+MENOR_DEGRAU = -95
+MAIOR_DEGRAU = 500
 
 
 class FaixaInvalida(ValueError):
@@ -124,18 +137,18 @@ def pontos_da_faixa(inicio: int, fim: int, quantos: int) -> list[int]:
         raise FaixaInvalida(
             f"A análise tem de ter entre {MINIMO_DE_PONTOS} e {MAXIMO_DE_PONTOS} pontos."
         )
-    if inicio < 1 or fim < 1:
-        raise FaixaInvalida("Os degraus são acréscimos de CAPEX: precisam ser maiores que zero.")
+    if inicio < MENOR_DEGRAU or fim < MENOR_DEGRAU:
+        raise FaixaInvalida(f"A menor variação aceita é {MENOR_DEGRAU}%.")
+    if inicio > MAIOR_DEGRAU or fim > MAIOR_DEGRAU:
+        raise FaixaInvalida(f"A maior variação aceita é {MAIOR_DEGRAU}%.")
     # UM PONTO NAO TEM FIM: `inicio` e a resposta inteira, e exigir `fim > inicio`
     # recusaria justamente o pedido mais comum — "rode +25% e me mostre".
     if quantos == 1:
-        if inicio > MAIOR_DEGRAU:
-            raise FaixaInvalida(f"O maior acréscimo aceito é {MAIOR_DEGRAU}%.")
+        if inicio == 0:
+            raise FaixaInvalida("0% é a própria rodada de origem — a curva já a traz.")
         return [inicio]
     if fim <= inicio:
         raise FaixaInvalida("O fim da faixa precisa ser maior que o início.")
-    if fim > MAIOR_DEGRAU:
-        raise FaixaInvalida(f"O maior acréscimo aceito é {MAIOR_DEGRAU}%.")
 
     # `floor(x + 0.5)`, E NAO `round`. Os dois so discordam no meio exato — e o
     # meio exato acontece: de 1 a 100 em cinco pontos cai em 50.5. Ali o `round`
@@ -153,8 +166,12 @@ def pontos_da_faixa(inicio: int, fim: int, quantos: int) -> list[int]:
     passo = (fim - inicio) / (quantos - 1)
     brutos = [math.floor(inicio + passo * i + 0.5) for i in range(quantos)]
     # `dict.fromkeys` em vez de `set`: preserva a ordem crescente que o `round`
-    # já produziu, e a ordem é a da leitura da curva.
-    return list(dict.fromkeys(brutos))
+    # já produziu, e a ordem é a da leitura da curva. O ZERO sai: e a rodada de
+    # origem, que a curva ja traz como ponto de partida.
+    degraus = [d for d in dict.fromkeys(brutos) if d != 0]
+    if not degraus:
+        raise FaixaInvalida("A faixa só passa pelo 0% — que é a própria rodada de origem.")
+    return degraus
 
 
 class Candidata:
@@ -175,6 +192,11 @@ def teto(
     anos_do_plano: int = 0,
 ) -> dict[str, Any]:
     """O teto para cada degrau, sobre o mesmo conjunto de candidatas.
+
+    DEGRAU NEGATIVO NAO COMPRA NADA: a folga sai negativa, nenhuma candidata
+    cabe, e a linha volta com o piso (as de graca) — e com a `folga` negativa
+    mesmo, que e o dinheiro a menos que a tela mostra. O teto e uma pergunta
+    sobre dinheiro A MAIS; para menos, a resposta e o solver.
 
     `orcamento_total` é o da rodada base — a SOMA DOS ANOS, e não o valor anual —,
     e o degrau é em % A MAIS por ano (10 = +10%). Como a mesma porcentagem

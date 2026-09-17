@@ -13,6 +13,7 @@ from app.dominio.teto import (
     DEGRAUS,
     FaixaInvalida,
     MAIOR_DEGRAU,
+    MENOR_DEGRAU,
     pontos_da_faixa,
     teto,
 )
@@ -170,7 +171,7 @@ class TestOsPontosDaFaixa:
         assert pontos_da_faixa(25, 99, 1) == [25]
 
     def test_um_ponto_continua_sujeito_aos_limites(self):
-        for inicio in (0, MAIOR_DEGRAU + 1):
+        for inicio in (0, MAIOR_DEGRAU + 1, MENOR_DEGRAU - 1):
             with pytest.raises(FaixaInvalida):
                 pontos_da_faixa(inicio, inicio, 1)
 
@@ -180,13 +181,31 @@ class TestOsPontosDaFaixa:
         with pytest.raises(FaixaInvalida):
             pontos_da_faixa(50, 10, 3)
 
-    def test_recusa_degrau_nao_positivo(self):
-        # Zero é a rodada base, e não um degrau. Negativo seria outra pergunta —
-        # "e se eu investir menos" —, que esta análise não responde.
+    def test_aceita_variacao_negativa_ate_o_piso(self):
+        # "E se o CAPEX fosse menor?" — o motor escala o orçamento para baixo do
+        # mesmo jeito. O piso é -95%: fator zero não é simulação.
+        assert pontos_da_faixa(-95, -95, 1) == [-95]
+        assert pontos_da_faixa(-50, -10, 3) == [-50, -30, -10]
+        assert pontos_da_faixa(-20, 20, 5) == [-20, -10, 10, 20]
+
+    def test_o_zero_nunca_e_degrau(self):
+        # É a própria rodada de origem, que a curva já traz como partida: uma
+        # faixa que passa por ele o pula; uma que só tem ele é recusada.
+        assert pontos_da_faixa(-10, 10, 3) == [-10, 10]
         with pytest.raises(FaixaInvalida):
-            pontos_da_faixa(0, 50, 3)
+            pontos_da_faixa(0, 0, 1)
+
+    def test_aceita_ate_500(self):
+        assert pontos_da_faixa(100, 500, 5) == [100, 200, 300, 400, 500]
+
+    def test_recusa_degrau_fora_da_faixa(self):
+        # Abaixo de -95% não é simulação (fator zero); acima de +500% é outro plano.
         with pytest.raises(FaixaInvalida):
-            pontos_da_faixa(-10, 50, 3)
+            pontos_da_faixa(MENOR_DEGRAU - 1, 50, 3)
+        with pytest.raises(FaixaInvalida):
+            pontos_da_faixa(10, MAIOR_DEGRAU + 1, 3)
+        # Zero como início de faixa é pulado, e não recusado: 0..50 em 3 rende 25 e 50.
+        assert pontos_da_faixa(0, 50, 3) == [25, 50]
 
     def test_recusa_acima_do_maior_degrau(self):
         with pytest.raises(FaixaInvalida):
