@@ -120,11 +120,11 @@ async def _obras_gravadas(
     campo a campo. E o BANCO — nao um literal — que preenche o que o corpo omitir.
 
     O `nome` vem junto, e e ele que volta para a coluna `componente` na gravacao.
-    Antes vinha da base literal, e a base usava o vocabulario da SUB-BACIA nas
-    duas tabelas: regravar uma CTS trocava `Tronco` por `Coletor tronco` e `EEE`
-    por `Estacao elevatoria (EEE)`, e o motor deixava de reconhecer o componente
-    (`otimizador_capex_v62.py:1136` casa pelo nome). Vindo da linha gravada, cada
-    tabela conserva o vocabulario dela sem ninguem precisar saber disso.
+    Vem da LINHA GRAVADA, e nao de uma base literal: as duas tabelas usam
+    vocabularios diferentes (`Tronco` na CTS, `Coletor tronco` na sub-bacia; `EEE`
+    e `Estacao elevatoria (EEE)`), e o motor casa o componente pelo nome
+    (`otimizador_capex_v62.py:1136`). Vindo da linha, cada tabela conserva o
+    vocabulario dela sem ninguem precisar saber disso.
     """
     from app.infra.repositorios.cadastro import _INDICE_CTS, _INDICE_SUBBACIA
 
@@ -298,23 +298,37 @@ _DONO = {
           JOIN {i}.empresa s USING (emp_codigo)
          WHERE c.cidade_id = $1""",
     # A CTS percorre o MESMO caminho da sub-bacia: quem diz de que unidade ela e
-    # e o SISTEMA em que ela foi colocada. Antes o caminho passava por
-    # `subbacia_cts` — o par com a sub-bacia —, e isso dizia a unidade errada por
-    # duas vias: uma CTS sem par nao pertencia a unidade nenhuma (e nao dava para
-    # editar a ficha dela), e uma pareada herdava a unidade da IRMA, mesmo estando
-    # num sistema de outra.
+    # e o SISTEMA em que ela foi colocada — e nao o par com a sub-bacia
+    # (`subbacia_cts`), que diria a unidade errada por duas vias: uma CTS sem
+    # par nao pertenceria a unidade nenhuma, e uma pareada herdaria a unidade da
+    # IRMA mesmo estando num sistema de outra.
     #
-    # CTS fora de sistema nao tem unidade, e por isso nao passa aqui. E o certo:
-    # ela tambem nao aparece no Grupo 05, que so lista as colocadas. Adiciona-la a
-    # um sistema (Grupo 01) e o que a torna editavel.
+    # CTS FORA DE SISTEMA tem unidade PELA CIDADE — o mesmo caminho por que a
+    # hierarquia a lista em `semSistema`. A planilha do cadastro traz a ficha
+    # dela para preencher ANTES de se saber o sistema: o dado da origem ja esta
+    # la, e quem preenche fora do site o preenche ja.
+    #
+    # O SISTEMA MANDA QUANDO EXISTE: colocada, a unidade e a do sistema, e a cidade
+    # so responde quando nao ha sistema. Uma CTS colocada num sistema da unidade A
+    # com cidade da B continua sendo da A. `COALESCE` de duas subconsultas, e nao
+    # `UNION`, para a resposta ser UMA linha — `buscar_um` le a primeira.
     "cts": """
-        SELECT DISTINCT s.unidade_id
-          FROM {i}.sistema_topologia t
-          JOIN {i}.cts_operacional o ON o.cts = t.componente_sistema_id
-          JOIN {i}.cidade_sistema cs USING (sistema_id)
-          JOIN {i}.cidade_empresa c ON c.cidade_id = cs.cidade_id
-          JOIN {i}.empresa s USING (emp_codigo)
-         WHERE t.componente_sistema_id = $1""",
+        SELECT COALESCE(
+          (SELECT s.unidade_id
+             FROM {i}.sistema_topologia t
+             JOIN {i}.cidade_sistema cs USING (sistema_id)
+             JOIN {i}.cidade_empresa c ON c.cidade_id = cs.cidade_id
+             JOIN {i}.empresa s USING (emp_codigo)
+            WHERE t.componente_sistema_id = $1
+            LIMIT 1),
+          (SELECT s.unidade_id
+             FROM {i}.cts_operacional o
+             JOIN {i}.cidade_empresa c ON c.cidade_id = o.cidade_id
+             JOIN {i}.empresa s USING (emp_codigo)
+            WHERE o.cts = $1
+              AND NOT coalesce(o.e_macrorregiao, false)
+            LIMIT 1)
+        ) AS unidade_id""",
     # A ETE percorre o MESMO caminho da sub-bacia, e nao um caminho proprio: em
     # `sistema_topologia` ela e um componente do sistema como qualquer outro. O que
     # a distingue e o id dela tambem existir em `ete_capex` — e assim que o motor a
@@ -479,9 +493,9 @@ async def _diff_da_cidade(
     outras, quando o que houve foi uma remoção só.
 
     Com a chave certa, a leitura sai limpa nos três casos, e a convenção de NULL
-    da migração 007 dá conta dos dois extremos:
+    da trilha dá conta dos dois extremos:
 
-        meta:2030:pct   ""   -> "85"    a meta passou a existir
+        meta:2030:pct   ""   -> "85"    a meta foi criada
         meta:2030:pct   "80" -> "85"    o valor mudou
         meta:2030:pct   "80" -> NULL    a meta foi removida
     """
@@ -494,9 +508,9 @@ async def _diff_da_cidade(
     # (`2045 -> NULL`) a cada gravacao de cidade — enquanto o upsert abaixo
     # preserva o valor. Trilha que afirma o que nao aconteceu e pior que trilha
     # que nao afirma nada.
-    # A CIDADE NAO TEM MAIS CAMPO PROPRIO NESTA FICHA. `unidade_cobertura` saiu
-    # (migracao 019): a regua da cobertura virou parametro de rodada. O que sobra
-    # aqui sao as metas e as faixas, comparadas logo abaixo.
+    # A CIDADE NAO TEM CAMPO PROPRIO NESTA FICHA: a regua da cobertura e
+    # parametro de rodada, nao da cidade. O que ha aqui sao as metas e as
+    # faixas, comparadas logo abaixo.
 
     if "metas" in corpo:
         antes = {
@@ -705,9 +719,9 @@ async def salvar_empresa(
     muda.
 
     Quem espalha o valor para os municipios da empresa e o BANCO, pelo gatilho
-    `empresa_propaga_concessao` (migracao 015) — nao este codigo. A carga do
-    Databricks tambem escreve nesta tabela, e propagar aqui deixaria a cidade
-    com o prazo antigo sempre que a empresa chegasse por fora da aplicacao.
+    `empresa_propaga_concessao` — nao este codigo. A carga do Databricks tambem
+    escreve nesta tabela, e propagar aqui deixaria a cidade com o prazo
+    anterior sempre que a empresa chegasse por fora da aplicacao.
     """
     await exigir_dona("empresa", emp_codigo, unidade_id)
     empresa = corpo.get("empresa") or {}
@@ -769,9 +783,9 @@ async def salvar_empresa(
 
 #: Componente ja conhecido do cadastro? Um id que nao esta em lugar nenhum seria um
 #: no INVENTADO: o motor o trataria como no de demanda ZERO, sem ficha e sem obras,
-#: e ele entraria no caminho ate a ETE sem nunca aparecer numa tela. Foi assim que o
-#: antigo `POST /cts` produziu 339 fichas para 337 nos — ele gravava ficha e par sem
-#: tocar na topologia, o espelho exato deste erro.
+#: e ele entraria no caminho ate a ETE sem nunca aparecer numa tela. O espelho
+#: desse erro — ficha sem no — e igualmente proibido: ficha se cria com a
+#: topologia, nunca sem ela.
 _EXISTE_COMPONENTE = """
     SELECT 1 FROM {i}.sistema_topologia WHERE componente_sistema_id = $1
     UNION ALL SELECT 1 FROM {i}.subbacia_operacional WHERE sub_bacia = $1
@@ -811,11 +825,10 @@ async def _travar_sistemas(con: Any, *sistemas: str | None) -> None:
 async def _travar_unidade(con: Any, unidade_id: str) -> None:
     """Serializa a POLÍTICA DE CTS da unidade contra as gravações de topologia.
 
-    A regra "uma CTS por sistema" passou a ser da unidade, e com isso ela deixou
-    de caber num lock de sistema: marcar a unidade precisa saber que NENHUM
-    sistema dela ganhou uma segunda CTS no meio do caminho, e travar os 474
-    sistemas de uma unidade grande um a um seria pagar 474 idas ao banco por um
-    clique numa caixa.
+    A regra "uma CTS por sistema" e da unidade, e por isso nao cabe num lock de
+    sistema: marcar a unidade precisa saber que NENHUM sistema dela ganhou uma
+    segunda CTS no meio do caminho, e travar os 474 sistemas de uma unidade
+    grande um a um seria pagar 474 idas ao banco por um clique numa caixa.
 
     Então o lock é da UNIDADE, e quem grava topologia toma os dois: a unidade
     primeiro, os sistemas depois. É uma ordem global — nenhuma transação toma um
@@ -831,10 +844,9 @@ async def _travar_unidade(con: Any, unidade_id: str) -> None:
 async def _empresas_dos_sistemas(con: Any, sistemas: list[str]) -> dict[str, set[str]]:
     """As empresas que operam cada sistema — um CONJUNTO por sistema.
 
-    Conjunto, e não valor: um sistema pode estar em várias cidades (migração
-    022), e as cidades podem ser de empresas diferentes — `Saracuruna` está em
-    Duque de Caxias (57) e em Magé (56). "A empresa do sistema" deixou de ser
-    pergunta com uma resposta.
+    Conjunto, e não valor: um sistema pode estar em várias cidades, e as cidades
+    podem ser de empresas diferentes — `Saracuruna` está em Duque de Caxias (57)
+    e em Magé (56). "A empresa do sistema" não é pergunta com uma resposta.
 
     Recebe a LISTA e responde numa consulta: o desenho de um sistema chega com
     dezenas de componentes, e perguntar por componente era uma ida ao banco por
@@ -971,8 +983,8 @@ async def _exigir_que_nao_sejam_membros(
 async def _unidade_usa_cts(con: Any, unidade_id: str) -> bool:
     """A unidade usa MACRORREGIÃO DE CTS — e com isso cada sistema dela aceita uma?
 
-    A pergunta era do sistema e passou a ser da unidade: a política é uma, e vale
-    para todos os sistemas dentro dela.
+    A pergunta é da unidade, e não do sistema: a política é uma, e vale para
+    todos os sistemas dentro dela.
     """
     linha = await con.fetchrow(USA_MACRORREGIAO.format(i=_i()), unidade_id)
     return bool(linha and linha["usa_macrorregiao_cts"])
@@ -1029,8 +1041,8 @@ async def _membros_da_macrorregiao(
     """Os coletores que formam `macro` nesta unidade — vazio se `macro` não nomeia uma.
 
     `NOT e_macrorregiao` não é zelo: a própria linha da macrorregião tem
-    `sistema_cts` NULO (migração 021) e já não cairia aqui. A cláusula está escrita
-    porque é ela que garante isso para quem ler a consulta sozinha.
+    `sistema_cts` NULO e já não cairia aqui. A cláusula está escrita porque é ela
+    que garante isso para quem ler a consulta sozinha.
 
     `colocada` vem junto para a pergunta "está livre?" não precisar de uma segunda
     ida ao banco dentro da transação já travada.
@@ -1121,10 +1133,10 @@ async def _preparar_macrorregiao(
 ) -> None:
     """A MACRORREGIÃO GANHA LINHA NA HORA EM QUE É COLOCADA NUM SISTEMA.
 
-    Até aqui ela era uma soma calculada na leitura: o Grupo 01 a oferece pelo nome
-    que a origem deu (`sistema_cts`), e não há linha nenhuma com esse id. Colocar
-    exige linha de verdade — as 4 obras são FK para `cts_operacional(cts)`, e o
-    motor lê a ficha do nó na própria tabela.
+    Livre, ela é só um nome: o Grupo 01 a oferece pelo nome que a origem deu
+    (`sistema_cts`), e não há linha nenhuma com esse id. Colocar exige linha de
+    verdade — as 4 obras são FK para `cts_operacional(cts)`, e o motor lê a ficha
+    do nó na própria tabela.
 
     CRIAR AGORA, E NÃO AO MARCAR A UNIDADE: marcar é declaração de regime, e
     materializar dezenas de agregados que talvez ninguém use encheria a base de
@@ -1228,7 +1240,7 @@ async def _preparar_macrorregiao(
     )
 
     # A TRILHA REGISTRA A CRIAÇÃO, e não treze campos: quem a lê meses depois quer
-    # saber que a macrorregião passou a existir e de que coletores ela veio. Os
+    # saber que a macrorregião foi criada e de que coletores ela veio. Os
     # números somados estão na ficha, e repeti-los aqui seriam treze linhas que
     # ninguém compara com nada. `antes` nulo já diz "não existia" (ver `Alteracao`).
     await _registrar(
@@ -1809,16 +1821,14 @@ async def salvar_topologia_em_lote(
 ) -> dict[str, Any]:
     """Grava o desenho de um ou mais sistemas INTEIROS, numa transação só.
 
-    Existe porque gravar componente a componente cobra do cliente uma ORDEM que
-    nem sempre existe. As regras de `salvar_topologia` são conferidas contra o
-    banco, então cada passo intermediário precisa estar de pé — e reorganizar um
-    sistema passa por estados que não estão:
+    Gravar componente a componente cobraria do cliente uma ORDEM que nem sempre
+    existe. As regras de `salvar_topologia` são conferidas contra o banco, então
+    cada passo intermediário precisaria estar de pé — e reorganizar um sistema
+    passa por estados que não estão:
 
         tirar a CTS 'b' do sistema e reapontar 'a', que escoava para ela
           tirar 'b' primeiro  → recusado, 'a' ainda escoa para 'b'
-          reapontar 'a' antes → o cliente teria de saber disso; o front ordenava
-                                pelo estado final da própria linha e mandava a
-                                saída de 'b' na frente. Era este o defeito.
+          reapontar 'a' antes → o cliente teria de saber disso
 
         mover a cadeia 'a → b' de um sistema para outro
           mover 'b' → recusado, 'a' aponta para ele
@@ -1930,14 +1940,11 @@ async def salvar_topologia_em_lote(
             if sistema_id in pedido and componente_id not in depois:
                 depois[componente_id] = (None, None)
 
-        # QUEM E ETE e QUEM E CTS: duas consultas no total. Eram duas POR SISTEMA
-        # — e `_quais_sao` ja aceitava lista, entao o laco pagava N vezes por uma
-        # consulta que sempre soube responder de uma vez. Os conjuntos sao de
-        # todos os componentes enviados; a regra de cada sistema olha so a
-        # fronteira dele (`set(escoa)`).
-        #
-        # A TERCEIRA consulta sumiu junto com a coluna do sistema: "quais destes
-        # sistemas sao de CTS" virou uma pergunta so, feita a unidade.
+        # QUEM E ETE e QUEM E CTS: duas consultas no total, e nao duas por
+        # sistema — `_quais_sao` aceita lista. Os conjuntos sao de todos os
+        # componentes enviados; a regra de cada sistema olha so a fronteira dele
+        # (`set(escoa)`). "Quais sistemas sao de CTS" e uma pergunta so, feita a
+        # unidade (`usa_macro`).
         etes = await _quais_sao(con, "ete_capex", "ete_id", enviados)
         ctss = await _quais_sao(con, "cts_operacional", "cts", enviados)
 

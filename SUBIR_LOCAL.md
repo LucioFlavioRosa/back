@@ -179,7 +179,10 @@ worker SEUPC/12345/abcdef
 
 ## 6 · Usar
 
-**http://localhost:8080**
+**http://localhost:8080** — o front original, servido pelo container `web` desta pilha.
+
+O front atual (`front-final-capex`) sobe do repositório dele e fala com esta mesma API em
+**http://localhost:8090** — ver o `RETOMAR.md` de lá.
 
 Um roteiro de 5 minutos:
 
@@ -213,18 +216,23 @@ Um roteiro de 5 minutos:
 ## Como as peças se encaixam
 
 ```
-navegador :8080
-      |
-   web (nginx)  -- serve o front e faz proxy de /api
+navegador :8080 (front original)      navegador :8090 (front-final-capex)
+      |                                       |
+   web (nginx)  -- serve o front       ses-web (nginx, no repositório do front)
+      |             e faz proxy de /api       |  -- idem
+      +---------------------------------------+
       |
    api (FastAPI)  -- grava a rodada, publica na fila, lê o resultado
       |                              |
-   db (Postgres)                servicebus (emulador)
+   db (Postgres)                servicebus (emulador; sqledge é o banco dele)
       |                              |
       +---------- executor (dev/worker.py, FORA do Docker) 
                         |
                     o motor (pacote plano) -> publica em public.otim_*
 ```
+
+Também sobem `redis` (emula o Azure Cache for Redis; `REDIS_URL` da API) e `azurite`
+(emula o Azure Blob Storage). Nenhum dos dois é acessado diretamente por quem usa a pilha.
 
 O executor lê `input.*` do **Postgres** — o mesmo cadastro que as telas gravam. Mudou o
 cadastro, a próxima rodada já sai com ele.

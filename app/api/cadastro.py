@@ -148,14 +148,17 @@ async def etes(unidade_id: str) -> dict[str, Any]:
 
 
 @router.get("/unidades/{unidade_id}/cts", response_model=formas.Cts)
-async def cts(unidade_id: str) -> dict[str, Any]:
-    """Grupo 05 — CTS e o pareamento 1:1 com a sub-bacia.
+async def cts(
+    unidade_id: str,
+    incluirLivres: Annotated[bool, Query()] = False,  # noqa: N803 — camelCase e a convencao do contrato
+) -> dict[str, Any]:
+    """Grupo 05 — as CTS colocadas nos sistemas da unidade.
 
-    `pares` existe separado de `ctss` porque uma CTS **sem** par é estado inválido
-    que a tela precisa mostrar (e foi bug real do outro lado): sem a lista de
-    pares, a tela não teria como saber que a CTS ficou órfã.
+    `incluirLivres=1` traz também as CTS da unidade ainda fora de sistema, com
+    `sisId` vazio — é o que a planilha do cadastro pede, para a ficha ser
+    preenchida antes de o sistema ser decidido. Ver `cadastro.cts`.
     """
-    return await cadastro.cts(unidade_id)
+    return await cadastro.cts(unidade_id, incluir_livres=incluirLivres)
 
 
 @router.get("/unidades/{unidade_id}/alteracoes", response_model=formas.Alteracoes)
@@ -171,10 +174,9 @@ async def alteracoes(
     `tipo` e `fichaId`, e o historico de UMA ficha, que e o que a tela abre a
     partir da linha "ultima alteracao".
 
-    Esta rota e nova, e a ausencia dela era o defeito: a trilha existia desde a
-    migracao 001, crescia a cada gravacao, e nao havia como le-la pelo produto.
-    Auditoria que so o DBA alcanca nao e auditoria — alguem ia confiar nela numa
-    discussao sobre um numero e descobrir que ninguem conseguia abrir.
+    A trilha cresce a cada gravacao, e e por aqui que o produto a le. Auditoria
+    que so o DBA alcanca nao e auditoria — alguem confiaria nela numa discussao
+    sobre um numero e descobriria que ninguem consegue abrir.
 
     `GET` e nao parte da ficha: o historico e volumoso, muda por outro motivo que
     a ficha, e ninguem quer paga-lo em toda abertura de tela. Quem quiser so o
@@ -236,7 +238,7 @@ async def salvar_empresa(
 
     O valor desce para os municípios dela por gatilho do banco, e não aqui: a
     carga do Databricks também escreve nesta tabela, e propagar na aplicação
-    deixaria a cidade com o prazo antigo quando a empresa chegasse por fora.
+    deixaria a cidade com o prazo anterior quando a empresa chegasse por fora.
     """
     return await cadastro_escrita.salvar_empresa(
         unidade_id=unidade_id, emp_codigo=emp_codigo, corpo=corpo, autor=usuario
@@ -331,10 +333,9 @@ async def salvar_unidade(
 
     `usaCts` marcada: a unidade usa **macrorregião de CTS**, e cada sistema dela
     aceita uma CTS; desmarcada, aceitam várias. É regra de cadastro, e não de
-    simulação: o motor nunca contou CTS por sistema. Era uma rota por SISTEMA
-    (`PUT /unidades/{id}/sistemas/{id}`) — a decisão passou a ser da unidade e
-    vale para todos os sistemas dentro dela. Marcar com algum sistema de duas CTS
-    responde **422** nomeando quais são.
+    simulação: o motor não conta CTS por sistema. A decisão é da unidade e vale
+    para todos os sistemas dentro dela — não há rota por sistema. Marcar com
+    algum sistema de duas CTS responde **422** nomeando quais são.
 
     `waccMedio` em string pt-BR, como todo número do Grupo 01. Vazio grava NULL:
     campo em branco é ausência, e zero seria uma unidade que desconta a nada.
@@ -372,10 +373,9 @@ async def remover_da_topologia(
 # O motor deixa isso obrigatorio (`otimizador_capex_v62.py`): os nos saem do laco
 # sobre `sistema-topologia`, e `cen.cts_ids = set(cts_operacional) & set(cen.nos)`.
 # So e CTS efetiva a ficha que TAMBEM e no. Mexer num lado sem o outro produz meia
-# CTS, das duas formas possiveis — e as duas ja aconteceram aqui:
+# CTS, das duas formas possiveis:
 #
-#   - ficha sem no: visivel no cadastro, invisivel para a simulacao. Houve um
-#     periodo com 339 fichas para 337 nos, e as duas sobrando eram exatamente isso.
+#   - ficha sem no: visivel no cadastro, invisivel para a simulacao.
 #   - no sem ficha: pior. Vira um no comum, sem componentes e com demanda ZERADA,
 #     que continua no caminho ate a ETE sem aparecer em tela nenhuma.
 #
