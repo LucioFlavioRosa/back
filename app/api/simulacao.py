@@ -391,7 +391,10 @@ async def variacao(
         usuario=quem.login,
         rotulo=corpo.get("nome"),
         base_run_id=run_id,
-        variacao_fator=float(fator),
+        # O FATOR GRAVADO É O CANÔNICO (`1 + degrau / 100`), o mesmo que escalou
+        # os params: é por ele que o GET lê o degrau e que `adotar_variacao`
+        # casa a rodada com a curva. Ver `fator_canonico`.
+        variacao_fator=variacao_dom.fator_canonico(fator),
         estimativa=modo == "rapido",
     )
     if aberta["ja_existia"]:
@@ -408,7 +411,7 @@ async def variacao(
         # grafico" e "essa simulacao existe, mas e ponto da curva de outra
         # rodada" — e so a tela pode dizer isso a quem clicou.
         na_curva = await controle.adotar_variacao(
-            aberta["run_id"], base_run_id=run_id, fator=float(fator)
+            aberta["run_id"], base_run_id=run_id, fator=variacao_dom.fator_canonico(fator)
         )
         resposta.status_code = status.HTTP_200_OK
         return {

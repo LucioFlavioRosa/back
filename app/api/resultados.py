@@ -378,8 +378,8 @@ async def obras_do_cenario(
 @router.get("/runs/{run_id}/sensibilidade", response_model=formas.Sensibilidade)
 async def sensibilidade(
     run_id: RunPublicado,
-    de: Annotated[int, Query(ge=1)] = DEGRAUS_DA_CURVA[0],
-    ate: Annotated[int, Query(ge=1)] = DEGRAUS_DA_CURVA[-1],
+    de: Annotated[int, Query(ge=teto_dom.MENOR_DEGRAU, le=teto_dom.MAIOR_DEGRAU)] = DEGRAUS_DA_CURVA[0],
+    ate: Annotated[int, Query(ge=teto_dom.MENOR_DEGRAU, le=teto_dom.MAIOR_DEGRAU)] = DEGRAUS_DA_CURVA[-1],
     pontos_pedidos: Annotated[int, Query(alias="pontos", ge=1, le=20)] = len(DEGRAUS_DA_CURVA),
 ) -> dict[str, Any]:
     """A curva de "e se o CAPEX anual fosse maior?" — o teto e os pontos ja rodados.

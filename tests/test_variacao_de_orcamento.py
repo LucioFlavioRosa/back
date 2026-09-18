@@ -19,6 +19,7 @@ import pytest
 
 from app.dominio.parametros import ParametrosInvalidos, montar_params
 from app.dominio.variacao import (
+    fator_canonico,
     SEGUNDOS_MAXIMOS_DA_ESTIMATIVA,
     SEGUNDOS_MINIMOS_DA_ESTIMATIVA,
     params_da_variacao,
@@ -114,6 +115,34 @@ class TestOEscalonamentoDoOrcamento:
 
 
 class TestOQueNaoMuda:
+    def test_a_faixa_da_curva_vale_no_POST_tambem(self):
+        # -95%..+500%: fora disso a curva não desenha, e a rota existe fora da tela.
+        assert variar(fator=0.05)["ORCAMENTO"]["2027"] == 3_000_000.0
+        assert variar(fator=6.0)["ORCAMENTO"]["2027"] == 360_000_000.0
+        with pytest.raises(ParametrosInvalidos):
+            variar(fator=0.04)
+        with pytest.raises(ParametrosInvalidos):
+            variar(fator=6.01)
+        with pytest.raises(ParametrosInvalidos):
+            variar(fator=10)
+
+    def test_fator_que_arredonda_para_zero_e_recusado(self):
+        # 0.995 viraria `degrau: 0` no GET — a base de novo, escondida na linhagem.
+        for fator in (0.996, 1.004, 1.0):
+            with pytest.raises(ParametrosInvalidos):
+                variar(fator=fator)
+
+    def test_o_fator_e_canonizado_ao_degrau_inteiro(self):
+        # 1.104 é +10% para a curva: escala como 1.10, e os dois pedidos viram a
+        # MESMA rodada na dedupe de `abrir_rodada` — um solver só para um ponto.
+        assert variar(fator=1.104)["ORCAMENTO"] == variar(fator=1.10)["ORCAMENTO"]
+        assert fator_canonico(1.104) == 1.1
+        assert fator_canonico(0.995) == 0.99
+        assert fator_canonico(6.004) == 6.0
+
+    def test_reducao_escala_para_baixo(self):
+        assert variar(fator=0.9)["ORCAMENTO"]["2027"] == 54_000_000.0
+
     def test_todo_o_resto_dos_parametros_vem_intacto(self):
         # É o que faz a comparação medir o efeito do ORÇAMENTO. Mexer em duas
         # coisas mediria a diferença entre duas simulações quaisquer.
