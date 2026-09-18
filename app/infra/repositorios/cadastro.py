@@ -26,7 +26,7 @@ from typing import Any
 
 from app.config import config
 from app.dominio import macrorregiao_cts
-from app.dominio.campos import COLETA, DO_DATABRICKS, SO_DA_SUBBACIA
+from app.dominio.campos import COLETA, DO_DATABRICKS, OBRAS_DA_CTS, SO_DA_SUBBACIA
 from app.dominio.formato import SEM_SEPARADOR, pt_br, pt_br_ano
 from app.infra import db
 from app.infra.repositorios import pendencias
@@ -46,10 +46,8 @@ def _i() -> str:
 
 #: As cidades de uma unidade — o recorte de tudo. `$1` é o `unidade_id`.
 #:
-#: TRÊS TABELAS ONDE ANTES ERAM DUAS (modelo de dados v8): o município deixou de
-#: existir só como linha de vínculo e ganhou tabela própria, então o caminho
-#: passa por `cidade_empresa` (o vínculo) até `cidade` (o município). A
-#: superintendência virou `empresa`, campo a campo.
+#: O caminho passa por `cidade_empresa` (o vínculo) até `cidade` (o município):
+#: o município tem tabela própria, e não existe só como linha de vínculo.
 
 
 def _auditoria(linha: dict[str, Any]) -> dict[str, Any]:
@@ -103,7 +101,7 @@ async def regionais() -> list[dict[str, Any]]:
 async def diretorias(regional_id: str) -> list[dict[str, Any]]:
     """As diretorias da regional que têm unidade — mesma regra de `regionais`.
 
-    A DIRETORIA É O NÍVEL ENTRE A REGIONAL E A UNIDADE (migração 017):
+    A DIRETORIA É O NÍVEL ENTRE A REGIONAL E A UNIDADE:
     regional → diretoria → unidade → empresa → cidade → sistema.
 
     Sai de `unidade_regional`, e não de `input.diretoria`, pela razão de
@@ -137,9 +135,7 @@ def _resumo(c: dict[str, Any]) -> dict[str, int]:
     simulacao usa estes numeros para dizer se a rodada e de minutos ou de meia
     hora.
 
-    `etes` e `cts` sairam da consulta e eram DESCARTADOS aqui — contados no banco,
-    montados no dicionario, e jogados fora no `return`. Passam a ser entregues:
-    quem paga a consulta ja pagou por eles.
+    `etes` e `cts` vao junto: quem paga a consulta ja pagou por eles.
 
     AS TRES CATEGORIAS DE COMPONENTE, e por que elas existem em vez de um numero:
 
@@ -154,10 +150,10 @@ def _resumo(c: dict[str, Any]) -> dict[str, int]:
     extremos — "11.525 obras" contava 4.830 linhas que nao sao obra.
 
     `obras` = Aegea + terceiros, que e EXATAMENTE o filtro do motor
-    (`otimizador_capex_v62.ler_banco`: `necess = cap > 0 or pe > 0`). Antes vinha
-    de `sub_bacias * 5 + cts * 4`: as constantes batem com a base (5,00 linhas por
-    sub-bacia, 4,00 por CTS), mas contavam FICHAS, nao candidatas — e inflavam o
-    numero em ~43% na maior unidade. Agora sao contadas, e nao presumidas.
+    (`otimizador_capex_v62.ler_banco`: `necess = cap > 0 or pe > 0`). Sao
+    CONTADAS, e nao presumidas de `sub_bacias * 5 + cts * 4`: as constantes batem
+    com a base (5,00 linhas por sub-bacia, 4,00 por CTS), mas contariam FICHAS,
+    nao candidatas — e inflariam o numero em ~43% na maior unidade.
 
     Ainda NAO e o total que o motor usa: faltam uma obra por ETE de sistema e, com
     `ETE_FASEADA`, os modulos de expansao. Esses dependem de parametro da RODADA,
@@ -304,9 +300,9 @@ async def hierarquia(unidade_id: str) -> dict[str, Any]:
               FROM ({_cidades_cte()}) c ORDER BY cidade_name""",
         unidade_id,
     )
-    # O SISTEMA NAO DECLARA MAIS SE USA CTS: a politica passou a ser da unidade,
-    # e vem em `unid.usaCts` acima. Um `usaCts` por sistema aqui seria a mesma
-    # resposta repetida N vezes, e daria a entender que ainda da para divergir.
+    # O SISTEMA NAO DECLARA SE USA CTS: a politica e da unidade, e vem em
+    # `unid.usaCts` acima. Um `usaCts` por sistema aqui seria a mesma resposta
+    # repetida N vezes, e daria a entender que da para divergir.
     sistemas = await db.buscar(
         f"""SELECT s.sistema_id AS id, s.sistema_name AS nome, s.cidade_id AS "cidId"
               FROM {_i()}.cidade_sistema s
@@ -337,18 +333,11 @@ async def hierarquia(unidade_id: str) -> dict[str, Any]:
     )
     # COMPONENTE SEM SISTEMA — cadastrado, ainda nao colocado em lugar nenhum.
     #
-    # RECORTADO PELA UNIDADE, e isto e uma correcao. O comentario aqui dizia que
-    # o recorte era impossivel — "sem sistema nao ha cidade, nao ha empresa, nao
-    # ha unidade" — e por isso a resposta trazia TODAS as CTS da base, para
-    # qualquer unidade. A premissa era falsa: a fonte sempre soube onde a CTS
-    # esta (o extrato de portfolio traz CIDADE e CTS na mesma linha). Quem tinha
-    # perdido a informacao era o esquema, e a migracao 018 a devolveu em
-    # `cts_operacional.cidade_id`.
-    #
-    # O que a falta de recorte custava: das 151 CTS soltas da base, TODAS sao de
-    # uma unidade so. As outras quatro unidades recebiam as 151 assim mesmo —
-    # uma lista inteira de candidatas que nao podiam ser colocadas ali sem erro,
-    # e nenhuma indicacao de qual era qual.
+    # RECORTADO PELA UNIDADE, pela cidade da CTS (`cts_operacional.cidade_id`; o
+    # extrato de portfolio traz CIDADE e CTS na mesma linha). Sem o recorte, a
+    # resposta traria as CTS soltas da base inteira para qualquer unidade — uma
+    # lista de candidatas que nao podem ser colocadas ali sem erro, e nenhuma
+    # indicacao de qual e qual.
     #
     # CIDADE DESCONHECIDA NAO SOME. `cidade_id` e nulavel (a carga pode nao ter
     # trazido), e escondê-la deixaria uma CTS que existe no banco sem forma
@@ -358,11 +347,9 @@ async def hierarquia(unidade_id: str) -> dict[str, Any]:
     # O RECORTE SO ALCANCA CTS, e o `c.cts IS NULL` diz isso em vez de deixar
     # acontecer. Sub-bacia e ETE nao tem coluna de cidade em lugar nenhum: se um
     # dia uma ficar sem sistema, nao ha por onde recorta-la, e ela aparece para
-    # todas as unidades. Sem esta linha o efeito era o mesmo, mas POR ACIDENTE —
-    # `c.cidade_id IS NULL` e verdadeiro para quem nem esta em `cts_operacional`,
-    # e a consulta parecia recortar o que nao recortava. Hoje a lista e 100% CTS,
-    # entao isto e sobre a proxima pessoa a ler a consulta, nao sobre um defeito
-    # visivel.
+    # todas as unidades. Sem esta linha o efeito seria o mesmo, mas POR ACIDENTE
+    # — `c.cidade_id IS NULL` e verdadeiro para quem nem esta em
+    # `cts_operacional`, e a consulta pareceria recortar o que nao recorta.
     #
     # `tipo` viaja junto porque a tela precisa rotular a lista, e a natureza do
     # componente nao esta na topologia: ela e a tabela em que ele tem ficha.
@@ -378,9 +365,9 @@ async def hierarquia(unidade_id: str) -> dict[str, Any]:
                         ELSE '' END AS tipo,
                    c.cidade_id AS "cidId",
                    -- A EMPRESA do coletor, pela cidade dele: e por ela que o Fluxo
-                   -- recorta o seletor. Cidade deixou de ser a regua desde que o
-                   -- sistema pode estar em varias (migracao 022) — um coletor de
-                   -- Mesquita pertence ao Sarapui tanto quanto um de Belford Roxo.
+                   -- recorta o seletor. Cidade nao serve de regua porque o sistema
+                   -- pode estar em varias — um coletor de Mesquita pertence ao
+                   -- Sarapui tanto quanto um de Belford Roxo.
                    ce.emp_codigo AS "empId"
               FROM {_i()}.sistema_topologia t
               LEFT JOIN {_i()}.ete_capex e ON e.ete_id = t.componente_sistema_id
@@ -584,8 +571,8 @@ async def sub_bacias(unidade_id: str) -> dict[str, Any]:
                    e.empresa
               FROM {_i()}.sistema_topologia t
               JOIN ({_sistemas_cte()}) s USING (sistema_id)
-              -- A CIDADE E A DA SUB-BACIA (migracao 022), e nao a do sistema: o
-              -- sistema pode estar em varias, e a arvore agrupa por cidade. Sem
+              -- A CIDADE E A DA SUB-BACIA, e nao a do sistema: o sistema pode
+              -- estar em varias, e a arvore agrupa por cidade. Sem
               -- isto, uma sub-bacia de Mesquita apareceria sob Belford Roxo so
               -- porque o Sarapui comeca la.
               --
@@ -682,8 +669,8 @@ def _arvore(linhas: list[dict[str, Any]], com_ficha: set[str]) -> list[dict[str,
 #: renomear componente — e o nome e justamente o que o motor casa com
 #: `componentes_*_capex` (`otimizador_capex_v62.py:1136`).
 #:
-#: Ele passou a viajar quando a base literal de obras saiu do front: sem base, e
-#: daqui que a tela tira o rotulo de cada linha. `pt_br` devolve texto intacto
+#: E daqui que a tela tira o rotulo de cada linha — ela nao tem base literal de
+#: obras. `pt_br` devolve texto intacto
 #: (`str(v)` para o que nao e numero), entao nome e unidade atravessam o mesmo
 #: caminho dos numeros sem tratamento especial.
 _OBRA_LEITURA = {
@@ -771,10 +758,8 @@ async def etes(unidade_id: str) -> dict[str, Any]:
     linhas = await db.buscar(
         f"""SELECT e.ete_id, t.componente_sistema_id AS sub,
                    -- A CIDADE DA ETE e a do sistema dela — e o sistema pode estar
-                   -- em varias (migracao 022). A ETE nao tem cidade propria no
-                   -- esquema; a primeira, em ordem, e o que da para mostrar sem
-                   -- inventar. Um sistema em uma cidade so (a base mockada
-                   -- inteira) devolve exatamente o que devolvia antes.
+                   -- em varias. A ETE nao tem cidade propria no esquema; a
+                   -- primeira, em ordem, e o que da para mostrar sem inventar.
                    (SELECT min(cs.cidade_id) FROM {_i()}.cidade_sistema cs
                      WHERE cs.sistema_id = s.sistema_id) AS cidade_id,
                    s.sistema_id, s.sistema_name,
@@ -922,20 +907,95 @@ async def _macrorregioes_livres(unidade_id: str) -> list[dict[str, Any]]:
     return macrorregiao_cts.livres(macrorregiao_cts.agrupar(membros), colocadas)
 
 
-async def cts(unidade_id: str) -> dict[str, Any]:
-    """Grupo 05 — as CTS COLOCADAS nos sistemas desta unidade.
+#: A OBRA DA MACRORREGIÃO AO NASCER, como o front a lê: nome e unidade, o resto
+#: em branco — o mesmo que `cadastro_escrita.COLUNAS_DA_OBRA_NOVA` grava.
+_OBRA_EM_BRANCO = {v: "" for v in _OBRA_LEITURA.values()}
+
+
+async def _ficha_de_macrorregiao_livre(
+    unidade_id: str, macro: dict[str, Any]
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """A ficha que a macrorregião livre TERÁ ao ser colocada, montada agora.
+
+    `agregar` soma os membros como a colocação somará; os `params` e as obras
+    vão em branco, que é como nascem. Os membros são os da empresa da
+    macrorregião (`empId`), como em toda leitura dela — a macrorregião pode
+    cruzar município, e é a empresa que a prende à unidade.
+
+    Devolve `(ficha, linha)` no formato das colocadas, ou `(None, None)` se a
+    macrorregião não tem membro nenhum — o que `_macrorregioes_livres` já
+    impede, mas a lista foi lida antes.
+    """
+    membros = await db.buscar(
+        f"""SELECT o.*, t.componente_sistema_nome AS nome_na_topologia
+              FROM {_i()}.cts_operacional o
+              JOIN {_i()}.cidade_empresa ce
+                ON ce.cidade_id = o.cidade_id AND ce.emp_codigo = $2
+              LEFT JOIN {_i()}.sistema_topologia t ON t.componente_sistema_id = o.cts
+             WHERE o.sistema_cts = $1 AND NOT o.e_macrorregiao
+             ORDER BY o.cts""",
+        macro["id"],
+        macro["empId"],
+    )
+    if not membros:
+        return None, None
+    somado = macrorregiao_cts.agregar([dict(m) for m in membros])
+    linha_da_ficha = {**{coluna: None for coluna in COLETA}, **somado, "cts": macro["id"],
+                      "atualizado_em": None, "atualizado_por": None}
+    ficha = {
+        **_ficha_coleta(linha_da_ficha, "cts"),
+        "nome": macro["id"],
+        "sisId": "",
+        "sistema": "",
+        "jusante": "",
+        "obrasOverride": {
+            str(i): {**_OBRA_EM_BRANCO, "nome": nome, "un": unidade}
+            for i, (nome, unidade) in enumerate(OBRAS_DA_CTS)
+        },
+        "sistemaCts": macro["id"],
+        "membros": [
+            {
+                "id": m["cts"],
+                "nome": m["nome_na_topologia"] or m["cts"],
+                "cidId": m["cidade_id"] or "",
+                "ligA": pt_br(m["ligacoes_atuais"]),
+            }
+            for m in membros
+        ],
+    }
+    # A linha, no formato das colocadas — e `cts` fora de `fichas` faria o laço
+    # abaixo pular a macrorregião, então `ficha` vai já pronta.
+    linha = {"cts": macro["id"], "nome": macro["id"], "jusante": "",
+             "sistema_id": "", "sistema_name": ""}
+    return ficha, linha
+
+
+async def cts(unidade_id: str, incluir_livres: bool = False) -> dict[str, Any]:
+    """Grupo 05 — as CTS COLOCADAS nos sistemas desta unidade, e as livres se pedidas.
+
+    Por padrão vêm só as colocadas: a âncora é a TOPOLOGIA, e não o pareamento
+    com a sub-bacia — quem diz que uma CTS é desta unidade é o sistema em que
+    ela foi colocada, e sistema é coisa que a Regional monta (Grupo 01). É o que
+    o front original lê, contando as CTS a preencher pelas colocadas.
+
+    `incluir_livres` traz TAMBÉM as CTS da unidade ainda fora de sistema — as que
+    a hierarquia lista em `semSistema` — com `sisId`/`sistema`/`jusante` vazios.
+    É o que a planilha do cadastro pede: a ficha e as obras de uma CTS chegam da
+    origem antes de alguém decidir em que sistema ela entra, e quem preenche
+    fora do site as preenche já, deixando o sistema para depois.
+
+    Com a macrorregião marcada, as livres são as MACRORREGIÕES que a hierarquia
+    oferece em `semSistema`, e a ficha delas ainda não existe no banco: nasce
+    somada na colocação (`cadastro_escrita._preparar_macrorregiao`). Aqui ela é
+    montada do mesmo jeito que nascerá — `db` somado dos membros, `params` e as
+    quatro obras em branco. O `PUT` da ficha só é aceito depois de colocada; é o
+    front quem ordena colocar antes de gravar (`salvarCadastro`).
 
     `ctss` e um MAPA por id, como `subs`.
 
-    A ancora e a TOPOLOGIA, e nao o pareamento com a sub-bacia: quem diz que uma
-    CTS e desta unidade e o sistema em que ela foi colocada, e sistema e coisa que
-    a Regional monta (Grupo 01). Uma CTS ainda nao colocada nao aparece aqui —
-    ela nao e de unidade nenhuma, nao entra na simulacao e nao tem o que preencher
-    ainda. Ela vive na lista do Grupo 01, esperando ser adicionada a um sistema.
-
-    `sisId`, `sistema` e `jusante` saem da linha DA PROPRIA CTS. Antes vinham da
-    linha da sub-bacia pareada, o que fazia a tela mostrar o caminho de outro
-    componente como se fosse o dela.
+    `sisId`, `sistema` e `jusante` saem da linha DA PROPRIA CTS na topologia — e
+    nao da sub-bacia pareada, que mostraria o caminho de outro componente como
+    se fosse o dela.
 
     `inconsistencias` traz componente colocado no sistema que nao tem ficha —
     ver `_cts_inconsistentes`. Ela NAO cruza com `ctss`: sao justamente os que
@@ -961,12 +1021,10 @@ async def cts(unidade_id: str) -> dict[str, Any]:
             unidade_id,
         )
     }
-    # A MACRORREGIÃO NÃO PRECISA DE CAMINHO PRÓPRIO AQUI. Colocada, ela é uma
+    # A MACRORREGIÃO COLOCADA NÃO PRECISA DE CAMINHO PRÓPRIO AQUI: ela é uma
     # linha de `cts_operacional` na topologia como qualquer coletor, e a consulta
-    # acima já a traz; não colocada, ela não tem linha nem está na topologia, e
-    # nada abaixo a emitiria. Um bloco que sobrepunha "as fichas de macrorregião"
-    # por cima destas existiu e não fazia nada — era o resto do modelo anterior
-    # à migração 021, em que a ficha era somada na leitura.
+    # acima já a traz. Não colocada, ela não tem linha nem está na topologia — é
+    # `_ficha_de_macrorregiao_livre` quem a monta, quando pedida.
     linhas = await db.buscar(
         f"""SELECT t.componente_sistema_id AS cts,
                    t.componente_sistema_nome AS nome,
@@ -978,6 +1036,37 @@ async def cts(unidade_id: str) -> dict[str, Any]:
              ORDER BY s.sistema_name, t.componente_sistema_id""",
         unidade_id,
     )
+
+    # AS LIVRES DA UNIDADE, se pedidas: a mesma pergunta de `semSistema` na
+    # hierarquia — topologia sem sistema, cidade da unidade, e nunca a linha da
+    # macrorregião —, só que trazendo a ficha. Sem cidade não entra: uma CTS que
+    # a carga não situou não é de unidade nenhuma, e a ficha dela editável de
+    # qualquer unidade seria a mesma ficha gravada por duas mãos.
+    if incluir_livres and await _usa_macrorregiao(unidade_id):
+        for macro in await _macrorregioes_livres(unidade_id):
+            ficha, linha = await _ficha_de_macrorregiao_livre(unidade_id, macro)
+            if ficha is None:
+                continue
+            fichas.setdefault(macro["id"], ficha)
+            linhas.append(linha)
+    elif incluir_livres:
+        livres = await db.buscar(
+            f"""WITH cid AS ({_cidades_cte()})
+                SELECT o.*, t.componente_sistema_nome AS nome_na_topologia
+                  FROM {_i()}.sistema_topologia t
+                  JOIN {_i()}.cts_operacional o ON o.cts = t.componente_sistema_id
+                 WHERE t.sistema_id IS NULL
+                   AND NOT coalesce(o.e_macrorregiao, false)
+                   AND o.cidade_id IN (SELECT cidade_id FROM cid)
+                 ORDER BY t.componente_sistema_nome, o.cts""",
+            unidade_id,
+        )
+        for l in livres:
+            fichas.setdefault(l["cts"], l)
+            linhas.append(
+                {"cts": l["cts"], "nome": l["nome_na_topologia"], "jusante": "",
+                 "sistema_id": "", "sistema_name": ""}
+            )
     obras = await _obras_por_ficha(
         "componentes_cts_capex", "cts", list(fichas), _INDICE_CTS
     )
@@ -989,6 +1078,11 @@ async def cts(unidade_id: str) -> dict[str, Any]:
         if cid not in fichas:
             continue
         ficha = fichas[cid]
+        # A MACRORREGIÃO LIVRE já chega pronta de `_ficha_de_macrorregiao_livre`
+        # — não há linha do banco para ler.
+        if "obrasOverride" in ficha:
+            ctss[cid] = ficha
+            continue
         ctss[cid] = {
             **_ficha_coleta(ficha, "cts"),
             "nome": l["nome"] or cid,
@@ -1029,9 +1123,8 @@ async def _cts_inconsistentes(unidade_id: str) -> list[dict[str, Any]]:
     Componente sem sistema nao entra aqui: nao estar colocado e estado normal —
     e o que acontece com toda CTS antes de a Regional adiciona-la a um sistema.
 
-    Nao ha mais "ficha sem no" nem "sem par". O primeiro virou o estado normal
-    acima; o segundo dependia de `subbacia_cts`, que e sobreposicao de area e nao
-    diz onde a CTS esta.
+    "Ficha sem no" nao e inconsistencia: e o estado normal acima. "Sem par"
+    tampouco: `subbacia_cts` e sobreposicao de area e nao diz onde a CTS esta.
 
     O `GET` devolve isto porque nao e diagnostico de infraestrutura: e informacao
     de cadastro, e quem le a tela e exatamente quem pode corrigi-la.
@@ -1089,14 +1182,9 @@ async def alteracoes(
 
     ## Por que esta função existe
 
-    A trilha era gravada desde a migração 001 e **nunca foi lida por ninguém**. O
-    único `SELECT` nela, em todo o serviço, servia para deduplicar contra a última
-    linha — e saiu quando o servidor passou a comparar com o dado gravado. Ou
-    seja: o registro existia, crescia, e respondê-lo exigia SQL na mão.
-
-    Auditoria que só o DBA alcança não é auditoria do produto. É por isso que este
-    endpoint veio junto da trilha completa, e não depois: gravar mais e continuar
-    sem mostrar teria piorado a mesma situação.
+    A trilha cresce a cada gravação, e esta é a única leitura dela no serviço.
+    Auditoria que só o DBA alcança não é auditoria do produto: gravar sem
+    mostrar seria um registro que só se responde com SQL na mão.
 
     ## A forma
 
