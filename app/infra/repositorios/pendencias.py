@@ -350,7 +350,8 @@ async def _macrorregioes_desatualizadas(unidade_id: str) -> list[dict[str, Any]]
               JOIN cid ON cid.cidade_id = o.cidade_id
              WHERE o.sistema_cts = ANY($2::text[]) AND NOT o.e_macrorregiao""",
         unidade_id,
-        [g["cts"] for g in guardadas],
+        # `cts` da macrorregião é `nome|empresa|unidade`; os membros guardam só o nome.
+        [macrorregiao_cts.nome_da_macrorregiao(g["cts"]) for g in guardadas],
     )
     # POR PAR, e não por nome: `agrupar` é quem define a chave da macrorregião, e
     # comparar contra a soma de "todo mundo que tem este `sistema_cts`" mediria a
@@ -360,7 +361,7 @@ async def _macrorregioes_desatualizadas(unidade_id: str) -> list[dict[str, Any]]
 
     saida: list[dict[str, Any]] = []
     for g in guardadas:
-        grupo = por_macro.get((g["cts"], g["emp_codigo"]))
+        grupo = por_macro.get((macrorregiao_cts.nome_da_macrorregiao(g["cts"]), g["emp_codigo"]))
         if not grupo:
             # SEM MEMBRO NENHUM a soma não existe, e não há com o que comparar.
             # Acontece se a recarga tirar a coluna `sistema_cts` de todos eles; a
@@ -376,9 +377,9 @@ async def _macrorregioes_desatualizadas(unidade_id: str) -> list[dict[str, Any]]
             {
                 "tipo": "macrorregiao",
                 "id": g["cts"],
-                "componente": g["cts"],
+                "componente": macrorregiao_cts.nome_da_macrorregiao(g["cts"]),
                 "detalhe": (
-                    f"A ficha da macrorregião {g['cts']} foi somada quando ela foi "
+                    f"A ficha da macrorregião {macrorregiao_cts.nome_da_macrorregiao(g['cts'])} foi somada quando ela foi "
                     f"colocada no sistema, e os coletores mudaram desde então: "
                     f"{quais}. A simulação roda com os números da ficha. Gravar a "
                     f"ficha de novo refaz a soma a partir dos {len(grupo)} coletores "

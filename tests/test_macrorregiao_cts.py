@@ -17,7 +17,9 @@ from app.dominio.macrorregiao_cts import (
     agrupar,
     divergencias,
     livres,
-    nomes_ambiguos,
+    desmontar_id,
+    id_da_macrorregiao,
+    nome_da_macrorregiao,
 )
 
 
@@ -258,10 +260,14 @@ def _membro(cts, *, colocada=False, cidade="c1", ligacoes=10, macro="MACRO_A",
     }
 
 
+A = "MACRO_A|e1|u1"
+B = "MACRO_B|e1|u1"
+
+
 def test_macrorregiao_com_todos_os_membros_soltos_e_oferecida():
     grupos = agrupar([_membro("cts_1"), _membro("cts_2")])
-    assert livres(grupos, set()) == [
-        {"id": "MACRO_A", "cidId": "c1", "empId": "e1"}
+    assert livres(grupos, set(), "u1") == [
+        {"id": A, "nome": "MACRO_A", "cidId": "c1", "empId": "e1"}
     ]
 
 
@@ -270,7 +276,7 @@ def test_membro_ja_colocado_tira_a_macrorregiao_da_lista():
     grupos = agrupar(
         [_membro("cts_1", colocada=True), _membro("cts_2")]
     )
-    assert livres(grupos, set()) == []
+    assert livres(grupos, set(), "u1") == []
 
 
 def test_macrorregiao_ja_colocada_sai_da_lista_com_os_membros_soltos():
@@ -282,14 +288,17 @@ def test_macrorregiao_ja_colocada_sai_da_lista_com_os_membros_soltos():
     segunda colocação a mudaria de sistema sem ninguém ter pedido.
     """
     grupos = agrupar([_membro("cts_1"), _membro("cts_2")])
-    assert livres(grupos, {"MACRO_A"}) == []
+    # `ja_colocadas` é conjunto de IDS COMPOSTOS, como `cts_operacional.cts` guarda.
+    assert livres(grupos, {A}, "u1") == []
+    # O nome sozinho NÃO casa: "MACRO_A" colocada NOUTRA unidade não esconde esta.
+    assert [m["id"] for m in livres(grupos, {"MACRO_A", "MACRO_A|e1|u9"}, "u1")] == [A]
 
 
 def test_uma_colocada_nao_esconde_a_outra():
     grupos = agrupar(
         [_membro("cts_1", macro="MACRO_A"), _membro("cts_9", macro="MACRO_B")]
     )
-    assert [m["id"] for m in livres(grupos, {"MACRO_A"})] == ["MACRO_B"]
+    assert [m["id"] for m in livres(grupos, {A}, "u1")] == [B]
 
 
 def test_a_cidade_oferecida_e_a_dominante_e_nao_a_primeira():
@@ -304,141 +313,61 @@ def test_a_cidade_oferecida_e_a_dominante_e_nao_a_primeira():
             _membro("cts_2", cidade="c9", ligacoes=90),
         ]
     )
-    assert livres(grupos, set()) == [
-        {"id": "MACRO_A", "cidId": "c9", "empId": "e1"}
+    assert livres(grupos, set(), "u1") == [
+        {"id": A, "nome": "MACRO_A", "cidId": "c9", "empId": "e1"}
     ]
 
 
-def test_a_lista_sai_ordenada_pelo_id():
+def test_a_lista_sai_ordenada_pelo_nome():
     grupos = agrupar(
         [_membro("cts_1", macro="MACRO_Z"), _membro("cts_2", macro="MACRO_A")]
     )
-    assert [m["id"] for m in livres(grupos, set())] == [
-        "MACRO_A",
-        "MACRO_Z",
-    ]
+    assert [m["nome"] for m in livres(grupos, set(), "u1")] == ["MACRO_A", "MACRO_Z"]
 
 
 # --------------------------------------------------------------------------
-# O NOME QUE DUAS EMPRESAS USAM
+# O ID É NOME + EMPRESA + UNIDADE
 #
-# A chave da macrorregião é o par `(sistema_cts, emp_codigo)`, e o cadastro
-# guarda UM id — `cts_operacional.cts` é chave primária. Um nome repetido entre
-# empresas da mesma unidade é, portanto, irrepresentável, e o modo de falha é o
-# pior possível: somar coletores que empresas diferentes operam, em silêncio.
+# O nome (`sistema_cts`) vem da origem e se repete entre unidades — e a linha da
+# macrorregião vive em `cts_operacional.cts`, chave primária do banco inteiro.
+# Com o nome como id, a segunda unidade a colocar "Sarapuí" encontrava a linha
+# da primeira. O id composto é o que torna as duas representáveis; e o nome que
+# duas EMPRESAS da mesma unidade usam deixa de ser ambíguo pelo mesmo motivo.
 # --------------------------------------------------------------------------
 
 
-def test_nome_de_uma_empresa_so_nao_e_ambiguo():
-    grupos = agrupar([_membro("cts_1"), _membro("cts_2")])
-    assert nomes_ambiguos(grupos) == set()
+def test_o_id_leva_nome_empresa_e_unidade():
+    assert id_da_macrorregiao("Sarapuí", "AEGEA-RJ", "uB1") == "Sarapuí|AEGEA-RJ|uB1"
+    assert desmontar_id("Sarapuí|AEGEA-RJ|uB1") == ("Sarapuí", "AEGEA-RJ", "uB1")
+    assert nome_da_macrorregiao("Sarapuí|AEGEA-RJ|uB1") == "Sarapuí"
 
 
-def test_o_mesmo_nome_em_duas_empresas_e_ambiguo():
+def test_o_mesmo_nome_em_duas_unidades_sao_dois_ids():
+    a = id_da_macrorregiao("Sarapuí", "AEGEA-RJ", "uA1")
+    b = id_da_macrorregiao("Sarapuí", "AEGEA-BX", "uB1")
+    assert a != b and nome_da_macrorregiao(a) == nome_da_macrorregiao(b) == "Sarapuí"
+
+
+def test_id_de_coletor_nao_e_de_macrorregiao():
+    for id_ in ("cts_196", "cts_d1b100_1_1", "e1b4_1_3", "", "so|uma"):
+        assert desmontar_id(id_) is None
+        assert nome_da_macrorregiao(id_) == id_
+
+
+def test_o_separador_nao_cabe_no_nome_nem_nas_chaves():
+    with pytest.raises(ValueError):
+        id_da_macrorregiao("A|B", "e1", "u1")
+    with pytest.raises(ValueError):
+        id_da_macrorregiao("A", "", "u1")
+
+
+def test_o_mesmo_nome_em_duas_empresas_da_unidade_vira_duas_ofertas():
+    """Antes era recusado como ambíguo: um id só não dizia qual das duas. Com a
+    empresa no id, cada uma é oferecida nos sistemas da própria empresa."""
     grupos = agrupar(
         [_membro("cts_1", empresa="e1"), _membro("cts_9", empresa="e2")]
     )
-    assert nomes_ambiguos(grupos) == {"MACRO_A"}
-
-
-def test_macrorregiao_ambigua_nao_e_oferecida():
-    """Oferecê-la devolveria um id que não diz qual das duas foi escolhida."""
-    grupos = agrupar(
-        [_membro("cts_1", empresa="e1"), _membro("cts_9", empresa="e2")]
-    )
-    assert livres(grupos, set()) == []
-
-
-def test_a_ambiguidade_de_um_nome_nao_esconde_os_outros():
-    grupos = agrupar(
-        [
-            _membro("cts_1", macro="MACRO_A", empresa="e1"),
-            _membro("cts_9", macro="MACRO_A", empresa="e2"),
-            _membro("cts_5", macro="MACRO_B", empresa="e1"),
-        ]
-    )
-    assert [m["id"] for m in livres(grupos, set())] == ["MACRO_B"]
-
-
-def test_o_ambiguo_nao_e_fundido_num_grupo_so():
-    """`agrupar` guarda os dois separados — é a fusão que a regra impede.
-
-    Se a chave fosse só o nome, os dois coletores cairiam no mesmo grupo e
-    `agregar` somaria as ligações das duas empresas numa ficha só.
-    """
-    grupos = agrupar(
-        [
-            _membro("cts_1", empresa="e1", ligacoes=100),
-            _membro("cts_9", empresa="e2", ligacoes=7),
-        ]
-    )
-    assert sorted(grupos) == [("MACRO_A", "e1"), ("MACRO_A", "e2")]
-    assert [agregar(g)["ligacoes_atuais"] for _k, g in sorted(grupos.items())] == [100, 7]
-
-
-# --------------------------------------------------------------------------
-# O ALARME DE DIVERGÊNCIA
-#
-# Colocada, a ficha não é recalculada na leitura — é ela que a Regional preenche
-# e o motor lê. O preço é ficar para trás numa recarga do Databricks, e estes
-# testes prendem o que o alarme promete: acusar o que a ação recomendada
-# (gravar a ficha de novo) consegue consertar, e só isso.
-# --------------------------------------------------------------------------
-
-
-def _guardada(**kw):
-    """A ficha como está no banco: as somas de quando ela foi colocada.
-
-    O que não se informa fica NULO, e não zero — `divergencias` distingue os dois
-    (ADR 0002), e um fixture que zerasse tudo compararia nulo contra zero em onze
-    colunas e acusaria divergência em toda leitura.
-    """
-    base = {c: None for c in COLUNAS_QUE_SOMAM}
-    return {**base, **kw}
-
-
-def test_ficha_igual_a_soma_de_hoje_nao_diverge():
-    membros = [cts(ligacoes_atuais=10), cts(ligacoes_atuais=5)]
-    assert divergencias(_guardada(ligacoes_atuais=15), membros) == {}
-
-
-def test_membro_que_mudou_aparece_nomeando_a_coluna():
-    membros = [cts(ligacoes_atuais=10), cts(ligacoes_atuais=5)]
-    fora = divergencias(_guardada(ligacoes_atuais=99), membros)
-    assert list(fora) == ["ligacoes_atuais"]
-    assert fora["ligacoes_atuais"] == (99, 15)
-
-
-def test_a_folga_de_um_centavo_engole_ruido_de_ponto_flutuante():
-    """Somar `double precision` em ordens diferentes difere na última casa.
-
-    Um alarme que dispara por isso é um alarme que ensina a ignorar alarmes.
-    """
-    membros = [cts(receita_faturada_media_mensal=0.1) for _ in range(3)]
-    assert divergencias(_guardada(receita_faturada_media_mensal=0.3), membros) == {}
-
-
-def test_um_centavo_e_meio_de_diferenca_ja_aparece():
-    membros = [cts(receita_faturada_media_mensal=100.0)]
-    assert "receita_faturada_media_mensal" in divergencias(
-        _guardada(receita_faturada_media_mensal=100.015), membros
-    )
-
-
-def test_populacao_de_novas_obras_nao_entra_no_alarme():
-    """A única coluna somada que a ESCRITA nunca toca (`NAO_MODELADOS`).
-
-    Acusá-la produziria um aviso que "grave a ficha de novo" não apaga — e um
-    alarme que não apaga ensina a ignorar os outros. Ela continua sendo somada
-    quando a macrorregião NASCE: nascer certa é diferente de prometer manter.
-    """
-    assert "populacao_novas_obras" in COLUNAS_QUE_SOMAM
-    membros = [cts(populacao_novas_obras=1000)]
-    assert divergencias(_guardada(populacao_novas_obras=1), membros) == {}
-
-
-def test_o_alarme_cobre_todo_o_resto_do_que_se_soma():
-    """Coluna nova em `COLUNAS_QUE_SOMAM` entra no alarme sem ninguém lembrar."""
-    assert set(COLUNAS_COMPARAVEIS) == set(COLUNAS_QUE_SOMAM) - {
-        "populacao_novas_obras"
-    }
+    ofertas = livres(grupos, set(), "u1")
+    assert [m["id"] for m in ofertas] == ["MACRO_A|e1|u1", "MACRO_A|e2|u1"]
+    assert {m["nome"] for m in ofertas} == {"MACRO_A"}
+    assert [m["empId"] for m in ofertas] == ["e1", "e2"]

@@ -408,7 +408,7 @@ async def hierarquia(unidade_id: str) -> dict[str, Any]:
         sem_sistema = [l for l in sem_sistema if l["tipo"] != "cts"] + [
             {
                 "id": m["id"],
-                "nome": m["id"],
+                "nome": m["nome"],
                 "tipo": "cts",
                 # `cidId` É A DOMINANTE — a que a ficha expõe. O RECORTE da tela
                 # é por `empId`: a macrorregião cruza município, e a empresa é a
@@ -855,7 +855,8 @@ async def _membros_por_macrorregiao(unidade_id: str) -> dict[str, list[dict[str,
             SELECT m.macro, o.cts AS id, t.componente_sistema_nome AS nome,
                    o.cidade_id, o.ligacoes_atuais
               FROM macros m
-              JOIN {_i()}.cts_operacional o ON o.sistema_cts = m.macro
+              -- `m.macro` é o id composto (nome|empresa|unidade); o membro guarda só o nome.
+              JOIN {_i()}.cts_operacional o ON o.sistema_cts = split_part(m.macro, '|', 1)
               JOIN {_i()}.cidade_empresa ce
                 ON ce.cidade_id = o.cidade_id AND ce.emp_codigo = m.emp_codigo
               LEFT JOIN {_i()}.sistema_topologia t ON t.componente_sistema_id = o.cts
@@ -904,7 +905,7 @@ async def _macrorregioes_livres(unidade_id: str) -> list[dict[str, Any]]:
             f"SELECT cts FROM ({MACRORREGIOES_COLOCADAS.format(i=_i())}) m", unidade_id
         )
     }
-    return macrorregiao_cts.livres(macrorregiao_cts.agrupar(membros), colocadas)
+    return macrorregiao_cts.livres(macrorregiao_cts.agrupar(membros), colocadas, unidade_id)
 
 
 #: A OBRA DA MACRORREGIÃO AO NASCER, como o front a lê: nome e unidade, o resto
@@ -934,7 +935,7 @@ async def _ficha_de_macrorregiao_livre(
               LEFT JOIN {_i()}.sistema_topologia t ON t.componente_sistema_id = o.cts
              WHERE o.sistema_cts = $1 AND NOT o.e_macrorregiao
              ORDER BY o.cts""",
-        macro["id"],
+        macro["nome"],
         macro["empId"],
     )
     if not membros:
@@ -944,7 +945,7 @@ async def _ficha_de_macrorregiao_livre(
                       "atualizado_em": None, "atualizado_por": None}
     ficha = {
         **_ficha_coleta(linha_da_ficha, "cts"),
-        "nome": macro["id"],
+        "nome": macro["nome"],
         "sisId": "",
         "sistema": "",
         "jusante": "",
@@ -952,7 +953,7 @@ async def _ficha_de_macrorregiao_livre(
             str(i): {**_OBRA_EM_BRANCO, "nome": nome, "un": unidade}
             for i, (nome, unidade) in enumerate(OBRAS_DA_CTS)
         },
-        "sistemaCts": macro["id"],
+        "sistemaCts": macro["nome"],
         "membros": [
             {
                 "id": m["cts"],
@@ -965,7 +966,7 @@ async def _ficha_de_macrorregiao_livre(
     }
     # A linha, no formato das colocadas — e `cts` fora de `fichas` faria o laço
     # abaixo pular a macrorregião, então `ficha` vai já pronta.
-    linha = {"cts": macro["id"], "nome": macro["id"], "jusante": "",
+    linha = {"cts": macro["id"], "nome": macro["nome"], "jusante": "",
              "sistema_id": "", "sistema_name": ""}
     return ficha, linha
 
@@ -1095,7 +1096,8 @@ async def cts(unidade_id: str, incluir_livres: bool = False) -> dict[str, Any]:
             # próprio id — ela É o sistema CTS, e a coluna dela fica nula por não
             # ser membro de si mesma (migração 021). Vazio num coletor que a
             # origem não pôs em macrorregião nenhuma.
-            "sistemaCts": ficha.get("sistema_cts") or (cid if ficha.get("e_macrorregiao") else ""),
+            "sistemaCts": ficha.get("sistema_cts")
+            or (macrorregiao_cts.nome_da_macrorregiao(cid) if ficha.get("e_macrorregiao") else ""),
             # OS COLETORES QUE A SOMA CONTÉM, com as ligações de cada um. É o que
             # permite CONFERIR a macrorregião em vez de acreditar nela: sem isto a
             # ficha somada é um número, e uma macrorregião de 29 coletores é
