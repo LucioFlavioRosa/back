@@ -52,11 +52,14 @@ __all__ = [
     "COLUNAS_DA_REGIONAL",
     "COLUNAS_DE_IDENTIDADE",
     "COLUNAS_QUE_SOMAM",
+    "SEPARADOR",
     "agregar",
     "agrupar",
+    "desmontar_id",
     "divergencias",
+    "id_da_macrorregiao",
     "livres",
-    "nomes_ambiguos",
+    "nome_da_macrorregiao",
 ]
 
 
@@ -192,36 +195,61 @@ def agrupar(ctss: list[dict[str, Any]]) -> dict[tuple[str, str], list[dict[str, 
     return grupos
 
 
-def nomes_ambiguos(
-    grupos: dict[tuple[str, str], list[dict[str, Any]]],
-) -> set[str]:
-    """Os nomes de macrorregião que DUAS EMPRESAS da unidade usam.
+#: O que separa as três partes do id de uma macrorregião. Nenhum id de coletor
+#: do Databricks (`cts_196`, `cts_d1b100_1_1`) e nenhum código de empresa ou de
+#: unidade o contém — é o que deixa `desmontar_id` distinguir macrorregião de
+#: coletor só pelo id.
+SEPARADOR = "|"
 
-    A chave de uma macrorregião é o par `(sistema_cts, emp_codigo)` — são dois
-    coletores diferentes, de duas empresas diferentes, que por acaso receberam o
-    mesmo nome na origem. Mas o que a topologia guarda é UM id, e o que a tela
-    mostra é UM nome: `cts_operacional.cts` é chave primária, e nela `MACRO_A` só
-    cabe uma vez.
 
-    NÃO SE FUNDE, e não se escolhe uma. Fundir somaria coletores que empresas
-    diferentes operam, e escolher faria a outra desaparecer sem aviso. Um nome
-    ambíguo não é oferecido para montar o sistema e não é aceito para colocar —
-    é dado de origem para arrumar, e quem tenta colocá-lo ouve isso com todas as
-    letras (`_preparar_macrorregiao`).
+def id_da_macrorregiao(nome: str, emp_codigo: str, unidade_id: str) -> str:
+    """O ID DA MACRORREGIÃO É NOME + EMPRESA + UNIDADE — e não o nome sozinho.
 
-    Hoje não há um caso assim na base. A função existe porque a alternativa —
-    confiar em que não haverá — é a que soma coletores de duas empresas em
-    silêncio no dia em que houver.
+    O nome (`sistema_cts`) vem da origem e se repete: duas unidades podem ter,
+    cada uma, uma macrorregião "Sarapuí" — coletores diferentes, cidades
+    diferentes, empresas diferentes. Mas a macrorregião só ganha linha quando é
+    colocada num sistema, e essa linha vive em `cts_operacional.cts`, chave
+    primária do banco INTEIRO. Com o nome como id, a segunda unidade a colocar
+    "Sarapuí" encontrava a linha da primeira — e ouvia "pertence a outra
+    unidade", ou, se a primeira já a tivesse tirado do sistema, herdava em
+    silêncio a soma dos coletores da outra.
+
+    A empresa já determina a unidade (`empresa.unidade_id`); a unidade entra no
+    id mesmo assim, por decisão do dono do produto (20/09/2026): a chave se lê
+    sozinha, sem consulta.
+
+    O nome não pode conter o separador — a origem nunca o usou, e uma que use
+    seria um dado a arrumar, não uma ambiguidade para resolver aqui.
     """
-    vistos: dict[str, set[str]] = {}
-    for macro, empresa in grupos:
-        vistos.setdefault(macro, set()).add(empresa)
-    return {macro for macro, empresas in vistos.items() if len(empresas) > 1}
+    for parte, rotulo in ((nome, "nome"), (emp_codigo, "empresa"), (unidade_id, "unidade")):
+        if not parte or not str(parte).strip():
+            raise ValueError(f"macrorregião sem {rotulo}: id impossível")
+        if SEPARADOR in str(parte):
+            raise ValueError(f"{rotulo} de macrorregião com {SEPARADOR!r}: {parte!r}")
+    return f"{nome.strip()}{SEPARADOR}{emp_codigo.strip()}{SEPARADOR}{unidade_id.strip()}"
+
+
+def desmontar_id(componente_id: str) -> tuple[str, str, str] | None:
+    """`(nome, emp_codigo, unidade_id)` de um id de macrorregião — ou `None` se
+    o id não é de macrorregião (um coletor, uma sub-bacia, uma ETE)."""
+    if not componente_id or componente_id.count(SEPARADOR) != 2:
+        return None
+    nome, empresa, unidade = componente_id.split(SEPARADOR)
+    if not (nome and empresa and unidade):
+        return None
+    return nome, empresa, unidade
+
+
+def nome_da_macrorregiao(componente_id: str) -> str:
+    """O nome (`sistema_cts`) de um id de macrorregião; o próprio id se não é um."""
+    partes = desmontar_id(componente_id)
+    return partes[0] if partes else componente_id
 
 
 def livres(
     grupos: dict[tuple[str, str], list[dict[str, Any]]],
     ja_colocadas: set[str],
+    unidade_id: str,
 ) -> list[dict[str, Any]]:
     """As macrorregiões que a tela de montar o sistema pode oferecer.
 
@@ -238,9 +266,10 @@ def livres(
     colocada; antes disso ela não tinha onde estar colocada, e a regra de um lado
     só bastava.
 
-    NOME AMBÍGUO TAMBÉM NÃO É OFERECIDO: o id que a tela devolve é o nome, e um
-    nome que duas empresas usam não diz qual das duas macrorregiões foi escolhida.
-    Ver `nomes_ambiguos`.
+    O ID É COMPOSTO — nome, empresa e unidade (`id_da_macrorregiao`) — e `nome` vai
+    ao lado, para a tela mostrar. Um nome que duas empresas usam vira dois ids, e
+    as duas são oferecidas, cada uma nos sistemas da própria empresa. `ja_colocadas`
+    é conjunto de ids compostos, como `cts_operacional.cts` os guarda.
 
     `cidId` é a cidade de `agregar` — a do membro com mais ligações —, e não a
     primeira que o banco devolveu: a ficha expõe uma cidade só, e duas leituras da
@@ -255,17 +284,16 @@ def livres(
     chave `(sistema_cts, emp_codigo)` sempre disse: ela é ofertável nos sistemas
     da empresa que a opera.
     """
-    ambiguos = nomes_ambiguos(grupos)
     saida = []
     for (macro, empresa), membros in grupos.items():
-        if macro in ambiguos:
-            continue
-        if macro in ja_colocadas or any(m.get("colocada") for m in membros):
+        composto = id_da_macrorregiao(macro, empresa, unidade_id)
+        if composto in ja_colocadas or any(m.get("colocada") for m in membros):
             continue
         saida.append(
-            {"id": macro, "cidId": agregar(membros)["cidade_id"], "empId": empresa}
+            {"id": composto, "nome": macro, "cidId": agregar(membros)["cidade_id"],
+             "empId": empresa}
         )
-    return sorted(saida, key=lambda m: m["id"])
+    return sorted(saida, key=lambda m: (m["nome"], m["id"]))
 
 
 #: O que o ALARME de divergência compara — e é menos do que se soma.

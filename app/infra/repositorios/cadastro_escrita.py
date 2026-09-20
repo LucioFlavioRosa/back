@@ -1036,9 +1036,10 @@ COLUNAS_DA_OBRA_NOVA = ("cts", "componente", "unidade")
 
 
 async def _membros_da_macrorregiao(
-    con: Any, unidade_id: str, macro: str
+    con: Any, unidade_id: str, macro: str, emp_codigo: str
 ) -> list[dict[str, Any]]:
-    """Os coletores que formam `macro` nesta unidade — vazio se `macro` não nomeia uma.
+    """Os coletores que formam `macro` (o NOME, `sistema_cts`) na empresa
+    `emp_codigo` desta unidade — vazio se não há macrorregião assim.
 
     `NOT e_macrorregiao` não é zelo: a própria linha da macrorregião tem
     `sistema_cts` NULO e já não cairia aqui. A cláusula está escrita porque é ela
@@ -1060,10 +1061,11 @@ async def _membros_da_macrorregiao(
               JOIN cid ON cid.cidade_id = o.cidade_id
               LEFT JOIN {_i()}.sistema_topologia t
                      ON t.componente_sistema_id = o.cts
-             WHERE o.sistema_cts = $2 AND NOT o.e_macrorregiao
+             WHERE o.sistema_cts = $2 AND cid.emp_codigo = $3 AND NOT o.e_macrorregiao
              ORDER BY o.cts""",
         unidade_id,
         macro,
+        emp_codigo,
     )
     return [dict(l) for l in linhas]
 
@@ -1088,12 +1090,14 @@ async def _somas_de_hoje(con: Any, ficha_id: str) -> dict[str, Any] | None:
     empresa = (await _empresas_das_macrorregioes(con, [ficha_id])).get(ficha_id)
     if empresa is None:
         return None
+    # O NOME SAI DO ID: `ficha_id` é `nome|empresa|unidade`, e `sistema_cts` dos
+    # membros guarda só o nome.
     membros = await con.fetch(
         f"""SELECT o.*
               FROM {_i()}.cts_operacional o
               JOIN {_i()}.cidade_empresa ce ON ce.cidade_id = o.cidade_id
              WHERE o.sistema_cts = $1 AND ce.emp_codigo = $2 AND NOT o.e_macrorregiao""",
-        ficha_id,
+        macrorregiao_cts.nome_da_macrorregiao(ficha_id),
         empresa,
     )
     if not membros:
@@ -1149,32 +1153,26 @@ async def _preparar_macrorregiao(
     conserva os `params` e as obras — que é o que se espera de mudar um componente
     de lugar.
 
-    NÃO LEVANTA quando `componente_id` não nomeia macrorregião nenhuma: quem
-    responde por id desconhecido é o `_EXISTE_COMPONENTE` de sempre, logo adiante.
+    NÃO LEVANTA quando `componente_id` não é id de macrorregião: quem responde
+    por id desconhecido é o `_EXISTE_COMPONENTE` de sempre, logo adiante.
+
+    O ID É `nome|empresa|unidade` (`macrorregiao_cts.id_da_macrorregiao`). É ele
+    que resolve o nome repetido: "Sarapuí" da unidade A e "Sarapuí" da unidade B
+    são duas linhas, e uma nunca encontra a outra. A unidade do id tem de ser a
+    da rota — trocar o id da URL não coloca a macrorregião de outra unidade aqui.
     """
-    membros = await _membros_da_macrorregiao(con, unidade_id, componente_id)
+    partes = macrorregiao_cts.desmontar_id(componente_id)
+    if partes is None:
+        return
+    nome, emp_codigo, unidade_do_id = partes
+    if unidade_do_id != unidade_id:
+        raise TopologiaInvalida(
+            f"A macrorregião {componente_id!r} é da unidade {unidade_do_id!r}, e esta "
+            f"gravação é da unidade {unidade_id!r}."
+        )
+    membros = await _membros_da_macrorregiao(con, unidade_id, nome, emp_codigo)
     if not membros:
         return
-
-    # A CHAVE É O PAR `(sistema_cts, emp_codigo)`, e a linha guarda UM id.
-    #
-    # Duas empresas da unidade com uma macrorregião de mesmo nome são DUAS
-    # macrorregiões, e `cts_operacional.cts` só comporta uma. Somar as duas
-    # juntaria coletores que empresas diferentes operam — e é exatamente o que
-    # aconteceria em silêncio se este recorte não existisse, porque a busca dos
-    # membros é pelo nome.
-    #
-    # A tela nem chega a oferecer um nome assim (`macrorregiao_cts.livres`); a
-    # recusa aqui é para quem chama a rota direto, e para o dia em que a carga
-    # criar a ambiguidade com a lista já aberta.
-    if macrorregiao_cts.nomes_ambiguos(macrorregiao_cts.agrupar(membros)):
-        empresas = sorted({m["emp_codigo"] for m in membros})
-        raise TopologiaInvalida(
-            f"{componente_id!r} é o nome de uma macrorregião em mais de uma "
-            f"empresa da unidade (" + ", ".join(repr(e) for e in empresas) + "). "
-            "São macrorregiões diferentes com o mesmo nome, e o cadastro guarda um "
-            "id só — a origem precisa distingui-las antes de elas serem colocadas."
-        )
 
     # COLISÃO DE NOME. Um coletor do Databricks batizado com o nome de uma
     # macrorregião faria esta gravação colocar O COLETOR onde a tela ofereceu a
@@ -1236,7 +1234,21 @@ async def _preparar_macrorregiao(
         f"""INSERT INTO {_i()}.componentes_cts_capex
                 ({", ".join(COLUNAS_DA_OBRA_NOVA)})
             VALUES ($1, $2, $3) ON CONFLICT (cts, componente) DO NOTHING""",
-        [(componente_id, nome, unidade) for nome, unidade in OBRAS_DA_CTS],
+        [(componente_id, nome_da_obra, unidade) for nome_da_obra, unidade in OBRAS_DA_CTS],
+    )
+    # O NOME VAI PARA A TOPOLOGIA, porque o id já não é o nome. `componente_sistema_nome`
+    # é de onde a tela lê o rótulo de quem está em sistema; um coletor o traz da
+    # carga, a macrorregião não vem de carga nenhuma. A linha nasce sem sistema —
+    # a colocação, logo adiante, preenche `sistema_id` e o jusante por cima.
+    await con.execute(
+        f"""INSERT INTO {_i()}.sistema_topologia
+                (componente_sistema_id, componente_sistema_nome)
+            VALUES ($1, $2)
+            ON CONFLICT (componente_sistema_id) DO UPDATE
+              SET componente_sistema_nome = coalesce(
+                    {_i()}.sistema_topologia.componente_sistema_nome, EXCLUDED.componente_sistema_nome)""",
+        componente_id,
+        nome,
     )
 
     # A TRILHA REGISTRA A CRIAÇÃO, e não treze campos: quem a lê meses depois quer
@@ -1888,7 +1900,8 @@ async def salvar_topologia_em_lote(
         if usa_macro:
             macros = await _nomes_de_macrorregiao(con, unidade_id)
             for componente_id in enviados:
-                if componente_id in antes or componente_id not in macros:
+                partes = macrorregiao_cts.desmontar_id(componente_id)
+                if componente_id in antes or partes is None or partes[0] not in macros:
                     continue
                 await _preparar_macrorregiao(
                     con,

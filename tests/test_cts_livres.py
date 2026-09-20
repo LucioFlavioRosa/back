@@ -157,7 +157,7 @@ def test_com_a_macrorregiao_marcada_as_livres_sao_as_macrorregioes_ja_somadas():
     for m in livres:
         assert m["id"] not in sem_flag
         f = todas[m["id"]]
-        assert f["sisId"] == "" and f["sistemaCts"] == m["id"]
+        assert f["sisId"] == "" and f["sistemaCts"] == m["nome"]
         assert f["membros"], "a soma tem de dizer de quem veio"
         assert all(v == "" for v in f["params"].values())
         assert sorted(f["obrasOverride"]) == ["0", "1", "2", "3"]
