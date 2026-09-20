@@ -377,9 +377,9 @@ async def _macrorregioes_desatualizadas(unidade_id: str) -> list[dict[str, Any]]
             {
                 "tipo": "macrorregiao",
                 "id": g["cts"],
-                "componente": g["cts"],
+                "componente": macrorregiao_cts.nome_da_macrorregiao(g["cts"]),
                 "detalhe": (
-                    f"A ficha da macrorregião {g['cts']} foi somada quando ela foi "
+                    f"A ficha da macrorregião {macrorregiao_cts.nome_da_macrorregiao(g['cts'])} foi somada quando ela foi "
                     f"colocada no sistema, e os coletores mudaram desde então: "
                     f"{quais}. A simulação roda com os números da ficha. Gravar a "
                     f"ficha de novo refaz a soma a partir dos {len(grupo)} coletores "

@@ -855,7 +855,8 @@ async def _membros_por_macrorregiao(unidade_id: str) -> dict[str, list[dict[str,
             SELECT m.macro, o.cts AS id, t.componente_sistema_nome AS nome,
                    o.cidade_id, o.ligacoes_atuais
               FROM macros m
-              JOIN {_i()}.cts_operacional o ON o.sistema_cts = m.macro
+              -- `m.macro` é o id composto (nome|empresa|unidade); o membro guarda só o nome.
+              JOIN {_i()}.cts_operacional o ON o.sistema_cts = split_part(m.macro, '|', 1)
               JOIN {_i()}.cidade_empresa ce
                 ON ce.cidade_id = o.cidade_id AND ce.emp_codigo = m.emp_codigo
               LEFT JOIN {_i()}.sistema_topologia t ON t.componente_sistema_id = o.cts
@@ -1095,7 +1096,8 @@ async def cts(unidade_id: str, incluir_livres: bool = False) -> dict[str, Any]:
             # próprio id — ela É o sistema CTS, e a coluna dela fica nula por não
             # ser membro de si mesma (migração 021). Vazio num coletor que a
             # origem não pôs em macrorregião nenhuma.
-            "sistemaCts": ficha.get("sistema_cts") or (cid if ficha.get("e_macrorregiao") else ""),
+            "sistemaCts": ficha.get("sistema_cts")
+            or (macrorregiao_cts.nome_da_macrorregiao(cid) if ficha.get("e_macrorregiao") else ""),
             # OS COLETORES QUE A SOMA CONTÉM, com as ligações de cada um. É o que
             # permite CONFERIR a macrorregião em vez de acreditar nela: sem isto a
             # ficha somada é um número, e uma macrorregião de 29 coletores é

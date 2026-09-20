@@ -119,6 +119,14 @@ def test_duas_unidades_colocam_cada_uma_a_sua_macrorregiao_de_mesmo_nome():
             # E o rótulo que a tela mostra é o nome, não o id.
             assert all(l["componente_sistema_nome"] == "Sarapuí" for l in linhas)
 
+            # 3b. A ficha da colocada traz os SEUS dois coletores e o nome como sistema CTS —
+            # o que permite conferir a soma em vez de acreditar nela.
+            for uni, id_ in ((a, id_a), (b, id_b)):
+                ficha = (await cadastro.cts(uni["unidade"]))["ctss"][id_]
+                assert ficha["sistemaCts"] == "Sarapuí" and ficha["nome"] == "Sarapuí"
+                assert sorted(m["id"] for m in ficha["membros"]) == [
+                    f"{P}{uni['unidade'][len(P):-4]}_cts1", f"{P}{uni['unidade'][len(P):-4]}_cts2"]
+
             # 4. Colocada, some da lista de livres de cada uma — e só dela.
             assert await cadastro._macrorregioes_livres(a["unidade"]) == []
             assert await cadastro._macrorregioes_livres(b["unidade"]) == []
