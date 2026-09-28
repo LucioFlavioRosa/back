@@ -511,20 +511,40 @@ async def contrato(unidade_id: str) -> dict[str, Any]:
     return {"cidades": cidades, "metas": metas, "fator": fator}
 
 
-def _ticket(linha: dict[str, Any]) -> str:
-    """Receita media mensal por ligacao — o `ticket` do bloco `db`.
+#: O DENOMINADOR DO TICKET E O UNIVERSO, e nao as ligacoes atuais.
+#:
+#: Defeito relatado pelo dono do produto em 28/09/2026. As duas pontas da divisao tem
+#: de ter o MESMO escopo: a receita da coluna e a de AGUA da sub-bacia inteira — de
+#: todas as ligacoes que faturam agua, o `QTD_LIGACOES_TOTAL` da origem —, enquanto
+#: `ligacoes_atuais` e a base JA ATENDIDA com esgoto. Dividir a receita de todos pelo
+#: subconjunto atendido inflava o ticket por 1/cobertura. O motor foi corrigido no
+#: mesmo dia, nos dois lugares em que derivava o ticket.
+LIGACOES_DO_TICKET = "universo_ligacoes"
+
+#: AS DUAS BASES DE RECEITA -> as duas chaves do bloco `db`. A rodada escolhe uma
+#: (`BASE_RECEITA`, faturada ou arrecadada) e o motor deriva o ticket dela; a tela do
+#: Cadastro nao conhece essa escolha, e por isso mostra AS DUAS. Um ticket so, mudo,
+#: contradiria metade das rodadas.
+#:
+#: `ticket` continua sendo o da ARRECADADA — e o padrao da rodada, e a chave que o
+#: front original (`:8080`) ja le. `ticketFat` e a nova.
+TICKETS = {"ticket": "receita_arrecadada_media_mensal",
+           "ticketFat": "receita_faturada_media_mensal"}
+
+
+def _ticket(linha: dict[str, Any], coluna_receita: str) -> str:
+    """Receita media mensal por ligacao — os `ticket*` do bloco `db`.
 
     NAO e coluna: e conta, e por isso eu a tinha esquecido. O tipo `SubBaciaDb` do
     front declara `ticket: string` e a tela o mostra entre as medidas do
     Databricks; sem ele o campo chega `undefined` e vira um input sem valor.
 
-    Base ARRECADADA, e nao faturada: e o que de fato entrou, ja refletindo
-    inadimplencia — a mesma escolha que o notebook chama de recomendada. Sem
-    ligacoes atuais nao ha divisao, e o campo sai vazio (nunca zero, que afirmaria
-    ticket nulo onde a conta nao existe).
+    O denominador e `LIGACOES_DO_TICKET` — leia o porque la. Sem universo de
+    ligacoes nao ha divisao, e o campo sai vazio (nunca zero, que afirmaria ticket
+    nulo onde a conta nao existe).
     """
-    receita = linha.get("receita_arrecadada_media_mensal")
-    ligacoes = linha.get("ligacoes_atuais")
+    receita = linha.get(coluna_receita)
+    ligacoes = linha.get(LIGACOES_DO_TICKET)
     if receita is None or not ligacoes:
         return ""
     return pt_br(round(float(receita) / float(ligacoes), 2))
@@ -535,7 +555,7 @@ def _ficha_coleta(linha: dict[str, Any], chave: str) -> dict[str, Any]:
     # `pt_br`: a ficha lida tem de poder ser reenviada sem tradução no meio.
     db_bloco = {v: pt_br(linha[k]) for k, v in COLETA.items() if v in DO_DATABRICKS}
     params = {v: pt_br(linha[k]) for k, v in COLETA.items() if v not in DO_DATABRICKS}
-    db_bloco["ticket"] = _ticket(linha)
+    db_bloco.update({chave: _ticket(linha, coluna) for chave, coluna in TICKETS.items()})
     # AS `*_com_cts`, SÓ NA SUB-BACIA: a CTS não tem essas colunas, e `COLETA` é a
     # ficha das duas. Vão no bloco `db` como o `ticket` — a tela mostra, o `PUT`
     # não as exige nem as grava (ver `campos.SO_DA_SUBBACIA`).

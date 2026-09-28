@@ -25,7 +25,7 @@ U = os.environ.get("UNIDADE", "u1")
 # Transcrito de `src/cadastro/domain/` — contrato.ts, subbacia.ts, cts.ts, ete.ts.
 ESPERADO = {
     "db":      ["fat","arr","ligU","ligA","ligN","ligUInd","ligAInd","fatInd","arrInd",
-                "ecoU","ecoA","ecoN","ticket"],
+                "ecoU","ecoA","ecoN","ticket","ticketFat"],
     "unidReg": ["rid","rnome","uid","unome","waccMedio"],
     "empH":    ["id","nome"],
     "cidadeH": ["id","nome","empId"],

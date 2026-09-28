@@ -55,9 +55,10 @@ DO_DATABRICKS = {
 #: O que a ficha de coleta DEVE trazer em cada bloco. É o contrato do front
 #: (`SubBaciaDb` / `SubBaciaParams`), e é o que torna o PUT uma substituição de
 #: ficha inteira em vez de um patch — ver `dominio.ficha.exigir_ficha_inteira`.
-#: `ticket` fica de FORA: ele e derivado (receita/ligacoes), nao tem coluna, e o
-#: PUT nao o grava. Exigi-lo no corpo obrigaria o cliente a devolver uma conta que
-#: o servidor mesmo fez.
+#: OS `ticket*` FICAM DE FORA: `ticket` (arrecadada) e `ticketFat` (faturada) sao
+#: derivados (receita ÷ `universo_ligacoes`), nao tem coluna, e o PUT nao os grava.
+#: Exigi-los no corpo obrigaria o cliente a devolver uma conta que o servidor mesmo
+#: fez. Ver `repositorios.cadastro.TICKETS`.
 CAMPOS_DB = sorted(DO_DATABRICKS)
 
 

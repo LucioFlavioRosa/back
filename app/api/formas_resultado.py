@@ -114,6 +114,11 @@ class ParametrosRodada(BaseModel):
     #: tela precisa dele para nao comparar dois planos medidos em moedas
     #: diferentes como se fossem o mesmo numero.
     unidadeCobertura: str | None = None
+    #: QUANTOS ANOS O PLANO SOMA — o horizonte, nao a janela de CAPEX. Opcional
+    #: porque a LISTA do historico sai de `otim_vw_historico`, que nao tem a coluna;
+    #: o detalhe da rodada sai de `otim_meta`, que tem. A tela usa para dizer
+    #: "Receita no horizonte (24 anos)" em vez de um total sem regua.
+    anosHorizonte: int | None = None
 
 
 class MetricasCapa(BaseModel):

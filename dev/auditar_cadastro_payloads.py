@@ -21,7 +21,7 @@ from typing import Any
 BASE = "http://localhost:8000/api"
 UID = "uB1"
 
-DB_KEYS = ["fat", "arr", "ligU", "ligA", "ligN", "ligUInd", "ligAInd", "fatInd", "arrInd", "ecoU", "ecoA", "ecoN", "ticket"]
+DB_KEYS = ["fat", "arr", "ligU", "ligA", "ligN", "ligUInd", "ligAInd", "fatInd", "arrInd", "ecoU", "ecoA", "ecoN", "ticket", "ticketFat"]
 PARAM_KEYS = ["preco", "tarr", "ramp", "vaz", "vazInd", "pot", "popU", "popA"]
 OBRA_KEYS = ["nome", "un", "qtd", "preco", "opex", "tPred", "dur", "anoObrig", "proibAte", "wacc"]
 OBRA_PEND_KEYS = ["qtd", "preco", "opex", "tPred", "dur", "anoObrig", "proibAte"]
