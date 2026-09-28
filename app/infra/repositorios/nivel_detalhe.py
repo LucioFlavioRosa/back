@@ -13,6 +13,49 @@ from app.infra import db
 from app.infra.repositorios import cascata as casc
 
 
+#: A LINHA DO TEMPO DE UMA OBRA, em quatro fases:
+#:
+#:   predecessoras -> execucao -> espera ate a cobranca -> ramp-up da adesao
+#:
+#: Tres dessas datas o motor calcula e grava: o inicio da execucao (`data_inicio`), a
+#: conclusao (`data_pronta`) e o inicio do faturamento (`data_inicio_faturamento`). A
+#: quarta — o inicio das predecessoras — NAO existe no motor: `tempo_predecessoras` e um
+#: PISO ("esta obra nao pode comecar antes do mes N"), e nao uma janela agendada. A data
+#: que sai aqui e derivada, ancorando o fim do intervalo no inicio da execucao, que e a
+#: leitura util para quem planeja: licenca e mobilizacao terminam quando a obra comeca.
+#: Por isso ela vem com nome proprio (`inicioPredecessoras`) e nao se mistura com as
+#: outras tres.
+def _mes_antes(aaaa_mm: str | None, meses: int | None) -> str | None:
+    """'2035-10' menos 7 meses -> '2035-03'. `None` em qualquer entrada ausente."""
+    if not aaaa_mm or not meses:
+        return aaaa_mm
+    try:
+        ano, mes = int(str(aaaa_mm)[:4]), int(str(aaaa_mm)[5:7])
+    except (ValueError, IndexError):
+        return None
+    total = ano * 12 + (mes - 1) - int(meses)
+    return f"{total // 12:04d}-{total % 12 + 1:02d}"
+
+
+def _fases(l: dict[str, Any]) -> dict[str, Any]:
+    """As quatro fases da linha de `otim_obra`.
+
+    `lag_meses` e `maturacao_meses` SO SAEM NA OBRA DE COLETA. Nas demais eles carregam
+    o default da classe `Obra` (1 e 2), que nao veio do cadastro e nao quer dizer nada:
+    uma EEE nao tem "tempo ate a cobranca". Mostrar o default seria inventar dado de
+    planejamento — e é o tipo de numero que alguem soma.
+    """
+    coleta = bool(l.get("eh_coleta"))
+    return {
+        "prazoMeses": l["prazo_meses"],
+        "mesesPredecessoras": l["prazo_inicio_meses"],
+        "inicioPredecessoras": _mes_antes(l["data_inicio"], l["prazo_inicio_meses"]),
+        "mesesAteCobranca": l["lag_meses"] if coleta else None,
+        "dataInicioFaturamento": l["data_inicio_faturamento"] if coleta else None,
+        "mesesRampUp": l["maturacao_meses"] if coleta else None,
+    }
+
+
 async def obras(
     run_id: str,
     situacao: str | None = None,
@@ -110,7 +153,17 @@ async def obras(
     linhas = await db.buscar(
         f"""SELECT o.obra_id, o.componente, o.responsavel, o.construida,
                    o.cidade, o.no, o.capex, o.quantidade, o.unidade,
+                   o.preco_unitario,
                    o.data_inicio, o.data_pronta, o.prazo_meses,
+                   -- AS QUATRO FASES DA OBRA, na ordem em que acontecem:
+                   -- predecessoras -> execucao -> espera da cobranca -> ramp-up.
+                   o.prazo_inicio_meses, o.lag_meses, o.maturacao_meses,
+                   o.data_inicio_faturamento,
+                   -- `faturando` so NAO e nulo na obra-ancora de coleta, e e por ela
+                   -- que se sabe se `lag_meses`/`maturacao_meses` querem dizer algo:
+                   -- nas demais eles sao o DEFAULT da classe `Obra` (1 e 2), e nao
+                   -- dado do cadastro. Ver o mapeamento abaixo.
+                   (o.faturando IS NOT NULL) AS eh_coleta,
                    -- O MESMO `CASE` que particiona o cronograma. Vem na linha
                    -- para a lista e a planilha poderem dizer POR QUE cada obra
                    -- esta no plano sem refazer a regra do lado do cliente.
@@ -145,7 +198,9 @@ async def obras(
                 "quantidade": l["quantidade"],
                 "unidade": l["unidade"],
                 "anoInicio": int(str(l["data_inicio"])[:4]) if l["data_inicio"] else None,
-                "prazoMeses": l["prazo_meses"],
+                "precoUnitario": l["preco_unitario"],
+                "dataInicio": l["data_inicio"],
+                **_fases(l),
             }
             for l in linhas
         ],
