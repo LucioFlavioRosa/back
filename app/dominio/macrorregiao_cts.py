@@ -36,10 +36,11 @@ A décima terceira é somada ao NASCER e não entra no alarme de divergência: v
 O RECORTE RESIDENCIAL soma ENTRE MEMBROS, e nunca se soma ao total: ele já está
 dentro de `ligacoes_atuais`. É parcela apurada, não estimativa.
 
-## `ticket` não está aqui, e é de propósito
+## os `ticket*` não estão aqui, e é de propósito
 
-`ticket` é conta — `receita_arrecadada ÷ ligacoes_atuais` —, feita na leitura da
-ficha (`repositorios/cadastro.py`). Agregadas a receita e as ligações, o ticket do
+`ticket` (arrecadada) e `ticketFat` (faturada) são conta — a receita ÷ as ligações
+TOTAIS (`universo_ligacoes`) —, feita na leitura da ficha
+(`repositorios/cadastro.py`). Agregadas a receita e as ligações, o ticket do
 conjunto sai certo sozinho. Recalculá-lo aqui criaria a segunda definição da mesma
 divisão, para envelhecer em ritmo diferente da primeira.
 """

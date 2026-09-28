@@ -132,7 +132,7 @@ etapa 3, já que a macrorregião não vem de carga nenhuma.
 | `universo_populacao`, `populacao_atual` | Regional preenche |
 | as 4 obras | Regional preenche |
 | `cidade_id` | a do membro com mais ligações |
-| `ticket` | derivado na leitura (arrecadada ÷ ligações) — não é coluna |
+| `ticket`, `ticketFat` | derivados na leitura (arrecadada / faturada ÷ ligações totais) — não são coluna |
 
 A fronteira não é arbitrária: **soma-se o que o Databricks MEDE sobre uma área**,
 porque a área da macrorregião é a união das áreas dos membros. **Preenche-se o
