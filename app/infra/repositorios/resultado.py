@@ -434,6 +434,13 @@ async def meta(run_id: str) -> dict[str, Any] | None:
             "baseReceita": (linha.get("params_extra") or {}).get("BASE_RECEITA"),
             "usarCts": (linha.get("params_extra") or {}).get("USAR_CTS"),
             "janelaCapex": linha.get("anos_capex"),
+            #: QUANTOS ANOS O PLANO SOMA. Não é a janela de CAPEX (`anos_capex`, os
+            #: anos em que uma obra pode COMEÇAR): é o horizonte inteiro, e é por ele
+            #: que a receita e o OPEX totais são somados. Sem isso na tela, o KPI de
+            #: Receita é um número sem régua — uma usuária somou a receita de um ano à
+            #: mão e não reconheceu o total de 24 anos (28/09/2026). Vem de `m.*`, que
+            #: a consulta acima já traz inteiro: nenhuma coluna nova, nenhuma migração.
+            "anosHorizonte": linha.get("anos_horizonte"),
             "orcamento": linha.get("orcamento_total"),
             "focoCobertura": linha.get("foco_cobertura"),
             "coberturaSoResidencial": (linha.get("params_extra") or {}).get("COBERTURA_SO_RESIDENCIAL"),
