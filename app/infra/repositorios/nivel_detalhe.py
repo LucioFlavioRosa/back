@@ -7,6 +7,7 @@ Mais a lista paginada de obras, que é a mesma leitura sem o recorte da árvore.
 Saiu de `niveis.py`, com o vocabulário comum em `cascata.py`.
 """
 
+import re
 from typing import Any
 
 from app.infra import db
@@ -25,15 +26,30 @@ from app.infra.repositorios import cascata as casc
 #: leitura util para quem planeja: licenca e mobilizacao terminam quando a obra comeca.
 #: Por isso ela vem com nome proprio (`inicioPredecessoras`) e nao se mistura com as
 #: outras tres.
+#: 'AAAA-MM' — o formato em que o motor grava mes. O mes vai de 01 a 12: sem isso,
+#: '2035-13' viraria uma data normal, e errada.
+_AAAA_MM = re.compile(r"(?P<ano>\d{4})-(?P<mes>0[1-9]|1[0-2])")
+
+
 def _mes_antes(aaaa_mm: str | None, meses: int | None) -> str | None:
-    """'2035-10' menos 7 meses -> '2035-03'. `None` em qualquer entrada ausente."""
+    """'2035-10' menos 7 meses -> '2035-03'. `None` quando nao da para calcular.
+
+    RECUSA O QUE NAO E 'AAAA-MM'. A conversao ingenua (`int(s[:4])`, `int(s[5:7])`)
+    aceitava '2035-13' e devolvia '2035-12' — uma data plausivel e errada, que e o
+    pior desfecho possivel num numero de planejamento. E recusa o resultado fora do
+    calendario: com um prazo maior que a ancora, a conta caia em ano negativo e
+    devolvia '-001-12', texto que parece data e nao segue o contrato 'AAAA-MM'.
+
+    Achado pela revisao do Codex em 28/09/2026.
+    """
     if not aaaa_mm or not meses:
         return aaaa_mm
-    try:
-        ano, mes = int(str(aaaa_mm)[:4]), int(str(aaaa_mm)[5:7])
-    except (ValueError, IndexError):
+    m = _AAAA_MM.fullmatch(str(aaaa_mm).strip())
+    if not m:
         return None
-    total = ano * 12 + (mes - 1) - int(meses)
+    total = int(m["ano"]) * 12 + (int(m["mes"]) - 1) - int(meses)
+    if total < 0:
+        return None
     return f"{total // 12:04d}-{total % 12 + 1:02d}"
 
 

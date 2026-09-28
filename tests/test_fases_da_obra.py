@@ -26,6 +26,27 @@ def test_o_mes_anterior_atravessa_a_virada_do_ano():
     assert _mes_antes("2026-01", 1) == "2025-12"
 
 
+def test_mes_fora_do_calendario_nao_vira_data_plausivel():
+    """Achado pela revisao do Codex em 28/09/2026. A conversao ingenua aceitava
+    '2035-13' e devolvia '2035-12' — uma data NORMAL e errada, que e o pior desfecho
+    num numero de planejamento: ninguem desconfia dela."""
+    assert _mes_antes("2035-13", 1) is None
+    assert _mes_antes("2035-00", 1) is None
+    assert _mes_antes("2035-1", 1) is None       # sem o zero a esquerda nao e o formato
+    assert _mes_antes("35-10", 1) is None
+    assert _mes_antes("2035-10-15", 1) is None   # data completa nao e mes
+
+
+def test_antes_do_ano_zero_devolve_nada_em_vez_de_ano_negativo():
+    """Com prazo maior que a ancora a conta caia em ano negativo e devolvia
+    '-001-12' — texto que parece data e nao segue o contrato 'AAAA-MM'."""
+    assert _mes_antes("0000-01", 1) is None
+    assert _mes_antes("0001-01", 24) is None
+    assert _mes_antes("2035-10", 50_000) is None
+    # e o limite continua valendo
+    assert _mes_antes("0000-02", 1) == "0000-01"
+
+
 def test_sem_data_ou_sem_prazo_nao_inventa():
     assert _mes_antes(None, 7) is None
     assert _mes_antes("2035-10", None) == "2035-10"  # prazo zero/ausente: não desloca
