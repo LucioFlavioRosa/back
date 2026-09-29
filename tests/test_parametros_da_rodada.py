@@ -244,6 +244,24 @@ class TestCtsNaCobertura:
         assert montar(usar_cts=True, cts_na_cobertura=False)["CTS_NA_COBERTURA"] is False
         assert montar(usar_cts=True, cts_na_cobertura=True)["CTS_NA_COBERTURA"] is True
 
+    def test_A_AUSENCIA_E_A_FORMA_COMPATIVEL_e_o_front_conta_com_isso(self):
+        """O par do teste do front, deste lado — a revisão do Codex apontou que faltava.
+
+        `ausente = conta` é o contrato com o motor, e é por isso que o front OMITE o
+        default em vez de mandar `true` (`simulacao.ts`, `corpoDaRodada`). Sem esta
+        asserção aqui, alguém poderia passar a exigir a chave no backend e o front
+        continuaria omitindo — e a rodada nasceria sem o recorte que o pedido não pediu.
+
+        Também não pode aparecer por conta própria: ela entra no digest, e uma chave que
+        viaja sempre faz um pedido idêntico a uma rodada antiga ter outro digest.
+        """
+        # O caminho do front hoje: quem não mexeu no botão manda um corpo SEM o campo.
+        assert "CTS_NA_COBERTURA" not in montar(usar_cts=True)
+        # E o backend continua aceitando `true` explícito — de um cliente antigo, ou de um
+        # script. Não é erro; só não é o que o front manda, e por isso não deduplica com
+        # rodada anterior à feature.
+        assert montar(usar_cts=True, cts_na_cobertura=True)["CTS_NA_COBERTURA"] is True
+
     def test_NAO_viaja_quando_ninguem_pediu(self):
         """Ausente = conta, que é o comportamento das 127 rodadas já publicadas.
 
