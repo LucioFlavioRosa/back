@@ -15,6 +15,8 @@ Duas regras não óbvias, e são elas que estes testes guardam:
    ("não começa antes do mês N"), não uma janela agendada; a data sai ancorando o fim
    do intervalo no início da execução.
 """
+import inspect
+
 import pytest
 
 from app.infra.repositorios.nivel_detalhe import _fases, _mes_antes
@@ -131,3 +133,32 @@ def test_onde_a_conta_ja_fecha_o_terreno_sai_nulo():
     de abrir uma coluna de zeros."""
     assert _capex_terreno({"quantidade": 2173.08, "preco_unitario": 392.11, "capex": 852086.3988}) is None
     assert _capex_terreno({"quantidade": None, "preco_unitario": 1, "capex": 1}) is None
+
+
+def test_A_PAGINA_E_O_TOTAL_CONTAM_A_MESMA_COISA():
+    """As duas consultas da lista de obras têm de agrupar IGUAL.
+
+    A rodada publicada é imutável, então `total` e a página não podem discordar: se o
+    total contasse menos linhas do que a página traz, a tela esconderia obra; se
+    contasse mais, pediria uma página vazia e o usuário veria "acabou" onde não acabou.
+
+    Enquanto eram dois `GROUP BY` escritos à mão, o da página tinha 15 colunas e o do
+    total 3. Nenhuma rodada do banco chegou a divergir — bastariam dois módulos da mesma
+    ETE com `lag_meses` diferente —, e o teste é contra a próxima coluna que alguém
+    acrescentar num dos dois e esquecer no outro.
+    """
+    from app.infra.repositorios import nivel_detalhe as nd
+
+    fonte = inspect.getsource(nd.obras)
+    # Uma constante, usada nas duas — e não um literal em cada.
+    assert fonte.count("GROUP BY {AGRUPAMENTO}") == 2
+    assert "GROUP BY" not in fonte.replace("GROUP BY {AGRUPAMENTO}", "")
+
+    # E a constante agrupa por tudo o que a página seleciona sem agregar: se uma coluna
+    # nova entrar no SELECT fora de SUM/MIN/MAX, o Postgres recusa a consulta — este
+    # teste não substitui isso, e guarda o que o Postgres não vê: que é UMA definição.
+    assert "split_part(o.obra_id, '#', 1)" in nd.AGRUPAMENTO
+    assert "o.componente = 'ete_mod'" in nd.AGRUPAMENTO
+    # As datas entram no agrupamento: módulos agendados em meses diferentes se separam
+    # em vez de a linha fundida mentir uma data só.
+    assert "o.data_inicio" in nd.AGRUPAMENTO and "o.data_pronta" in nd.AGRUPAMENTO
