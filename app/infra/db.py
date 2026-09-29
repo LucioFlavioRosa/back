@@ -206,6 +206,11 @@ _EXIGIDO_COLUNA = [
     #: E a 018: sem `cidade_id` a lista de CTS sem sistema nao tem como ser
     #: recortada, e `GET /hierarquia` responde 500 na consulta.
     ("input", "cts_operacional", "cidade_id", "018_onde_a_cts_esta.sql"),
+    #: A 024. Sem ela, `_CADASTRO_ALTERADO_EM` seleciona `carregado_em` e o
+    #: `POST /runs` responde 500 na deduplicacao — que e o caminho de criacao
+    #: inteiro do produto. UMA das quatro tabelas basta na checagem: a migracao
+    #: altera as quatro na mesma transacao, entao ou todas tem a coluna ou nenhuma.
+    ("input", "subbacia_operacional", "carregado_em", "024_a_carga_carimba.sql"),
 ]
 
 

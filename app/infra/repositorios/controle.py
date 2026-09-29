@@ -161,10 +161,24 @@ def digest(params: dict[str, Any]) -> str:
     return hashlib.sha256(bruto.encode("utf-8")).hexdigest()
 
 
-#: A última vez que alguém gravou QUALQUER ficha do cadastro desta unidade.
+#: A última vez que o cadastro desta unidade FOI ESCRITO — por quem for.
 #:
 #: Existe por causa da dedupe de rodada CONCLUÍDA, e é o que a torna correta. Ver
-#: `rodada_identica`. As colunas vêm de `migracoes/006_auditoria_cadastro.sql`.
+#: `rodada_identica`.
+#:
+#: DUAS COLUNAS POR FICHA, e o `max()` de fora é o maior das duas:
+#:
+#:   `atualizado_em`   a gravação HUMANA, pelo `PUT` da ficha. Nulo quer dizer "nunca
+#:                     foi salva pela tela", e é o que o cabeçalho da ficha mostra
+#:                     (`migracoes/006_auditoria_cadastro.sql`).
+#:   `carregado_em`    QUALQUER escrita, carimbada por trigger — é o único jeito de
+#:                     alcançar a carga da planilha e o SQL solto, que não passam por
+#:                     código deste repositório
+#:                     (`migracoes/024_a_carga_carimba.sql`).
+#:
+#: Antes da 024 a conta usava só a primeira, e depois de uma carga a dedupe devolvia
+#: uma rodada calculada sobre os dados ANTERIORES, sem aviso. As linhas que já existiam
+#: têm `carregado_em` nulo de propósito: a migração não inventa que o cadastro mudou.
 _CADASTRO_ALTERADO_EM = """
 WITH cidades AS (%CIDADES%),
 sistemas AS (%SISTEMAS%),
@@ -174,19 +188,19 @@ comps AS (
       JOIN sistemas s USING (sistema_id)
 )
 SELECT max(quando) AS em FROM (
-    SELECT max(b.atualizado_em)
+    SELECT max(GREATEST(b.atualizado_em, b.carregado_em))
       FROM {i}.subbacia_operacional b JOIN comps c ON c.id = b.sub_bacia
     UNION ALL
     -- A CTS entra por `comps` como qualquer componente da topologia. Pelo par
     -- com a sub-bacia, a data de uma CTS colocada num sistema de OUTRA unidade
     -- contava para esta, e a de uma CTS sem par nao contava para nenhuma.
-    SELECT max(o.atualizado_em)
+    SELECT max(GREATEST(o.atualizado_em, o.carregado_em))
       FROM {i}.cts_operacional o JOIN comps c ON c.id = o.cts
     UNION ALL
-    SELECT max(e.atualizado_em)
+    SELECT max(GREATEST(e.atualizado_em, e.carregado_em))
       FROM {i}.ete_capex e JOIN comps c ON c.id = e.ete_id
     UNION ALL
-    SELECT max(o.atualizado_em)
+    SELECT max(GREATEST(o.atualizado_em, o.carregado_em))
       FROM {i}.cidade_operacional o JOIN cidades c USING (cidade_id)
 ) t(quando)
 """.replace("%CIDADES%", CIDADES_DA_UNIDADE).replace("%SISTEMAS%", SISTEMAS_DA_UNIDADE)
