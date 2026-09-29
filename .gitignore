@@ -10,3 +10,6 @@ venv/
 
 # Artefatos de build do `pip install -e .` (o pyproject passou a existir).
 *.egg-info/
+
+# Relatorios de revisao do Codex: saida de ferramenta, nao codigo do backend.
+relatorio-codex-*.md
