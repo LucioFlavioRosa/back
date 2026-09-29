@@ -285,7 +285,10 @@ async def cronograma_de_obras(run_id: str) -> dict[str, Any]:
         f"""SELECT {casc.ANO_SQL} AS ano,
                    {casc.RECORTE_SQL} AS recorte,
                    o.componente,
-                   COUNT(*) AS obras,
+                   -- CONTA OBRA, e nao linha de `otim_obra`: o modal desta barra lista
+                   -- os modulos da mesma ETE numa linha so, e `COUNT(*)` fazia a barra
+                   -- dizer 91 onde o modal mostrava 83. Ver `casc.CHAVE_DA_LINHA`.
+                   {casc.OBRAS_CONTADAS} AS obras,
                    COALESCE(SUM(o.capex), 0) AS capex
               FROM {casc.esquema()}.otim_obra o
              WHERE o.run_id = $1 AND {casc.SO_OBRA} AND {casc.TEM_ANO}

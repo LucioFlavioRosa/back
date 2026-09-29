@@ -31,12 +31,9 @@ from app.infra.repositorios import cascata as casc
 _AAAA_MM = re.compile(r"(?P<ano>\d{4})-(?P<mes>0[1-9]|1[0-2])")
 
 
-#: OS MÓDULOS DE UMA MESMA ETE VIRAM UMA LINHA SÓ.
-#:
-#: No modo faseado — o único que a tela dispara — cada módulo é uma OBRA própria
-#: (`ete_x#m1`, `#m2`…), e a lista de obras mostrava a mesma ETE repetida três, quatro
-#: vezes com "1 módulo" cada. Nos demais elementos uma obra traz a quantidade dela
-#: (2.173,08 m de rede), e a ETE segue a mesma lógica: uma obra, N módulos.
+#: OS MÓDULOS DE UMA MESMA ETE VIRAM UMA LINHA SÓ — a definição e o porquê estão em
+#: `cascata.CHAVE_DA_LINHA`, com quem CONTA obras. Aqui ficam as consequências para ESTA
+#: lista.
 #:
 #: O PACOTE DA ETE NOVA (`#nova`) E A EXPANSÃO DELA (`#x{k}`) SE FUNDEM TAMBÉM, e está
 #: certo — é a mesma ETE, e a linha diz quantos módulos ela tem. Conferido no banco:
@@ -53,10 +50,7 @@ _AAAA_MM = re.compile(r"(?P<ano>\d{4})-(?P<mes>0[1-9]|1[0-2])")
 #: só passou a ser possível com a ETE nova faseada. Se aparecer, a saída é agrupar por
 #: ANO em vez de data — não por prefixo só, que juntaria módulos de anos diferentes numa
 #: lista que é de um ano.
-_CHAVE_DA_LINHA = (
-    "CASE WHEN o.componente = 'ete_mod' THEN split_part(o.obra_id, '#', 1)"
-    "     ELSE o.obra_id END"
-)
+_CHAVE_DA_LINHA = casc.CHAVE_DA_LINHA
 
 #: O AGRUPAMENTO, UM SÓ PARA AS DUAS CONSULTAS da lista de obras — a da página e a do
 #: total. Elas precisam contar a MESMA coisa: a rodada é imutável, e se discordassem a

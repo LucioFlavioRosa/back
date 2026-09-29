@@ -324,6 +324,35 @@ def elementos_por_ano(linhas: list[dict[str, Any]]) -> list[dict[str, Any]]:
 #: do plano de execução.
 SO_OBRA = "o.status <> 'N/A'"
 
+#: UMA ETE COM N MÓDULOS É UMA OBRA, e não N. No modo faseado cada módulo é uma linha
+#: própria em `otim_obra` (`ete_x#m1`, `#m2`, `#nova`, `#x1`…), e a lista de obras
+#: mostrava a mesma ETE repetida três, quatro vezes com "1 módulo" cada — enquanto uma
+#: rede aparece numa linha com a quantidade dela. Decisão do dono do produto: a ETE segue
+#: a mesma lógica dos demais elementos.
+#:
+#: ESTA É A DEFINIÇÃO, E ELA VALE PARA CONTAR TAMBÉM. `nivel_detalhe.obras` agrupa por
+#: esta chave, então TODA contagem de obras que o usuário possa comparar com aquela lista
+#: tem de contar chaves distintas, e não linhas de `otim_obra` — senão a barra do
+#: cronograma diz 91 e o modal dela lista 83, que foi o que aconteceu. Use
+#: `OBRAS_CONTADAS` no SQL e `chave_da_linha` no Python.
+CHAVE_DA_LINHA = (
+    "CASE WHEN o.componente = 'ete_mod' THEN split_part(o.obra_id, '#', 1)"
+    "     ELSE o.obra_id END"
+)
+
+#: `COUNT(*)` conta linha de `otim_obra`; este conta OBRA no sentido acima.
+OBRAS_CONTADAS = f"COUNT(DISTINCT {CHAVE_DA_LINHA})"
+
+
+def chave_da_linha(obra_id: str, componente: str | None) -> str:
+    """O mesmo de `CHAVE_DA_LINHA`, para quem conta em Python.
+
+    Duas linguagens, uma regra: o teste `test_a_chave_da_linha_e_a_mesma_no_sql_e_no_python`
+    compara as duas, porque duas cópias de uma definição divergem em silêncio — cada uma
+    continua rodando, e só o número na tela acusa.
+    """
+    return obra_id.split("#")[0] if componente == "ete_mod" else obra_id
+
 #: QUEM EXECUTA, em SQL. A obra de terceiro nao tem CAPEX e nao e decidida pelo
 #: otimizador: ela entra na cadeia como pre-requisito e leva prazo. Tres consultas
 #: precisavam da mesma pergunta e cada uma repetia o `LIKE` — e a divergencia

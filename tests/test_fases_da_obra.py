@@ -190,3 +190,42 @@ def test_A_CONTA_FECHA_NA_LINHA_QUE_FUNDE_O_PACOTE_COM_A_EXPANSAO():
     assert fundida["quantidade"] * fundida["preco_unitario"] + terreno == pytest.approx(
         fundida["capex"], abs=0.01
     )
+
+
+def test_a_chave_da_linha_e_a_mesma_no_sql_e_no_python():
+    """Duas linguagens, uma regra — e é por isso que ela existe duas vezes.
+
+    O SQL agrupa a lista de obras; o Python conta os chips do cenário anual, que ficam ao
+    lado dessa lista. Duas cópias de uma definição divergem em silêncio: cada uma continua
+    rodando, e só o número na tela acusa. Foi o que aconteceu antes de a contagem seguir o
+    agrupamento — a barra do cronograma dizia 91 e o modal dela listava 83.
+    """
+    from app.infra.repositorios import cascata as casc
+
+    # O que o SQL faz, dito em Python, para os casos que existem no banco.
+    casos = [
+        ("ete_a1e54#m1", "ete_mod", "ete_a1e54"),
+        ("ete_a1e54#m2", "ete_mod", "ete_a1e54"),
+        ("ete_a1e67#nova", "ete_mod", "ete_a1e67"),
+        ("ete_a1e67#x1", "ete_mod", "ete_a1e67"),
+        # `ete` (a ficha, `status='N/A'`) não é `ete_mod` e não se agrupa.
+        ("ete_a1e67", "ete", "ete_a1e67"),
+        ("rede_b2b27_1_2", "rede", "rede_b2b27_1_2"),
+        ("lig_a1b94_1_1", "lig", "lig_a1b94_1_1"),
+        (None and "", None, ""),
+    ][:-1]
+    for obra_id, componente, esperado in casos:
+        assert casc.chave_da_linha(obra_id, componente) == esperado, obra_id
+
+    # E o SQL trata o MESMO par de casos: o `CASE` olha `componente = 'ete_mod'` e corta
+    # no primeiro `#`. Se um dia um dos dois mudar, é aqui que a divergência aparece.
+    assert "o.componente = 'ete_mod'" in casc.CHAVE_DA_LINHA
+    assert "split_part(o.obra_id, '#', 1)" in casc.CHAVE_DA_LINHA
+    assert casc.OBRAS_CONTADAS == f"COUNT(DISTINCT {casc.CHAVE_DA_LINHA})"
+
+    # A contagem da barra do cronograma usa a constante, e não `COUNT(*)`.
+    from app.infra.repositorios import nivel_global as ng
+
+    fonte = inspect.getsource(ng.cronograma_de_obras)
+    assert "{casc.OBRAS_CONTADAS} AS obras" in fonte
+    assert "COUNT(*) AS obras" not in fonte

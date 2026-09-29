@@ -462,8 +462,14 @@ async def cenario_anual(run_id: str) -> dict[str, Any] | None:
     paga = [o for o in obras if o["positivo"]]
     falta_paga = sum(o["capex"] for o in paga)
     falta_toda = sum(o["capex"] for o in obras)
-    obras_paga = len(paga)
-    obras_toda = len(obras)
+    #: CONTA OBRA, e nao linha de `otim_obra`, porque o chip fica ao lado da lista que
+    #: `obras_do_cenario` devolve — e ela agrupa os modulos da mesma ETE numa linha. Com
+    #: `len()` o chip dizia 119 e a lista trazia 112 linhas. Ver `casc.CHAVE_DA_LINHA`.
+    def _conta(ls: list[dict[str, Any]]) -> int:
+        return len({casc.chave_da_linha(o["obra_id"], o["componente"]) for o in ls})
+
+    obras_paga = _conta(paga)
+    obras_toda = _conta(obras)
 
     #: DUAS DISTRIBUICOES, uma por escopo, e nao uma filtrada depois. "So o que
     #: se paga" e um cenario menor: as cotas de cada ano sao outras, e as obras
