@@ -545,6 +545,11 @@ class Sensibilidade(BaseModel):
 # ===========================================================================
 class ObraLinha(BaseModel):
     obraId: str
+    #: Quantas OBRAS esta linha representa. 1 em tudo, menos nos módulos de ETE, que
+    #: vêm FUNDIDOS numa linha só: no modo faseado cada módulo é uma obra própria, e
+    #: a lista repetia a mesma ETE com "1 módulo" em cada linha. Como o detalhe é de
+    #: UMA obra, a tela não oferece link quando isto é maior que 1.
+    obrasAgrupadas: int = 1
     componente: str
     situacao: str
     cidadeId: str | None

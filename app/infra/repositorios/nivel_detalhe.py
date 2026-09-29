@@ -187,20 +187,50 @@ async def obras(
     # front nao tem como distinguir "acabou" de "nao ha nada". Uma rodada
     # publicada e imutavel, entao as duas consultas nao podem discordar.
     filtros = list(args)
+    #: CONTA AS LINHAS AGRUPADAS, e nao as obras: e o numero de que a tela precisa para
+    #: paginar, e com os modulos da ETE fundidos ele deixou de ser um por obra.
+    chave_total = (
+        "CASE WHEN o.componente = 'ete_mod' THEN split_part(o.obra_id, '#', 1)"
+        " ELSE o.obra_id END"
+    )
     total = await db.buscar_um(
-        f"""SELECT COUNT(*) AS total
-              FROM {casc.esquema()}.otim_obra o
-              LEFT JOIN {casc.esquema()}.otim_subbacia s
-                     ON s.run_id = o.run_id AND s.sub_bacia = o.no
-             WHERE {' AND '.join(onde)}""",
+        f"""SELECT COUNT(*) AS total FROM (
+                SELECT 1
+                  FROM {casc.esquema()}.otim_obra o
+                  LEFT JOIN {casc.esquema()}.otim_subbacia s
+                         ON s.run_id = o.run_id AND s.sub_bacia = o.no
+                 WHERE {' AND '.join(onde)}
+                 GROUP BY {chave_total}, o.data_inicio, o.data_pronta
+            ) AS agrupadas""",
         *filtros,
     )
 
     args.extend([tamanho, (pagina - 1) * tamanho])
+    #: OS MÓDULOS DE UMA MESMA ETE VIRAM UMA LINHA SÓ.
+    #:
+    #: No modo faseado — o único que a tela dispara — cada módulo é uma OBRA própria
+    #: (`ete_x#m1`, `#m2`…), e a lista mostrava a mesma ETE repetida três, quatro vezes
+    #: com "1 módulo" cada. Nos demais elementos uma obra traz a quantidade dela
+    #: (2.173,08 m de rede), e a ETE tem de seguir a mesma lógica: uma obra, N módulos.
+    #:
+    #: AGRUPA PELAS DATAS TAMBÉM, e não só pela ETE. Os módulos são obras independentes
+    #: e o otimizador PODE agendá-las em meses diferentes — hoje nunca o faz (conferido:
+    #: 2.105 ETEs com vários módulos no banco, nenhuma com datas distintas), mas se um
+    #: dia fizer, as linhas se separam sozinhas em vez de mentir uma data só.
+    #:
+    #: O pacote da ETE nova (`#nova`) e a expansão dela (`#x{k}`) têm datas diferentes
+    #: por regra — a expansão só começa com o pacote pronto —, então continuam em linhas
+    #: separadas, que é o certo: são decisões distintas.
+    chave = (
+        f"CASE WHEN o.componente = 'ete_mod' THEN split_part(o.obra_id, '#', 1)"
+        f"     ELSE o.obra_id END"
+    )
     linhas = await db.buscar(
-        f"""SELECT o.obra_id, o.componente, o.responsavel, o.construida,
-                   o.cidade, o.no, o.capex, o.quantidade, o.unidade,
-                   o.preco_unitario,
+        f"""SELECT MIN(o.obra_id) AS obra_id, COUNT(*) AS obras_agrupadas,
+                   o.componente, o.responsavel, o.construida,
+                   o.cidade, o.no,
+                   SUM(o.capex) AS capex, SUM(o.quantidade) AS quantidade, o.unidade,
+                   MAX(o.preco_unitario) AS preco_unitario,
                    o.data_inicio, o.data_pronta, o.prazo_meses,
                    -- AS QUATRO FASES DA OBRA, na ordem em que acontecem:
                    -- predecessoras -> execucao -> espera da cobranca -> ramp-up.
@@ -223,6 +253,11 @@ async def obras(
               LEFT JOIN {casc.esquema()}.otim_subbacia s
                      ON s.run_id = o.run_id AND s.sub_bacia = o.no
              WHERE {' AND '.join(onde)}
+             GROUP BY {chave}, o.componente, o.responsavel, o.construida, o.cidade,
+                      o.no, o.unidade, o.data_inicio, o.data_pronta, o.prazo_meses,
+                      o.prazo_inicio_meses, o.lag_meses, o.maturacao_meses,
+                      o.data_inicio_faturamento, (o.faturando IS NOT NULL),
+                      {casc.RECORTE_SQL}, COALESCE(o.sistema, s.sistema), o.status
              ORDER BY {casc.ORDENS.get(ordenar, casc.ORDENS['inicio'])}
              LIMIT ${len(args) - 1} OFFSET ${len(args)}""",
         *args,
@@ -233,6 +268,10 @@ async def obras(
         "itens": [
             {
                 "obraId": l["obra_id"],
+                #: Quantas OBRAS esta linha representa. 1 em tudo, menos nos modulos de
+                #: ETE fundidos — e e por ele que a tela sabe que nao ha uma pagina de
+                #: detalhe para abrir: o detalhe e de UMA obra, e aqui sao varias.
+                "obrasAgrupadas": l["obras_agrupadas"],
                 "componente": casc.nome_componente(l["componente"]),
                 "situacao": casc.situacao(l),
                 "cidadeId": l["cidade"],

@@ -383,10 +383,14 @@ TEM_ANO = (
 )
 
 #: Whitelist — o `ordenar` da querystring escolhe uma ENTRADA, nunca compõe SQL.
+#: A LISTA DE OBRAS E AGRUPADA (os modulos de uma ETE viram uma linha so), entao o
+#: `ORDER BY` so pode usar coluna que esta no `GROUP BY` ou um agregado. `o.obra_id`
+#: nao esta — a chave do grupo e o prefixo —, e por isso o desempate sai por
+#: `MIN(o.obra_id)`, que e o mesmo valor que a linha devolve como `obra_id`.
 ORDENS = {
-    "inicio": "o.data_inicio NULLS LAST, o.obra_id",
-    "capex": "o.capex DESC NULLS LAST, o.obra_id",
-    "cidade": "o.cidade, o.data_inicio NULLS LAST, o.obra_id",
+    "inicio": "o.data_inicio NULLS LAST, MIN(o.obra_id)",
+    "capex": "SUM(o.capex) DESC NULLS LAST, MIN(o.obra_id)",
+    "cidade": "o.cidade, o.data_inicio NULLS LAST, MIN(o.obra_id)",
 }
 
 #: Teto de página. O front pede ESTE teto ao abrir um ano do cronograma, porque
