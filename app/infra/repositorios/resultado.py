@@ -85,7 +85,15 @@ async def historico(
                    SELECT regional,
                           (SELECT u.unidade_id FROM {_i()}.unidade_regional u
                             WHERE u.unidade_name = otim_meta.regional) AS unidade_id,
-                          receita_total, opex_total,
+                          -- SO A RECEITA DAS LIGACOES NOVAS (28/09/2026). `receita_total`
+                          -- desta tabela soma tambem o efeito-base nas rodadas publicadas
+                          -- antes dessa data, e a soma de `otim_ano.receita` da a regra
+                          -- nova para TODAS elas sem republicar nenhuma. Sao ~24 linhas
+                          -- por rodada, com indice em `run_id`.
+                          (SELECT COALESCE(SUM(a.receita), 0)
+                             FROM {_p()}.otim_ano a WHERE a.run_id = otim_meta.run_id)
+                            AS receita_total,
+                          opex_total,
                           params_extra->>'BASE_RECEITA'      AS base_receita_param,
                           (params_extra->>'USAR_CTS')::bool  AS usar_cts,
                           (params_extra->>'FOCO_COBERTURA')::float AS foco_cobertura,
@@ -306,9 +314,9 @@ def _resumo(l: dict[str, Any], favoritas: set[str]) -> dict[str, Any]:
             "coberturaFimPct": l.get("cobertura_final_pct"),
             "metasAtingidas": atingidas,
             "metasTotal": l.get("metas_total"),
-            # EBITDA nominal do plano: receita operacional menos OPEX. Sai do
-            # proprio `otim_meta` para nao precisar somar `otim_ano` por rodada
-            # numa listagem que pode ter centenas de linhas.
+            # EBITDA nominal do plano: receita operacional menos OPEX — e a receita aqui
+            # e so a das ligacoes novas, como no painel e no grafico de EBITDA. Ver a nota
+            # do `SELECT`.
             "ebitdaTotal": (l.get("receita_total") or 0) - (l.get("opex_total") or 0),
         }
     return resumo
@@ -359,7 +367,17 @@ async def tamanho_do_modelo(run_id: str) -> int | None:
 
 async def meta(run_id: str) -> dict[str, Any] | None:
     linha = await db.buscar_um(
-        f"""SELECT m.*, u.unidade_id,
+        f"""SELECT m.*,
+                   -- SO A RECEITA DAS LIGACOES NOVAS, em coluna de NOME PROPRIO e nao
+                   -- sobrescrevendo `m.receita_total` do `m.*` acima: duas colunas do
+                   -- mesmo nome no mesmo SELECT dependem de qual delas o driver mantem, e
+                   -- isso nao e contrato de ninguem. Ver a nota da listagem: a coluna da
+                   -- tabela soma tambem o efeito-base nas rodadas publicadas antes de
+                   -- 28/09/2026, e somar a serie anual aplica a regra nova a todas elas
+                   -- sem republicar nenhuma.
+                   (SELECT COALESCE(SUM(a.receita), 0)
+                      FROM {_p()}.otim_ano a WHERE a.run_id = m.run_id) AS receita_novas,
+                   u.unidade_id,
                    -- ESTA RODADA É PONTO DA ANÁLISE DE OUTRA?
                    --
                    -- A tela precisa saber, e não tinha como. Uma variação é uma
@@ -418,7 +436,8 @@ async def meta(run_id: str) -> dict[str, Any] | None:
             "vpl": cascata.vpl_do_produto(linha.get("vpl"), linha.get("vp_efeito_base")),
             "capexTotal": linha.get("capex_total"),
             "opexTotal": linha.get("opex_total"),
-            "receitaTotal": linha.get("receita_total"),
+            # `receita_novas`, e nao `receita_total`: so conta ligacao nova.
+            "receitaTotal": linha.get("receita_novas"),
             "obrasConstruidas": linha.get("obras_construidas"),
             "obrasTotal": linha.get("obras_total"),
             "obrigatoriasConstruidas": linha.get("obrig_construidas"),
