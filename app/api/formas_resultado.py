@@ -545,6 +545,11 @@ class Sensibilidade(BaseModel):
 # ===========================================================================
 class ObraLinha(BaseModel):
     obraId: str
+    #: Quantas OBRAS esta linha representa. 1 em tudo, menos nos módulos de ETE, que
+    #: vêm FUNDIDOS numa linha só: no modo faseado cada módulo é uma obra própria, e
+    #: a lista repetia a mesma ETE com "1 módulo" em cada linha. Como o detalhe é de
+    #: UMA obra, a tela não oferece link quando isto é maior que 1.
+    obrasAgrupadas: int = 1
     componente: str
     situacao: str
     cidadeId: str | None
@@ -561,7 +566,45 @@ class ObraLinha(BaseModel):
     #: Ano de CONCLUSÃO, 'AAAA-MM'. Para obra de terceiro é a única data que o
     #: motor calcula — e é por ela que a lista de um ano a inclui.
     dataPronta: str | None
+
+    # ------------------------------------------------------------------ o dinheiro
+    #: Preço de uma unidade do elemento (`unidade`). Com `quantidade`, é a
+    #: decomposição do CAPEX: quando a origem manda os dois, eles MANDAM — o motor
+    #: recalcula `capex = quantidade × preco_unitario` e avisa se o informado diverge.
+    precoUnitario: float | None
+    #: O QUE O CAPEX TEM ALÉM DE `quantidade × precoUnitario` — na ETE, o terreno.
+    #: `null` nas demais obras, onde a conta fecha exata. É residual, e não coluna do
+    #: banco: vale em todos os caminhos da ETE sem depender do nome que o motor deu à
+    #: parcela. Com ele a identidade da linha fecha sempre:
+    #: `quantidade × precoUnitario + capexTerreno = capex`.
+    capexTerreno: float | None = None
+
+    # ------------------------------------------------- a linha do tempo, em 4 fases
+    #
+    #   predecessoras -> execução -> espera até a cobrança -> ramp-up da adesão
+    #
+    #: Início da EXECUÇÃO, 'AAAA-MM'. Obra de terceiro não tem: dela o motor só
+    #: calcula a conclusão.
+    dataInicio: str | None
+    #: Duração da execução.
     prazoMeses: int | None
+    #: Licença e mobilização — no motor é um PISO ("não começa antes do mês N"), e
+    #: não uma janela agendada.
+    mesesPredecessoras: int | None
+    #: DERIVADA, ancorando o fim do intervalo no início da execução: licença e
+    #: mobilização terminam quando a obra começa. O motor não modela essa data.
+    inicioPredecessoras: str | None
+    #: SÓ NA OBRA DE COLETA (a âncora de receita). Nas demais é `null`, e não o
+    #: default da classe do motor — uma EEE não tem "tempo até a cobrança".
+    mesesAteCobranca: int | None
+    #: Quando a sub-bacia passa a faturar, 'AAAA-MM'. Só na obra de coleta.
+    dataInicioFaturamento: str | None
+    #: Maturação da adesão (curva S). Só na obra de coleta.
+    mesesRampUp: int | None
+    #: Quando a adesão amadurece e a cobrança fica PLENA, 'AAAA-MM' — o início do
+    #: faturamento mais a maturação. Só na obra de coleta. O ramp-up COMEÇA com a
+    #: cobrança: a curva de adesão corre a partir do mês em que ela passa a faturar.
+    dataCobrancaPlena: str | None = None
 
 
 class ObrasPagina(BaseModel):

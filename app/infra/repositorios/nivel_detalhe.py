@@ -7,10 +7,146 @@ Mais a lista paginada de obras, que é a mesma leitura sem o recorte da árvore.
 Saiu de `niveis.py`, com o vocabulário comum em `cascata.py`.
 """
 
+import re
 from typing import Any
 
 from app.infra import db
 from app.infra.repositorios import cascata as casc
+
+
+#: A LINHA DO TEMPO DE UMA OBRA, em quatro fases:
+#:
+#:   predecessoras -> execucao -> espera ate a cobranca -> ramp-up da adesao
+#:
+#: Tres dessas datas o motor calcula e grava: o inicio da execucao (`data_inicio`), a
+#: conclusao (`data_pronta`) e o inicio do faturamento (`data_inicio_faturamento`). A
+#: quarta — o inicio das predecessoras — NAO existe no motor: `tempo_predecessoras` e um
+#: PISO ("esta obra nao pode comecar antes do mes N"), e nao uma janela agendada. A data
+#: que sai aqui e derivada, ancorando o fim do intervalo no inicio da execucao, que e a
+#: leitura util para quem planeja: licenca e mobilizacao terminam quando a obra comeca.
+#: Por isso ela vem com nome proprio (`inicioPredecessoras`) e nao se mistura com as
+#: outras tres.
+#: 'AAAA-MM' — o formato em que o motor grava mes. O mes vai de 01 a 12: sem isso,
+#: '2035-13' viraria uma data normal, e errada.
+_AAAA_MM = re.compile(r"(?P<ano>\d{4})-(?P<mes>0[1-9]|1[0-2])")
+
+
+#: OS MÓDULOS DE UMA MESMA ETE VIRAM UMA LINHA SÓ — a definição e o porquê estão em
+#: `cascata.CHAVE_DA_LINHA`, com quem CONTA obras. Aqui ficam as consequências para ESTA
+#: lista.
+#:
+#: O PACOTE DA ETE NOVA (`#nova`) E A EXPANSÃO DELA (`#x{k}`) SE FUNDEM TAMBÉM, e está
+#: certo — é a mesma ETE, e a linha diz quantos módulos ela tem. Conferido no banco:
+#: `ete_a1e67` sai com `nova+x1`, 5 módulos, e a conta fecha
+#: (5 × 304.362,82 + 1.094.966,47 de terreno = 2.616.780,57, com o terreno igual ao do
+#: pacote sozinho).
+#:
+#: O QUE AINDA NÃO TEM RESPOSTA: quando a ETE nova É construída, o pacote e a expansão
+#: têm datas diferentes por regra — a expansão só começa com o pacote pronto —, e então
+#: viram DUAS linhas. Em anos diferentes isso não aparece, porque o modal lista um ano
+#: só; se as duas caírem no MESMO ano, a mesma ETE sai duas vezes ("4 módulos" e "1
+#: módulo") e a tabela não mostra mais data para distinguir uma da outra. Nenhuma das
+#: 125 rodadas do banco tem esse caso (existe um único `#x1`, e não construído), e ele
+#: só passou a ser possível com a ETE nova faseada. Se aparecer, a saída é agrupar por
+#: ANO em vez de data — não por prefixo só, que juntaria módulos de anos diferentes numa
+#: lista que é de um ano.
+_CHAVE_DA_LINHA = casc.CHAVE_DA_LINHA
+
+#: O AGRUPAMENTO, UM SÓ PARA AS DUAS CONSULTAS da lista de obras — a da página e a do
+#: total. Elas precisam contar a MESMA coisa: a rodada é imutável, e se discordassem a
+#: tela pediria uma página que não existe ou esconderia obra que existe. Enquanto eram
+#: dois `GROUP BY` escritos à mão, o da página tinha 15 colunas e o do total 3 — nenhuma
+#: rodada do banco chegou a divergir, mas bastaria dois módulos da mesma ETE com
+#: `lag_meses` diferente.
+#:
+#: Agrupa pelas DATAS também, e não só pela ETE: os módulos são obras independentes e o
+#: otimizador PODE agendá-las em meses diferentes, e aí as linhas se separam sozinhas em
+#: vez de uma delas mentir a data das outras. Também é o que mantém cada linha no ANO a
+#: que ela pertence — esta lista é a de um ano, e juntar módulos de 2028 com os de 2031
+#: esconderia obra de um dos dois anos.
+#:
+#: `o.construida` no agrupamento é o que separa a ETE candidata da construída, e é por
+#: coluna própria, não por sorte de data: conferido no banco, as 2.317 ETEs que saem em
+#: duas linhas saem uma por situação, nunca duas na mesma.
+AGRUPAMENTO = (
+    f"{_CHAVE_DA_LINHA}, o.componente, o.responsavel, o.construida, o.cidade,"
+    " o.no, o.unidade, o.data_inicio, o.data_pronta, o.prazo_meses,"
+    " o.prazo_inicio_meses, o.lag_meses, o.maturacao_meses,"
+    " o.data_inicio_faturamento, (o.faturando IS NOT NULL),"
+    f" {casc.RECORTE_SQL}, COALESCE(o.sistema, s.sistema), o.status"
+)
+
+
+def _mes_antes(aaaa_mm: str | None, meses: int | None) -> str | None:
+    """'2035-10' menos 7 meses -> '2035-03'. `None` quando nao da para calcular.
+
+    RECUSA O QUE NAO E 'AAAA-MM'. A conversao ingenua (`int(s[:4])`, `int(s[5:7])`)
+    aceitava '2035-13' e devolvia '2035-12' — uma data plausivel e errada, que e o
+    pior desfecho possivel num numero de planejamento. E recusa o resultado fora do
+    calendario: com um prazo maior que a ancora, a conta caia em ano negativo e
+    devolvia '-001-12', texto que parece data e nao segue o contrato 'AAAA-MM'.
+
+    Achado pela revisao do Codex em 28/09/2026.
+    """
+    if not aaaa_mm or not meses:
+        return aaaa_mm
+    m = _AAAA_MM.fullmatch(str(aaaa_mm).strip())
+    if not m:
+        return None
+    total = int(m["ano"]) * 12 + (int(m["mes"]) - 1) - int(meses)
+    if total < 0:
+        return None
+    return f"{total // 12:04d}-{total % 12 + 1:02d}"
+
+
+def _mes_depois(aaaa_mm: str | None, meses: int | None) -> str | None:
+    """'2029-09' mais 7 meses -> '2030-04'. O par de `_mes_antes`, e recusa o mesmo
+    que ela: o que nao e 'AAAA-MM' volta `None` em vez de virar data plausivel."""
+    if not aaaa_mm or not meses:
+        return aaaa_mm
+    m = _AAAA_MM.fullmatch(str(aaaa_mm).strip())
+    if not m:
+        return None
+    total = int(m["ano"]) * 12 + (int(m["mes"]) - 1) + int(meses)
+    return f"{total // 12:04d}-{total % 12 + 1:02d}"
+
+
+def _capex_terreno(l: dict[str, Any]) -> float | None:
+    """O que o CAPEX tem ALEM de `quantidade x preco_unitario` — na ETE, o terreno.
+
+    E residual, e nao coluna: vale em todos os caminhos (pacote da ETE nova, modo
+    modular) sem depender do nome que o motor deu a parcela no `capex_componentes`.
+    Nas demais obras a conta fecha exata e isto sai `None`, que e o que a tela precisa
+    para nao abrir uma coluna de zeros.
+    """
+    q, pu, cap = l.get("quantidade"), l.get("preco_unitario"), l.get("capex")
+    if q is None or pu is None or cap is None:
+        return None
+    resto = float(cap) - float(q) * float(pu)
+    return resto if abs(resto) > 0.01 else None
+
+
+def _fases(l: dict[str, Any]) -> dict[str, Any]:
+    """As quatro fases da linha de `otim_obra`.
+
+    `lag_meses` e `maturacao_meses` SO SAEM NA OBRA DE COLETA. Nas demais eles carregam
+    o default da classe `Obra` (1 e 2), que nao veio do cadastro e nao quer dizer nada:
+    uma EEE nao tem "tempo ate a cobranca". Mostrar o default seria inventar dado de
+    planejamento — e é o tipo de numero que alguem soma.
+    """
+    coleta = bool(l.get("eh_coleta"))
+    #: O RAMP-UP COMECA COM A COBRANCA: a curva de adesao corre a partir do mes em que
+    #: a sub-bacia passa a faturar, e a cobranca PLENA e o fim dela.
+    inicio_fat = l["data_inicio_faturamento"] if coleta else None
+    return {
+        "prazoMeses": l["prazo_meses"],
+        "mesesPredecessoras": l["prazo_inicio_meses"],
+        "inicioPredecessoras": _mes_antes(l["data_inicio"], l["prazo_inicio_meses"]),
+        "mesesAteCobranca": l["lag_meses"] if coleta else None,
+        "dataInicioFaturamento": inicio_fat,
+        "mesesRampUp": l["maturacao_meses"] if coleta else None,
+        "dataCobrancaPlena": _mes_depois(inicio_fat, l["maturacao_meses"]) if coleta else None,
+    }
 
 
 async def obras(
@@ -98,19 +234,39 @@ async def obras(
     # publicada e imutavel, entao as duas consultas nao podem discordar.
     filtros = list(args)
     total = await db.buscar_um(
-        f"""SELECT COUNT(*) AS total
-              FROM {casc.esquema()}.otim_obra o
-              LEFT JOIN {casc.esquema()}.otim_subbacia s
-                     ON s.run_id = o.run_id AND s.sub_bacia = o.no
-             WHERE {' AND '.join(onde)}""",
+        f"""SELECT COUNT(*) AS total FROM (
+                SELECT 1
+                  FROM {casc.esquema()}.otim_obra o
+                  LEFT JOIN {casc.esquema()}.otim_subbacia s
+                         ON s.run_id = o.run_id AND s.sub_bacia = o.no
+                 WHERE {' AND '.join(onde)}
+                 GROUP BY {AGRUPAMENTO}
+            ) AS agrupadas""",
         *filtros,
     )
 
     args.extend([tamanho, (pagina - 1) * tamanho])
+    #: `MIN(o.obra_id)` é o id da linha: no grupo de um elemento só — todos, menos os
+    #: módulos de ETE — é o próprio `obra_id`, e é por ele que a tela abre o detalhe.
+    #: No grupo fundido ele é o primeiro módulo, e `obras_agrupadas` acima de 1 avisa a
+    #: quem exibe que não há detalhe para abrir. `MAX(preco_unitario)` porque o unitário
+    #: é o MESMO valor repetido em cada módulo — somá-lo multiplicaria o preço.
     linhas = await db.buscar(
-        f"""SELECT o.obra_id, o.componente, o.responsavel, o.construida,
-                   o.cidade, o.no, o.capex, o.quantidade, o.unidade,
+        f"""SELECT MIN(o.obra_id) AS obra_id, COUNT(*) AS obras_agrupadas,
+                   o.componente, o.responsavel, o.construida,
+                   o.cidade, o.no,
+                   SUM(o.capex) AS capex, SUM(o.quantidade) AS quantidade, o.unidade,
+                   MAX(o.preco_unitario) AS preco_unitario,
                    o.data_inicio, o.data_pronta, o.prazo_meses,
+                   -- AS QUATRO FASES DA OBRA, na ordem em que acontecem:
+                   -- predecessoras -> execucao -> espera da cobranca -> ramp-up.
+                   o.prazo_inicio_meses, o.lag_meses, o.maturacao_meses,
+                   o.data_inicio_faturamento,
+                   -- `faturando` so NAO e nulo na obra-ancora de coleta, e e por ela
+                   -- que se sabe se `lag_meses`/`maturacao_meses` querem dizer algo:
+                   -- nas demais eles sao o DEFAULT da classe `Obra` (1 e 2), e nao
+                   -- dado do cadastro. Ver o mapeamento abaixo.
+                   (o.faturando IS NOT NULL) AS eh_coleta,
                    -- O MESMO `CASE` que particiona o cronograma. Vem na linha
                    -- para a lista e a planilha poderem dizer POR QUE cada obra
                    -- esta no plano sem refazer a regra do lado do cliente.
@@ -123,6 +279,7 @@ async def obras(
               LEFT JOIN {casc.esquema()}.otim_subbacia s
                      ON s.run_id = o.run_id AND s.sub_bacia = o.no
              WHERE {' AND '.join(onde)}
+             GROUP BY {AGRUPAMENTO}
              ORDER BY {casc.ORDENS.get(ordenar, casc.ORDENS['inicio'])}
              LIMIT ${len(args) - 1} OFFSET ${len(args)}""",
         *args,
@@ -133,6 +290,10 @@ async def obras(
         "itens": [
             {
                 "obraId": l["obra_id"],
+                #: Quantas OBRAS esta linha representa. 1 em tudo, menos nos modulos de
+                #: ETE fundidos — e e por ele que a tela sabe que nao ha uma pagina de
+                #: detalhe para abrir: o detalhe e de UMA obra, e aqui sao varias.
+                "obrasAgrupadas": l["obras_agrupadas"],
                 "componente": casc.nome_componente(l["componente"]),
                 "situacao": casc.situacao(l),
                 "cidadeId": l["cidade"],
@@ -145,7 +306,10 @@ async def obras(
                 "quantidade": l["quantidade"],
                 "unidade": l["unidade"],
                 "anoInicio": int(str(l["data_inicio"])[:4]) if l["data_inicio"] else None,
-                "prazoMeses": l["prazo_meses"],
+                "precoUnitario": l["preco_unitario"],
+                "capexTerreno": _capex_terreno(l),
+                "dataInicio": l["data_inicio"],
+                **_fases(l),
             }
             for l in linhas
         ],
