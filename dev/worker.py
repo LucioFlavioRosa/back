@@ -602,6 +602,23 @@ def executar(run_id: str, tempo: int) -> None:
             "o recorte."
         )
 
+    # A CTS NA COBERTURA: mesma guarda de compatibilidade do recorte residencial, e as
+    # duas metades importam do mesmo jeito.
+    #
+    #   pedido "conta" (o default)  omitir e seguro: e o comportamento do motor antigo.
+    #   pedido "NAO conta"          FALHAR. Omitir devolveria uma cobertura que INCLUI a
+    #                               CTS numa rodada que promete o contrario — numero
+    #                               plausivel e errado, que e o pior desfecho.
+    cts_na_cob = bool(p.get("CTS_NA_COBERTURA", True))
+    if "cts_na_cobertura" in _parametros_aceitos(M.ler_banco):
+        extras["cts_na_cobertura"] = cts_na_cob
+    elif not cts_na_cob:
+        raise RuntimeError(
+            "esta rodada pede a CTS FORA da cobertura, e o pacote do otimizador carregado "
+            "nesta maquina nao tem esse parametro (`ler_banco` sem `cts_na_cobertura`). "
+            "Atualize o pacote ou refaca a rodada com a CTS contando na cobertura."
+        )
+
     abas = C.abas_do_postgres(R.PG)
     cen = M.ler_banco(
         abas,

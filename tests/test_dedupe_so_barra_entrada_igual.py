@@ -35,6 +35,7 @@ PEDIDO = {
     "USUARIO": "lucio.rosa",
     "BASE_RECEITA": "arrecadada",
     "USAR_CTS": True,
+    "CTS_NA_COBERTURA": True,
     "COBERTURA_SO_RESIDENCIAL": False,
     "CURVA_ADOCAO": "scurve",
     "DATA_INICIO": [1, 2026],
@@ -55,6 +56,9 @@ OUTRO_VALOR = {
     "USUARIO": "outra.pessoa",
     "BASE_RECEITA": "faturada",
     "USAR_CTS": False,
+    # Duas rodadas que diferem só nisto NÃO são a mesma simulação: a cobertura muda, e com
+    # ela a faixa de paridade e a tarifa recorrente da cidade.
+    "CTS_NA_COBERTURA": False,
     "COBERTURA_SO_RESIDENCIAL": True,
     "CURVA_ADOCAO": "linear",
     "DATA_INICIO": [7, 2026],
