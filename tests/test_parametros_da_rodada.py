@@ -128,23 +128,41 @@ class TestAnosExtraConclusao:
 
 
 class TestEte:
-    """O tratamento da ETE sai da FICHA dela, e nao da rodada.
+    """QUAL ETE e nova sai da FICHA; QUE O MODO E FASEADO sai do pedido.
 
-    ETE com terreno e numero de modulos informados e NOVA: entra como pacote unico,
-    sem faseamento. A que ja existe e expandida em modulos conforme a vazao passa da
-    capacidade ociosa. O motor decide isso por ETE.
+    ETE com terreno e numero de modulos informados e NOVA: entra como PACOTE INICIAL e
+    ganha modulos de expansao se a vazao pedir. A que ja existe e expandida em modulos
+    conforme a vazao passa da capacidade ociosa. O motor decide qual e qual por ETE, e
+    e por isso que `ETE_FIXO` nao viaja.
 
-    CUIDADO: aqui a receita das metas nao se aplica. La, apagar o parametro dava o
-    comportamento certo porque o default do motor ja era ele. Aqui o default de
-    `ete_faseada` e False — a chave sumir do `params` esta certo, mas quem executa
-    tem de AFIRMAR True. Ver `dev/worker.py`.
+    `ETE_FASEADA` PASSOU A VIAJAR em 29/09/2026, e o teste mudou de sentido. A regra
+    antiga era "quem afirma True e o executor" — e dois executores nao a cumpriam igual:
+    o `dev/worker.py` afirmava, o `job_databricks` nao (por regra propria: "chave ausente
+    nao vira default do job") e o `ler_banco` defaulta False. O mesmo pedido rodava
+    faseado no local e nao-faseado em producao, e sem o modo NINGUEM fatura — 142
+    sub-bacias e R$ 744 mi de receita com True, zero e R$ 0,00 com False, medido na uA1.
     """
 
-    @pytest.mark.parametrize("campo", ["ete_faseada", "ete_fixo"])
     @pytest.mark.parametrize("valor", [True, False])
-    def test_nao_viram_parametro(self, campo, valor):
-        assert "ETE_FASEADA" not in montar(**{campo: valor})
-        assert "ETE_FIXO" not in montar(**{campo: valor})
+    def test_ETE_FIXO_nao_vira_parametro(self, valor):
+        """O modo fixo continua fora: quem decide e a ficha da ETE."""
+        assert "ETE_FIXO" not in montar(ete_fixo=valor)
+        assert "ETE_FIXO" not in montar(ete_faseada=valor)
+
+    def test_ETE_FASEADA_VIAJA_E_E_SEMPRE_TRUE(self):
+        """Afirmado no pedido, para os dois executores lerem a MESMA fonte."""
+        assert montar()["ETE_FASEADA"] is True
+
+    @pytest.mark.parametrize("valor", [True, False])
+    def test_a_tela_NAO_pode_desligar_o_faseamento(self, valor):
+        """Nem mandando `ete_faseada=False` no corpo.
+
+        Sem o modo o motor recusa a receita de toda sub-bacia do sistema, e uma rodada
+        com receita zero nao e uma escolha que a tela deva oferecer. Se um dia o produto
+        quiser comparar os dois modos, o caminho e passar a aceitar o campo aqui — e
+        entao ele ja entra no digest da deduplicacao, porque viaja no pedido.
+        """
+        assert montar(ete_faseada=valor)["ETE_FASEADA"] is True
 
 
 class TestRepasseDireto:

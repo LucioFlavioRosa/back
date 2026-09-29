@@ -91,11 +91,36 @@ def test_a_concluida_so_conta_se_o_cadastro_nao_mudou_depois():
     """A condição que impede a dedupe de violar a R1.
 
     Os mesmos parâmetros de TELA não são a mesma simulação se o CADASTRO mudou no
-    meio: a rodada de ontem leu preços e obras que não são os de hoje. A conta usa
-    `atualizado_em`, que só existe desde a auditoria por ficha.
+    meio: a rodada de ontem leu preços e obras que não são os de hoje.
     """
     assert "solicitado_em > COALESCE(" in FONTE
     assert "atualizado_em" in FONTE
+
+
+def test_A_CARGA_TAMBEM_CONTA_COMO_ALTERACAO_DO_CADASTRO():
+    """A conta olha as DUAS colunas, e sem a segunda ela era cega para a carga.
+
+    `atualizado_em` é carimbado só pelo `PUT` da ficha. Carga da planilha e SQL solto
+    não passam por código deste repositório e não carimbavam nada — então, depois de uma
+    carga, pedir a mesma simulação devolvia a rodada ANTIGA, com resultado calculado
+    sobre os dados anteriores e sem aviso. E sem saída pela tela: `/reexecutar` recusa
+    rodada publicada.
+
+    `carregado_em` é carimbado por TRIGGER em toda escrita
+    (`migracoes/024_a_carga_carimba.sql`), e é o único jeito de alcançar a carga do
+    Databricks. `GREATEST` porque o Postgres ignora nulo nela — a coluna vazia das
+    linhas que já existiam não apaga a data humana.
+
+    Conferido contra o banco em 29/09/2026: um `UPDATE` que não toca na auditoria move a
+    data de 2026-08-11 para agora, e a mesma rodada deixa de ser reaproveitada.
+    """
+    assert "carregado_em" in FONTE
+    assert FONTE.count("GREATEST(") == 4, "as quatro fichas têm de olhar as duas colunas"
+    # E `atualizado_em` NÃO pode ser carimbado pela carga: ele é a gravação humana que o
+    # cabeçalho da ficha mostra, e nulo ali quer dizer "nunca foi salva pela tela".
+    migracao = Path("migracoes/024_a_carga_carimba.sql").read_text(encoding="utf-8")
+    assert "NEW.carregado_em := now()" in migracao
+    assert "NEW.atualizado_em" not in migracao
 
 
 def test_erro_continua_liberando_execucao_nova():

@@ -614,16 +614,23 @@ def executar(run_id: str, tempo: int) -> None:
         foco_cobertura=float(p.get("FOCO_COBERTURA", 1.0)),
         penalidade_cobertura=p.get("PENALIDADE_COBERTURA", "meta+cobertura"),
         anos_extra_conclusao=int(p.get("ANOS_EXTRA_CONCLUSAO", 3)),
-        # SEMPRE True, e a linha NAO pode sumir. O default de `ete_faseada` no
-        # motor e False, entao omitir o argumento desligaria o tratamento por
-        # modulos em silencio — o oposto do que a regra pede. Aqui a receita das
-        # metas (apagar o parametro e deixar o default agir) faria o contrario.
+        # VEM DO PEDIDO desde 29/09/2026, com default True para os pedidos ANTIGOS.
+        #
+        # Antes esta linha era `ete_faseada=True` fixo, e era a unica coisa que
+        # garantia o modo — o `job_databricks` nao afirmava nada e caia no default
+        # False do `ler_banco`, entao o MESMO pedido rodava faseado aqui e
+        # nao-faseado em producao. Agora `montar_params` afirma `ETE_FASEADA: True`
+        # no pedido, e os dois executores leem a mesma fonte.
+        #
+        # O DEFAULT TRUE NAO PODE SUMIR: os pedidos gravados antes dessa data nao
+        # tem a chave, e todos eles rodaram faseado aqui. Cair no default False do
+        # motor os faria rodar outro problema num retry.
         #
         # `True` nao impoe faseamento a ETE NOVA: dentro deste modo o motor separa
-        # os dois casos por ETE. Nova (terreno + modulos informados) vira UMA obra
-        # de pacote unico; existente vira K modulos incrementais conforme a vazao
-        # passa da folga.
-        ete_faseada=True,
+        # os dois casos por ETE. Nova (terreno + modulos informados) vira o pacote
+        # inicial, mais modulos de expansao se a vazao pedir; existente vira K
+        # modulos incrementais conforme a vazao passa da folga.
+        ete_faseada=bool(p.get("ETE_FASEADA", True)),
         # OS SEIS ABAIXO NAO ERAM REPASSADOS. A tela os oferece, o corpo os envia,
         # o banco os grava — e este worker os descartava, entao o motor rodava com
         # o default. `ete_fixo` e `peso_cidade` eram escolha do usuario que nao
