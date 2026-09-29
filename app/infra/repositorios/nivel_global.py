@@ -31,7 +31,12 @@ async def existe(run_id: str) -> bool:
 # ---------------------------------------------------------------- nível global
 async def painel(run_id: str) -> dict[str, Any]:
     anos = await db.buscar(
-        f"""SELECT ano, capex, opex, receita_total AS receita,
+        # `receita`, E NAO `receita_total`: so conta receita de LIGACAO NOVA (decisao do
+        # dono do produto, 28/09/2026). `receita_total` das rodadas publicadas ANTES dessa
+        # data soma tambem o efeito-base — a base ja atendida passando a pagar a nova
+        # paridade —, que e receita que apareceria sem o plano. Ler a coluna separada
+        # aplica a regra nova as 134 rodadas antigas tambem, sem republicar nenhuma.
+        f"""SELECT ano, capex, opex, receita AS receita,
                    CASE WHEN dentro_janela_capex THEN teto_capex END AS teto_capex
               FROM {casc.esquema()}.otim_ano WHERE run_id = $1 ORDER BY ano""",
         run_id,
@@ -186,17 +191,28 @@ async def ebitda(run_id: str, cidade: str | None = None) -> dict[str, Any]:
     `otim_subbacia_ano`, porque não existe tabela de EBITDA por cidade.
     """
     if cidade is None:
+        # RECALCULADO de `receita - opex`, e nao lido de `otim_ano.ebitda`: a coluna
+        # gravada inclui o efeito-base nas rodadas publicadas antes de 28/09/2026, e o
+        # EBITDA tem de sair da mesma receita que o painel mostra. Idem a margem.
         linhas = await db.buscar(
-            f"""SELECT ano, ebitda, ebitda_margem_pct AS margem
+            f"""SELECT ano, receita - opex AS ebitda,
+                       CASE WHEN receita > 0
+                            THEN ROUND(((receita - opex) / receita * 100)::numeric, 1)
+                       END AS margem
                   FROM {casc.esquema()}.otim_ano WHERE run_id = $1 ORDER BY ano""",
             run_id,
         )
     else:
         linhas = await db.buscar(
-            f"""SELECT ano, SUM(ebitda) AS ebitda,
-                       CASE WHEN SUM(receita_direta + receita_indireta + efeito_base) > 0
-                            THEN ROUND((SUM(ebitda) / NULLIF(SUM(receita_direta
-                                 + receita_indireta + efeito_base), 0) * 100)::numeric, 1)
+            # SEM `efeito_base`, nem no EBITDA nem no denominador da margem — ver a nota
+            # do ramo sem cidade. `receita_direta + receita_indireta` e a receita das
+            # ligacoes novas rateada por sub-bacia.
+            f"""SELECT ano,
+                       SUM(receita_direta + receita_indireta - opex_rateado) AS ebitda,
+                       CASE WHEN SUM(receita_direta + receita_indireta) > 0
+                            THEN ROUND((SUM(receita_direta + receita_indireta - opex_rateado)
+                                 / NULLIF(SUM(receita_direta + receita_indireta), 0)
+                                 * 100)::numeric, 1)
                        END AS margem
                   FROM {casc.esquema()}.otim_subbacia_ano
                  WHERE run_id = $1 AND cidade = $2
