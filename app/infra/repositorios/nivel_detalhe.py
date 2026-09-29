@@ -38,9 +38,21 @@ _AAAA_MM = re.compile(r"(?P<ano>\d{4})-(?P<mes>0[1-9]|1[0-2])")
 #: vezes com "1 módulo" cada. Nos demais elementos uma obra traz a quantidade dela
 #: (2.173,08 m de rede), e a ETE segue a mesma lógica: uma obra, N módulos.
 #:
-#: O pacote da ETE nova (`#nova`) e a expansão dela (`#x{k}`) NÃO se fundem: as datas
-#: diferem por regra — a expansão só começa com o pacote pronto — e são decisões
-#: distintas.
+#: O PACOTE DA ETE NOVA (`#nova`) E A EXPANSÃO DELA (`#x{k}`) SE FUNDEM TAMBÉM, e está
+#: certo — é a mesma ETE, e a linha diz quantos módulos ela tem. Conferido no banco:
+#: `ete_a1e67` sai com `nova+x1`, 5 módulos, e a conta fecha
+#: (5 × 304.362,82 + 1.094.966,47 de terreno = 2.616.780,57, com o terreno igual ao do
+#: pacote sozinho).
+#:
+#: O QUE AINDA NÃO TEM RESPOSTA: quando a ETE nova É construída, o pacote e a expansão
+#: têm datas diferentes por regra — a expansão só começa com o pacote pronto —, e então
+#: viram DUAS linhas. Em anos diferentes isso não aparece, porque o modal lista um ano
+#: só; se as duas caírem no MESMO ano, a mesma ETE sai duas vezes ("4 módulos" e "1
+#: módulo") e a tabela não mostra mais data para distinguir uma da outra. Nenhuma das
+#: 125 rodadas do banco tem esse caso (existe um único `#x1`, e não construído), e ele
+#: só passou a ser possível com a ETE nova faseada. Se aparecer, a saída é agrupar por
+#: ANO em vez de data — não por prefixo só, que juntaria módulos de anos diferentes numa
+#: lista que é de um ano.
 _CHAVE_DA_LINHA = (
     "CASE WHEN o.componente = 'ete_mod' THEN split_part(o.obra_id, '#', 1)"
     "     ELSE o.obra_id END"
@@ -54,9 +66,14 @@ _CHAVE_DA_LINHA = (
 #: `lag_meses` diferente.
 #:
 #: Agrupa pelas DATAS também, e não só pela ETE: os módulos são obras independentes e o
-#: otimizador PODE agendá-las em meses diferentes — hoje nunca o faz (conferido em 2.105
-#: ETEs de vários módulos, nenhuma com datas distintas) —, e nesse dia as linhas se
-#: separam sozinhas em vez de mentir uma data só.
+#: otimizador PODE agendá-las em meses diferentes, e aí as linhas se separam sozinhas em
+#: vez de uma delas mentir a data das outras. Também é o que mantém cada linha no ANO a
+#: que ela pertence — esta lista é a de um ano, e juntar módulos de 2028 com os de 2031
+#: esconderia obra de um dos dois anos.
+#:
+#: `o.construida` no agrupamento é o que separa a ETE candidata da construída, e é por
+#: coluna própria, não por sorte de data: conferido no banco, as 2.317 ETEs que saem em
+#: duas linhas saem uma por situação, nunca duas na mesma.
 AGRUPAMENTO = (
     f"{_CHAVE_DA_LINHA}, o.componente, o.responsavel, o.construida, o.cidade,"
     " o.no, o.unidade, o.data_inicio, o.data_pronta, o.prazo_meses,"

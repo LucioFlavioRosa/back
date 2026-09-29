@@ -162,3 +162,31 @@ def test_A_PAGINA_E_O_TOTAL_CONTAM_A_MESMA_COISA():
     # As datas entram no agrupamento: módulos agendados em meses diferentes se separam
     # em vez de a linha fundida mentir uma data só.
     assert "o.data_inicio" in nd.AGRUPAMENTO and "o.data_pronta" in nd.AGRUPAMENTO
+
+
+def test_A_CONTA_FECHA_NA_LINHA_QUE_FUNDE_O_PACOTE_COM_A_EXPANSAO():
+    """O pacote da ETE nova (`#nova`) e a expansão dela (`#x1`) caem na MESMA linha.
+
+    Eles têm o mesmo `componente` (`ete_mod`) e o mesmo prefixo, então a consolidação os
+    junta sempre que as datas coincidem. Está certo — é a mesma ETE, e a linha diz
+    quantos módulos ela tem —, mas o comentário do código afirmava o contrário, e o que
+    garante que a fusão não mente é a conta fechar sobre as SOMAS.
+
+    Números reais de `ete_a1e67` na rodada `run_20260928_212514_faa350`: o pacote traz 4
+    módulos e o terreno (R$ 2.312.417,75) e a expansão traz 1 módulo (R$ 304.362,82). A
+    linha soma `capex` e `quantidade`, e o unitário é `MAX` — que só vale porque é o
+    mesmo valor em cada módulo (conferido: nenhum grupo do banco tem unitário divergente).
+    """
+    fundida = {"quantidade": 5, "preco_unitario": 304_362.82, "capex": 2_616_780.57}
+    terreno = _capex_terreno(fundida)
+
+    # O terreno sai como resíduo, e é o MESMO do pacote sozinho — a expansão não trouxe
+    # terreno nenhum, e a fusão não inventou um.
+    assert terreno == pytest.approx(1_094_966.47, abs=0.01)
+    so_o_pacote = {"quantidade": 4, "preco_unitario": 304_362.82, "capex": 2_312_417.75}
+    assert _capex_terreno(so_o_pacote) == pytest.approx(terreno, abs=0.01)
+
+    # E a identidade que o usuário confere de olho na tela.
+    assert fundida["quantidade"] * fundida["preco_unitario"] + terreno == pytest.approx(
+        fundida["capex"], abs=0.01
+    )
