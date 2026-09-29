@@ -53,6 +53,33 @@ def _mes_antes(aaaa_mm: str | None, meses: int | None) -> str | None:
     return f"{total // 12:04d}-{total % 12 + 1:02d}"
 
 
+def _mes_depois(aaaa_mm: str | None, meses: int | None) -> str | None:
+    """'2029-09' mais 7 meses -> '2030-04'. O par de `_mes_antes`, e recusa o mesmo
+    que ela: o que nao e 'AAAA-MM' volta `None` em vez de virar data plausivel."""
+    if not aaaa_mm or not meses:
+        return aaaa_mm
+    m = _AAAA_MM.fullmatch(str(aaaa_mm).strip())
+    if not m:
+        return None
+    total = int(m["ano"]) * 12 + (int(m["mes"]) - 1) + int(meses)
+    return f"{total // 12:04d}-{total % 12 + 1:02d}"
+
+
+def _capex_terreno(l: dict[str, Any]) -> float | None:
+    """O que o CAPEX tem ALEM de `quantidade x preco_unitario` — na ETE, o terreno.
+
+    E residual, e nao coluna: vale em todos os caminhos (pacote da ETE nova, modo
+    modular) sem depender do nome que o motor deu a parcela no `capex_componentes`.
+    Nas demais obras a conta fecha exata e isto sai `None`, que e o que a tela precisa
+    para nao abrir uma coluna de zeros.
+    """
+    q, pu, cap = l.get("quantidade"), l.get("preco_unitario"), l.get("capex")
+    if q is None or pu is None or cap is None:
+        return None
+    resto = float(cap) - float(q) * float(pu)
+    return resto if abs(resto) > 0.01 else None
+
+
 def _fases(l: dict[str, Any]) -> dict[str, Any]:
     """As quatro fases da linha de `otim_obra`.
 
@@ -62,13 +89,17 @@ def _fases(l: dict[str, Any]) -> dict[str, Any]:
     planejamento — e é o tipo de numero que alguem soma.
     """
     coleta = bool(l.get("eh_coleta"))
+    #: O RAMP-UP COMECA COM A COBRANCA: a curva de adesao corre a partir do mes em que
+    #: a sub-bacia passa a faturar, e a cobranca PLENA e o fim dela.
+    inicio_fat = l["data_inicio_faturamento"] if coleta else None
     return {
         "prazoMeses": l["prazo_meses"],
         "mesesPredecessoras": l["prazo_inicio_meses"],
         "inicioPredecessoras": _mes_antes(l["data_inicio"], l["prazo_inicio_meses"]),
         "mesesAteCobranca": l["lag_meses"] if coleta else None,
-        "dataInicioFaturamento": l["data_inicio_faturamento"] if coleta else None,
+        "dataInicioFaturamento": inicio_fat,
         "mesesRampUp": l["maturacao_meses"] if coleta else None,
+        "dataCobrancaPlena": _mes_depois(inicio_fat, l["maturacao_meses"]) if coleta else None,
     }
 
 
@@ -215,6 +246,7 @@ async def obras(
                 "unidade": l["unidade"],
                 "anoInicio": int(str(l["data_inicio"])[:4]) if l["data_inicio"] else None,
                 "precoUnitario": l["preco_unitario"],
+                "capexTerreno": _capex_terreno(l),
                 "dataInicio": l["data_inicio"],
                 **_fases(l),
             }

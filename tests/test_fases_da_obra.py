@@ -92,3 +92,42 @@ def test_obra_de_terceiro_sem_data_de_inicio_nao_ganha_predecessoras_inventadas(
     f = _fases({**LINHA, "eh_coleta": False, "data_inicio": None})
     assert f["inicioPredecessoras"] is None
     assert f["mesesPredecessoras"] == 7      # a duração continua sendo dado da obra
+
+
+# ------------------------------------------------ o CAPEX do terreno, e a cobrança plena
+from app.infra.repositorios.nivel_detalhe import _capex_terreno, _mes_depois
+
+
+def test_a_cobranca_plena_e_o_fim_do_ramp_up():
+    """O ramp-up COMEÇA com a cobrança e dura a maturação; o fim dele é a cobrança
+    plena. São dois marcos de data, e o usuário confere os dois."""
+    f = _fases({**LINHA, "eh_coleta": True})
+    assert f["dataInicioFaturamento"] == "2038-01"
+    assert f["mesesRampUp"] == 2
+    assert f["dataCobrancaPlena"] == "2038-03"
+
+
+def test_a_obra_que_nao_fatura_nao_tem_cobranca_plena():
+    assert _fases({**LINHA, "eh_coleta": False})["dataCobrancaPlena"] is None
+
+
+def test_o_mes_depois_atravessa_o_ano_e_recusa_o_que_nao_e_mes():
+    assert _mes_depois("2029-12", 1) == "2030-01"
+    assert _mes_depois("2029-01", 24) == "2031-01"
+    assert _mes_depois("2029-13", 1) is None
+    assert _mes_depois(None, 3) is None
+    assert _mes_depois("2029-09", 0) == "2029-09"
+
+
+def test_o_terreno_e_o_que_sobra_do_capex_alem_de_quantidade_vezes_preco():
+    """Na ETE nova o CAPEX inclui o terreno, então `quantidade × preço` não fecha
+    sozinho. O resíduo É o terreno, e sai em coluna própria para a conta fechar:
+    3 módulos × R$ 500.000 + R$ 300.000 = R$ 1.800.000."""
+    assert _capex_terreno({"quantidade": 3, "preco_unitario": 500_000, "capex": 1_800_000}) == 300_000
+
+
+def test_onde_a_conta_ja_fecha_o_terreno_sai_nulo():
+    """Numa rede coletora não há parcela além do unitário — a coluna fica vazia em vez
+    de abrir uma coluna de zeros."""
+    assert _capex_terreno({"quantidade": 2173.08, "preco_unitario": 392.11, "capex": 852086.3988}) is None
+    assert _capex_terreno({"quantidade": None, "preco_unitario": 1, "capex": 1}) is None

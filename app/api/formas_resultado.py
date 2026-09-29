@@ -567,6 +567,12 @@ class ObraLinha(BaseModel):
     #: decomposição do CAPEX: quando a origem manda os dois, eles MANDAM — o motor
     #: recalcula `capex = quantidade × preco_unitario` e avisa se o informado diverge.
     precoUnitario: float | None
+    #: O QUE O CAPEX TEM ALÉM DE `quantidade × precoUnitario` — na ETE, o terreno.
+    #: `null` nas demais obras, onde a conta fecha exata. É residual, e não coluna do
+    #: banco: vale em todos os caminhos da ETE sem depender do nome que o motor deu à
+    #: parcela. Com ele a identidade da linha fecha sempre:
+    #: `quantidade × precoUnitario + capexTerreno = capex`.
+    capexTerreno: float | None = None
 
     # ------------------------------------------------- a linha do tempo, em 4 fases
     #
@@ -590,6 +596,10 @@ class ObraLinha(BaseModel):
     dataInicioFaturamento: str | None
     #: Maturação da adesão (curva S). Só na obra de coleta.
     mesesRampUp: int | None
+    #: Quando a adesão amadurece e a cobrança fica PLENA, 'AAAA-MM' — o início do
+    #: faturamento mais a maturação. Só na obra de coleta. O ramp-up COMEÇA com a
+    #: cobrança: a curva de adesão corre a partir do mês em que ela passa a faturar.
+    dataCobrancaPlena: str | None = None
 
 
 class ObrasPagina(BaseModel):
