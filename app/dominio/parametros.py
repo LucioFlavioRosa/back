@@ -42,6 +42,7 @@ sem relacao visivel com o botao que o usuario apertou.
 __all__ = [
     "CHAVES_DO_JOB",
     "CHAVES_ACEITAS",
+    "ETE_FASEADA_SEMPRE",
     "ParametrosInvalidos",
     "montar_params",
     "mes_ano",
@@ -56,6 +57,21 @@ from typing import Any
 #: uma rodada para que o front possa CLONA-LA, e mandar de volta o `USUARIO`
 #: original faria a rodada nova nascer assinada por outra pessoa.
 CHAVES_DO_JOB = frozenset({"USUARIO", "MAX_TIME_S", "WORKERS"})
+
+#: A RODADA E SEMPRE FASEADA — a regra do produto, numa definicao so.
+#:
+#: `ete_faseada` e o interruptor que faz a ETE existir como MODULOS: a nova entra como
+#: pacote inicial e ganha modulos de expansao se a vazao pedir; a que ja existe e expandida
+#: conforme a demanda. Sem ele a ETE nao vira obra construivel, nunca fica pronta, e o
+#: motor recusa a receita de TODA sub-bacia do sistema — na uA1, 142 sub-bacias faturando e
+#: R$ 744.050.138,78 de receita com `True` contra ZERO e R$ 0,00 com `False` (29/09/2026).
+#:
+#: CONSTANTE, e nao um literal em cada lugar, porque sao DOIS caminhos de criacao: o
+#: `POST /runs` (`montar_params`) e a variacao de sensibilidade, que CLONA os params da
+#: rodada de origem (`variacao.params_da_variacao`) — uma variacao de rodada antiga nascia
+#: sem a chave. Duas copias de uma regra divergem em silencio, e esta ja divergiu: ver o
+#: bloco onde ela e afirmada em `montar_params`.
+ETE_FASEADA_SEMPRE = True
 
 # Espelha `job_databricks.MAPA_PARAMS` + `CHAVES_DO_JOB`. Se o job ganhar um
 # parametro novo e este conjunto nao acompanhar, o backend simplesmente nao
@@ -191,15 +207,15 @@ def montar_params(corpo: dict[str, Any], unidade_id: str, usuario: str) -> dict[
     # parametro o multiplicador e 1 para todas. Mandar `{}` daria no mesmo e
     # sugeriria que ha escolha.
     #
-    # `ETE_FASEADA`/`ETE_FIXO` NAO estao aqui, e a ausencia e regra de negocio: o
-    # tratamento da ETE sai da FICHA dela, e nao da rodada. ETE com terreno e
-    # numero de modulos informados e NOVA e entra como pacote unico; a que ja
-    # existe e expandida em modulos conforme a vazao passa da capacidade ociosa. O
-    # motor decide isso por ETE (`nova=Sim` ou `capex_terreno > 0`).
+    # `ETE_FIXO` NAO esta aqui, e a ausencia e regra de negocio: o tratamento da ETE
+    # sai da FICHA dela, e nao da rodada. ETE com terreno e numero de modulos
+    # informados e NOVA e entra como pacote inicial; a que ja existe e expandida em
+    # modulos conforme a vazao passa da capacidade ociosa. O motor decide isso por
+    # ETE (`nova=Sim` ou `capex_terreno > 0`).
     #
-    # CUIDADO ao mexer: aqui a receita das metas NAO se aplica. O default de
-    # `ete_faseada` no motor e False, entao a chave sumir NAO da o comportamento
-    # certo — quem afirma `True` e o executor, e essa linha nao pode sumir de la.
+    # `ETE_FASEADA` ESTAVA AQUI e SAIU DAQUI em 29/09/2026 — ver o bloco onde ele e
+    # afirmado, mais abaixo. A regra dizia "quem afirma `True` e o executor", e dois
+    # executores nao a cumpriam igual.
     DIRETO = {
         "foco_cobertura": "FOCO_COBERTURA",
         "penalidade_cobertura": "PENALIDADE_COBERTURA",
@@ -250,6 +266,36 @@ def montar_params(corpo: dict[str, Any], unidade_id: str, usuario: str) -> dict[
     # historico REGISTRA o que a rodada usou, e o modal de detalhes o mostra. Uma
     # rodada antiga com 3 continua contando a verdade dela.
     params["ANOS_EXTRA_CONCLUSAO"] = 0
+
+    # ETE_FASEADA SEMPRE True, E AFIRMADO AQUI — a regra do produto, no pedido.
+    #
+    # E o interruptor que faz a ETE existir como MODULOS: com ele, a ETE nova entra
+    # como PACOTE INICIAL (terreno + os modulos do cadastro) e ganha modulos de
+    # expansao faseados se a vazao passar da capacidade; a que ja existe e expandida
+    # em modulos conforme a demanda. Sem ele, a ETE nao vira obra construivel, nunca
+    # fica pronta, e o motor recusa a receita de TODA sub-bacia do sistema — medido na
+    # uA1 em 29/09/2026: 142 sub-bacias faturando e R$ 744.050.138,78 de receita com
+    # `True`, contra ZERO sub-bacias e R$ 0,00 com `False`. Nao e outra modelagem; e
+    # rodada quebrada.
+    #
+    # ANTES ELE NAO VIAJAVA, e a regra era "quem afirma `True` e o executor". Duas
+    # linhas de codigo se contradiziam:
+    #
+    #   `dev/worker.py`         afirmava `ete_faseada=True`
+    #   `job_databricks.py`     nao afirmava nada, por regra propria ("chave ausente
+    #                           nao vira default do job"), e o `ler_banco` defaulta
+    #                           False
+    #
+    # Ou seja: o MESMO pedido rodava faseado no executor local e nao-faseado no job.
+    # Achado em 29/09/2026, perseguindo uma suspeita da revisao do Codex.
+    #
+    # AFIRMAR NO PEDIDO resolve a causa, e nao o sintoma — e e o mesmo padrao do
+    # `ANOS_EXTRA_CONCLUSAO` acima e do `MAX_TIME_S` abaixo, pela mesma razao: sem a
+    # chave, cada consumidor usa o proprio default e a mesma rodada roda outro
+    # problema conforme quem a executa. De brinde, o historico passa a REGISTRAR o
+    # modo, e ele entra no digest da deduplicacao: se um dia alguem quiser comparar
+    # faseado com nao-faseado, as duas rodadas deixam de ser "a mesma simulacao".
+    params["ETE_FASEADA"] = ETE_FASEADA_SEMPRE
 
     # MAX_TIME_S FIXO EM 1000s, e a tela nao o oferece mais: quanto tempo o solver
     # tem e afinacao de execucao, nao decisao de negocio — quem dispara a rodada

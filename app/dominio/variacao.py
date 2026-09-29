@@ -45,7 +45,7 @@ __all__ = [
 
 from typing import Any, Literal
 
-from app.dominio.parametros import ParametrosInvalidos
+from app.dominio.parametros import ETE_FASEADA_SEMPRE, ParametrosInvalidos
 from app.dominio.teto import MAIOR_DEGRAU, MENOR_DEGRAU
 
 #: O piso do teto de solver da estimativa, em segundos.
@@ -170,7 +170,12 @@ def params_da_variacao(
     if modo not in MODOS:
         raise ParametrosInvalidos('O modo precisa ser "rapido" ou "completo".')
 
-    params = {**base, "UNIDADE": unidade_id, "USUARIO": usuario}
+    #: AFIRMA O MODO DA ETE, em vez de herdar o silencio da base. A rodada de origem pode
+    #: ser ANTERIOR a 29/09/2026, quando o pedido passou a carregar `ETE_FASEADA`: o clone
+    #: nasceria sem a chave e, no job de producao, rodaria NAO-FASEADO — receita zero, e a
+    #: curva compararia um ponto quebrado com a origem. Ver `ETE_FASEADA_SEMPRE`.
+    params = {**base, "UNIDADE": unidade_id, "USUARIO": usuario,
+              "ETE_FASEADA": ETE_FASEADA_SEMPRE}
     if modo == "rapido":
         params["MAX_TIME_S"] = segundos_da_estimativa(colunas)
 

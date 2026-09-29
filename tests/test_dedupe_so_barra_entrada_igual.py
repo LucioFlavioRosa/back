@@ -43,6 +43,7 @@ PEDIDO = {
     "ANOS_EXTRA_CONCLUSAO": 3,
     "UNIDADE_COBERTURA": "ligacoes",
     "MAX_TIME_S": 600,
+    "ETE_FASEADA": True,
     "ORCAMENTO": {2026: 60e6, 2027: 60e6, 2028: 50e6},
 }
 
@@ -62,6 +63,9 @@ OUTRO_VALOR = {
     "ANOS_EXTRA_CONCLUSAO": 5,
     "UNIDADE_COBERTURA": "economias",
     "MAX_TIME_S": 1200,
+    # A tela nao oferece desligar, mas se um dia oferecer os dois modos NAO podem ser
+    # "a mesma simulacao": sem faseamento ninguem fatura.
+    "ETE_FASEADA": False,
     "ORCAMENTO": {2026: 60e6, 2027: 60e6, 2028: 50e6 + 0.01},
 }
 
@@ -89,7 +93,7 @@ def test_a_lista_de_eixos_cobre_todo_parametro_do_pedido():
         "WORKERS",            # paralelismo do solver, o backend não envia
         "ORCAMENTO_TOTAL",    # derivado, só na redistribuição que a tela não oferece
         "HORIZONTE_CAPEX",    # derivado do cronograma de orçamento
-        "ETE_FASEADA", "ETE_FIXO",      # o job fixa o modo, a tela não escolhe
+        "ETE_FIXO",           # quem decide é a ficha da ETE, não a rodada
         "METAS_COBERTURA", "PESO_COBERTURA", "PESO_CIDADE",   # vêm do cadastro
         "REGIONAL",           # derivada da unidade
     }
