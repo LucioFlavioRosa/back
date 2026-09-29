@@ -166,7 +166,14 @@ def digest(params: dict[str, Any]) -> str:
 #: Existe por causa da dedupe de rodada CONCLUÍDA, e é o que a torna correta. Ver
 #: `rodada_identica`.
 #:
-#: DUAS COLUNAS POR FICHA, e o `max()` de fora é o maior das duas:
+#: DEZESSETE TABELAS, e não as quatro fichas. O motor lê dezessete tabelas de `input.*`
+#: (`carregar_postgres.ABAS`), e a conta olhava só as fichas. Uma escrita que tocasse SÓ
+#: uma das outras treze — as obras com o CAPEX delas, as metas de cobertura, as faixas de
+#: paridade, o par sub-bacia↔CTS, o orçamento — não movia a data, e a dedupe barrava um
+#: pedido cuja ENTRADA era diferente. Pela tela não aparecia, porque cada `PUT` grava a
+#: ficha junto; o buraco era para carga e SQL solto (`migracoes/025_...`).
+#:
+#: DUAS COLUNAS POR TABELA, e o `max()` de fora é o maior das duas:
 #:
 #:   `atualizado_em`   a gravação HUMANA, pelo `PUT` da ficha. Nulo quer dizer "nunca
 #:                     foi salva pela tela", e é o que o cabeçalho da ficha mostra
@@ -179,9 +186,22 @@ def digest(params: dict[str, Any]) -> str:
 #: Antes da 024 a conta usava só a primeira, e depois de uma carga a dedupe devolvia
 #: uma rodada calculada sobre os dados ANTERIORES, sem aviso. As linhas que já existiam
 #: têm `carregado_em` nulo de propósito: a migração não inventa que o cadastro mudou.
+#:
+#: O RECORTE POR UNIDADE VAI ATÉ ONDE HÁ CHAVE PARA ISSO. As satélites se ligam à unidade
+#: pela sub-bacia, pela CTS, pela cidade ou pela regional, e são recortadas. As cinco da
+#: HIERARQUIA E DA TOPOLOGIA (`diretoria`, `empresa`, `cidade_empresa`, `cidade_sistema`,
+#: `sistema_topologia`) entram com o `max()` GLOBAL, sem recorte: mudar uma delas pode
+#: mover cidade de unidade ou sub-bacia de sistema, então qualquer recorte calculado sobre
+#: o estado NOVO mentiria sobre o antigo. Sem recorte, uma escrita nelas libera rodada
+#: nova em todas as unidades — erra para o lado de RODAR, que é o lado certo: barrar um
+#: pedido cuja entrada mudou devolve número errado, e rodar à toa só gasta cluster.
 _CADASTRO_ALTERADO_EM = """
 WITH cidades AS (%CIDADES%),
 sistemas AS (%SISTEMAS%),
+-- A REGIONAL da unidade, para `orcamento` e `regional_operacional`.
+regionais AS (
+    SELECT regional_id FROM {i}.unidade_regional WHERE unidade_id = $1
+),
 comps AS (
     SELECT t.componente_sistema_id AS id
       FROM {i}.sistema_topologia t
@@ -202,6 +222,43 @@ SELECT max(quando) AS em FROM (
     UNION ALL
     SELECT max(GREATEST(o.atualizado_em, o.carregado_em))
       FROM {i}.cidade_operacional o JOIN cidades c USING (cidade_id)
+    -- AS OBRAS, e é a que mais importa: capex, quantidade, preço unitário e prazo de
+    -- cada componente. Mudar o CAPEX de uma obra muda a simulação, e não estava aqui.
+    UNION ALL
+    SELECT max(x.carregado_em)
+      FROM {i}.componentes_subbacias_capex x JOIN comps c ON c.id = x.sub_bacia
+    UNION ALL
+    SELECT max(x.carregado_em)
+      FROM {i}.componentes_cts_capex x JOIN comps c ON c.id = x.cts
+    -- O par sub-bacia <-> coletor: ele decide se a CTS entra como nó próprio.
+    UNION ALL
+    SELECT max(x.carregado_em)
+      FROM {i}.subbacia_cts x JOIN comps c ON c.id = x.sub_bacia
+    -- As metas que o otimizador tem de cumprir e as faixas de paridade.
+    UNION ALL
+    SELECT max(m.carregado_em)
+      FROM {i}.metas_cobertura m JOIN cidades c USING (cidade_id)
+    UNION ALL
+    SELECT max(f.carregado_em)
+      FROM {i}.fator_esgoto f JOIN cidades c USING (cidade_id)
+    -- O teto por ano e o ano-base, pela regional da unidade.
+    UNION ALL
+    SELECT max(o.carregado_em)
+      FROM {i}.orcamento o
+     WHERE o.regional_id IN (SELECT regional_id FROM regionais)
+    UNION ALL
+    SELECT max(r.carregado_em)
+      FROM {i}.regional_operacional r
+     WHERE r.regional_id IN (SELECT regional_id FROM regionais)
+    UNION ALL
+    SELECT max(u.carregado_em)
+      FROM {i}.unidade_regional u WHERE u.unidade_id = $1
+    -- AS CINCO DA HIERARQUIA E DA TOPOLOGIA, SEM RECORTE — ver a nota acima.
+    UNION ALL SELECT max(carregado_em) FROM {i}.diretoria
+    UNION ALL SELECT max(carregado_em) FROM {i}.empresa
+    UNION ALL SELECT max(carregado_em) FROM {i}.cidade_empresa
+    UNION ALL SELECT max(carregado_em) FROM {i}.cidade_sistema
+    UNION ALL SELECT max(carregado_em) FROM {i}.sistema_topologia
 ) t(quando)
 """.replace("%CIDADES%", CIDADES_DA_UNIDADE).replace("%SISTEMAS%", SISTEMAS_DA_UNIDADE)
 
