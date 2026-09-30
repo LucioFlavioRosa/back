@@ -27,6 +27,7 @@ from typing import Any
 from app.config import config
 from app.dominio import macrorregiao_cts
 from app.dominio.campos import COLETA, DO_DATABRICKS, OBRAS_DA_CTS, SO_DA_SUBBACIA
+from app.dominio.ficha import ETE as FICHA_ETE
 from app.dominio.formato import SEM_SEPARADOR, pt_br, pt_br_ano
 from app.infra import db
 from app.infra.repositorios import pendencias
@@ -760,6 +761,25 @@ async def _obras_por_ficha(
     return out
 
 
+#: Coluna de `ete_capex` -> nome do campo no tipo `Ete` do front, DERIVADO do de/para
+#: da gravacao (`ficha.ETE`) em vez de reescrito.
+#:
+#: Os dois sentidos tinham a mesma lista, e a de la ja diz em comentario que "tem de
+#: casar com o que `cadastro.etes` devolve, senao a ficha lida nao pode ser salva de
+#: volta". Duas listas nunca casam por si: uma coluna acrescentada so aqui volta vazia
+#: no PUT e apaga o que estava no banco; acrescentada so la, a tela nunca a le. Nenhum
+#: dos dois da erro.
+#:
+#: `nova` fica de fora porque e TEXTO ("Sim"/"Nao") e nao passa por `pt_br`; ela e
+#: montada a parte, na propria ficha. E `capacidade_ociosa` nao esta em nenhuma das
+#: duas, de proposito: e derivada (nominal menos vazao de operacao), e campo derivado
+#: nao volta no PUT — mesma regra do `ticket` da sub-bacia.
+_MAPA_ETE = {coluna: campo for campo, coluna in FICHA_ETE.items() if coluna != "nova"}
+
+#: E a lista do SELECT sai da MESMA definicao, que era o terceiro lugar a manter em dia.
+_COLUNAS_ETE_SQL = ", ".join(f"e.{coluna}" for coluna in _MAPA_ETE)
+
+
 async def etes(unidade_id: str) -> dict[str, Any]:
     """As ETEs da unidade.
 
@@ -783,10 +803,7 @@ async def etes(unidade_id: str) -> dict[str, Any]:
                    (SELECT min(cs.cidade_id) FROM {_i()}.cidade_sistema cs
                      WHERE cs.sistema_id = s.sistema_id) AS cidade_id,
                    s.sistema_id, s.sistema_name,
-                   e.capacidade_por_modulo, e.capex_por_modulo, e.opex_por_modulo,
-                   e.tempo_de_execucao, e.capacidade_nominal_atual,
-                   e.vazao_de_operacao_atual, e.capex_terreno, e.modulos, e.wacc,
-                   e.tempo_predecessoras, e.obra_obrigatoria_ano, e.obra_proibida_ate,
+                   {_COLUNAS_ETE_SQL},
                    e.nova, e.atualizado_em, e.atualizado_por
               FROM {_i()}.ete_capex e
               JOIN {_i()}.sistema_topologia t ON t.componente_sistema_id = e.ete_id
@@ -794,34 +811,6 @@ async def etes(unidade_id: str) -> dict[str, Any]:
              ORDER BY e.ete_id""",
         unidade_id,
     )
-
-    #: coluna -> nome do front. `nova` e texto ("Sim"/"Nao"), nao numero.
-    MAPA = {
-        "capacidade_por_modulo": "capMod",
-        "capex_por_modulo": "capexMod",
-        "opex_por_modulo": "opexMod",
-        "tempo_de_execucao": "tExec",
-        "capacidade_nominal_atual": "capNom",
-        "vazao_de_operacao_atual": "vazOp",
-        "capex_terreno": "terreno",
-        "modulos": "modulos",
-        "wacc": "wacc",
-        #: A OBRA DA ETE TEM PRAZO E JANELA, como qualquer outra obra.
-        #:
-        #: As tres colunas sempre existiram em `ete_capex` e o motor sempre as leu
-        #: (`otimizador_capex_v62.py:1314-1315`: `prazo_inicio`, `obrigatoria`,
-        #: `proibida_ate` da ETE saem daqui). Faltava so mandá-las — entao a
-        #: restricao valia na simulacao e nenhuma tela conseguia defini-la: quem
-        #: precisasse dizer "esta ETE e obrigatoria em 2028" nao tinha onde.
-        #:
-        #: `capacidade_ociosa` continua de FORA de propósito: e derivada
-        #: (nominal menos vazao de operacao) e o motor avisa quando o valor
-        #: gravado discorda da conta. Campo derivado nao volta no PUT — mesma
-        #: regra do `ticket` da sub-bacia.
-        "tempo_predecessoras": "tPred",
-        "obra_obrigatoria_ano": "anoObrig",
-        "obra_proibida_ate": "proibAte",
-    }
 
     etes = []
     for l in linhas:
@@ -839,7 +828,7 @@ async def etes(unidade_id: str) -> dict[str, Any]:
             #: ano nenhum.
             **{
                 destino: (pt_br_ano if destino in SEM_SEPARADOR else pt_br)(l[col])
-                for col, destino in MAPA.items()
+                for col, destino in _MAPA_ETE.items()
             },
             **_auditoria(l),
         }

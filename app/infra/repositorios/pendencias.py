@@ -93,6 +93,15 @@ _ETE = [
 ]
 _ETE_NOVA = ["capex_terreno", "modulos"]
 
+#: E O MODULO DE EXPANSAO (`capacidade_por_modulo_expansao`/`capex_por_modulo_expansao`,
+#: migracao 026) NAO ENTRA EM NENHUMA DAS DUAS LISTAS, de proposito.
+#:
+#: Pendencia e campo que FALTA, e estes dois podem legitimamente ficar vazios: vazio
+#: significa "o modulo de expansao e igual ao inicial", que e o caso das 639 ETEs do
+#: cadastro. Cobra-los tornaria todas elas incompletas de um dia para o outro e
+#: travaria as unidades — a barra de completude mediria uma decisao de produto como
+#: se fosse buraco de cadastro.
+
 #: Quantos campos cada ficha cobra — o denominador da completude. Espelha
 #: `camposDaSub`/`camposDaCts`/`g4Total` do front, inclusive onde ele conta 3 por
 #: meta e por faixa enquanto a pendência olha 2: o denominador é a escala da
