@@ -138,8 +138,8 @@ def _capex_terreno(l: dict[str, Any]) -> float | None:
     return resto if abs(resto) > 0.01 else None
 
 
-def _tem_dois_precos(l: dict[str, Any]) -> bool:
-    """A linha tem modulos de DOIS precos, e por isso nao tem unitario?
+def _precisa_das_parcelas(l: dict[str, Any]) -> bool:
+    """A linha ficou SEM leitura do dinheiro, e por isso as parcelas tem de sair?
 
     E o que decide se as parcelas de modulo saem. Com um preco so — o cadastro inteiro
     hoje, e o caso de quem deixa as colunas de expansao em branco —, `quantidade x
@@ -154,16 +154,25 @@ def _tem_dois_precos(l: dict[str, Any]) -> bool:
         return False
     ini = l.get("capex_modulos_iniciais") or 0.0
     exp = l.get("capex_modulos_expansao") or 0.0
-    return abs(float(ini)) > 0.01 and abs(float(exp)) > 0.01
+    # QUALQUER UMA DAS DUAS BASTA, e nao as duas (30/09/2026, revisao do Codex).
+    #
+    # Exigir as duas positivas deixava a linha sem leitura nenhuma quando a parcela
+    # inicial e ZERO por ser legitimamente zero — ETE nova com `modulos` em branco, que
+    # sao 69 no cadastro de 09/2026. Sem unitario e sem parcela, a linha mostrava so o
+    # terreno: 300.000 num CAPEX de 1.080.000, com 780.000 desaparecidos.
+    #
+    # A pergunta certa nao e "ha dois precos?", e "falta leitura para o dinheiro desta
+    # linha?". Sem unitario, ela falta — e quem a devolve sao as parcelas.
+    return abs(float(ini)) > 0.01 or abs(float(exp)) > 0.01
 
 
 def _parcela_modulos(l: dict[str, Any], coluna: str) -> float | None:
-    """A parcela de modulos, SO quando a linha nao tem unitario (ver `_tem_dois_precos`).
+    """A parcela de modulos, SO quando a linha nao tem unitario (ver `_precisa_das_parcelas`).
 
     Com um preco so ela sai `None`: a tela le o dinheiro em `quantidade x unitario`, como
     sempre leu, e nao ganha coluna nova por uma mudanca que nao mudou nada para ela.
     """
-    if not _tem_dois_precos(l):
+    if not _precisa_das_parcelas(l):
         return None
     v = l.get(coluna)
     return float(v) if v is not None and abs(float(v)) > 0.01 else None

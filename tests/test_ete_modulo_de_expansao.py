@@ -186,6 +186,32 @@ def test_a_ETE_que_NAO_construiu_expansao_tambem_tem_um_preco_so():
     assert _capex_iniciais(l) is None and _capex_expansao(l) is None
 
 
+def test_UMA_PARCELA_BASTA_quando_a_linha_perdeu_o_unitario():
+    """Achado pela segunda revisão do Codex, em 30/09/2026.
+
+    Exigir as DUAS parcelas positivas deixava a linha sem leitura nenhuma quando a parcela
+    inicial é legitimamente zero — ETE nova com `modulos` em branco, que são 69 no cadastro
+    de 09/2026. Sem unitário e sem parcela, a linha mostrava só o terreno: 300.000 num
+    CAPEX de 1.080.000, com 780.000 desaparecidos.
+
+    A pergunta certa não é "há dois preços?", e sim "falta leitura para o dinheiro desta
+    linha?".
+    """
+    l = _linha(quantidade=3, preco_unitario=None, capex=1080000.0,
+               capex_terreno=300000.0, capex_modulos_iniciais=0.0,
+               capex_modulos_expansao=780000.0)
+    assert _capex_expansao(l) == 780000.0
+    assert _capex_iniciais(l) is None, "parcela zero não vira coluna de zero"
+    assert (_capex_terreno(l) + (_capex_iniciais(l) or 0) + _capex_expansao(l)
+            == pytest.approx(l["capex"])), "a linha voltou a fechar"
+
+
+def test_sem_unitario_e_sem_parcela_nenhuma_nao_se_inventa_nada():
+    """O outro lado: obra que não tem unitário e não é ETE não ganha parcela de módulo."""
+    l = _linha(quantidade=None, preco_unitario=None, capex=10000.0)
+    assert _capex_iniciais(l) is None and _capex_expansao(l) is None
+
+
 def test_o_terreno_cai_no_RESIDUAL_nas_rodadas_publicadas_antes_da_coluna():
     """As 129 do banco de desenvolvimento. Nenhuma tem módulos de dois preços, então ali
     o residual É o terreno — e apagá-lo tiraria a parcela de todas elas."""
