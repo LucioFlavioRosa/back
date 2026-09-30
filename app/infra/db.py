@@ -185,7 +185,15 @@ _EXIGIDO = [
 #: passa pelo portao de qualidade e so falha no INSERT da publicacao. Este gate nao
 #: cobre o motor (ele nao passa por aqui), mas cobre o servico — e e o servico que a
 #: pessoa usa.
+#: AS TRES, E NAO UMA SENTINELA. O comentario daqui dizia que conferir uma bastava porque
+#: a migracao aplica as tres no mesmo ALTER — e a revisao de producao derrubou isso: o
+#: readiness existe justamente para diagnosticar banco DESATUALIZADO OU DIVERGENTE, e
+#: divergencia e o que sobra de DDL aplicado a mao, de restauracao seletiva ou de um
+#: `ALTER` que falhou no meio. Com a sentinela, um banco com so uma das tres passava no
+#: gate e quebrava na lista de obras, que soma as tres.
 _EXIGIDO_NO_RESULTADO = [
+    ("otim_obra", "capex_terreno", "ddl_resultado_migracao_02.sql"),
+    ("otim_obra", "capex_modulos_iniciais", "ddl_resultado_migracao_02.sql"),
     ("otim_obra", "capex_modulos_expansao", "ddl_resultado_migracao_02.sql"),
 ]
 

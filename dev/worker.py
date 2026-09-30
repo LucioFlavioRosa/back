@@ -566,6 +566,7 @@ def executar(run_id: str, tempo: int) -> None:
 
     import carregar_postgres as C
     import dashboard_otimizador_v2 as D
+    import job_databricks as J
     import otimizador_capex_cpsat63 as CP
     import otimizador_capex_v62 as M
     import persistencia as P
@@ -619,6 +620,14 @@ def executar(run_id: str, tempo: int) -> None:
             "Atualize o pacote ou refaca a rodada com a CTS contando na cobertura."
         )
 
+    # O SCHEMA DE RESULTADO TEM DE ACEITAR O QUE A PUBLICACAO GRAVA, e a conferencia vem
+    # ANTES do solver — a mesma que o job do Databricks faz (`_exigir_colunas_do_resultado`).
+    #
+    # Sem ela, schema velho falha no `INSERT` do fim: a rodada carrega, resolve, materializa,
+    # passa pelo portao de qualidade e so ai quebra, com `UndefinedColumn`. Aqui o custo e
+    # uma demo perdida; em producao seria uma execucao do Databricks. Apontado pela revisao
+    # de producao do Codex, que achou o guarda no job e a falta dele aqui.
+    J._exigir_colunas_do_resultado(R.PG)
     abas = C.abas_do_postgres(R.PG)
     cen = M.ler_banco(
         abas,

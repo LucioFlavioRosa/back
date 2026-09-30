@@ -329,5 +329,9 @@ def test_as_colunas_que_o_servico_LE_do_resultado_estao_no_gate():
              if f"SUM(o.{c})" in fonte}
     assert lidas, "a consulta deveria ler as parcelas"
     no_gate = {c for _t, c, _a in _EXIGIDO_NO_RESULTADO}
-    # As três entram no MESMO ALTER: conferir uma basta, e é o que a lista faz.
-    assert no_gate & lidas, f"nenhuma das colunas lidas está no gate: {sorted(lidas)}"
+    #: TODAS as lidas, e não uma sentinela. A revisão de produção derrubou o argumento de
+    #: que "as três entram no mesmo ALTER, conferir uma basta": o readiness existe para
+    #: diagnosticar banco divergente, e divergência é o que sobra de DDL aplicado à mão,
+    #: de restauração seletiva ou de um `ALTER` que falhou no meio.
+    faltando = lidas - no_gate
+    assert not faltando, f"coluna lida pela consulta e fora do gate: {sorted(faltando)}"
