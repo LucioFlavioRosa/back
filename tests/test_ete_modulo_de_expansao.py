@@ -257,3 +257,77 @@ def test_a_forma_da_resposta_declara_a_parcela_de_expansao():
     from app.api.formas_resultado import ObraLinha
     for campo in ("capexTerreno", "capexIniciais", "capexExpansao"):
         assert campo in ObraLinha.model_fields, campo
+
+
+# ------------------------------------------------- o que a revisão de PRODUÇÃO achou
+#
+# A mudança vai para a Azure, com acesso só por VPN. Os dois abaixo são sobre o que
+# acontece quando os artefatos sobem fora de ordem — e em rede fechada, o que não se vê
+# não se conserta.
+def test_a_ficha_da_ETE_NAO_PERDE_os_campos_novos_na_resposta():
+    """O modelo de resposta FILTRA a ficha, e os dois campos não estavam declarados.
+
+    `cadastro.etes()` os montava e o Pydantic os descartava: a pessoa salvava o preço do
+    módulo de expansão, recarregava a ficha, via vazio, e a próxima edição mandava vazio
+    por cima do que estava no banco. Perda silenciosa de dado que ninguém pediu para
+    apagar.
+
+    O teste anterior desta mudança não pegou porque chamava o repositório direto, sem
+    passar pela camada da API. Achado pela revisão do Codex em 30/09/2026.
+    """
+    from app.api.formas_cadastro import Ete
+
+    ficha = {c: "" for c in Ete.model_fields}
+    ficha.update(id="a1e100", cidId="c1", sisId="s1", sistema="Sistema 1", sub="b1",
+                 nova="Sim", capExpMod="25", capexExpMod="260.000,5")
+    voltou = Ete.model_validate(ficha).model_dump()
+    assert voltou["capExpMod"] == "25"
+    assert voltou["capexExpMod"] == "260.000,5"
+
+
+def test_os_campos_da_ficha_e_do_de_para_sao_OS_MESMOS():
+    """O guarda geral, e não só para estes dois campos.
+
+    Três listas descrevem a mesma ficha: o mapa da gravação (`ficha.ETE`), o de/para da
+    leitura (derivado dele) e o modelo de RESPOSTA. Uma coluna que falte no terceiro
+    desaparece da tela sem erro — foi exatamente o que aconteceu.
+    """
+    from app.api.formas_cadastro import Ete
+
+    declarados = set(Ete.model_fields)
+    #: os que não vêm do mapa: identificação, situação na árvore e auditoria.
+    fora_do_mapa = {"id", "cidId", "sisId", "sistema", "sub", "nova",
+                    "atualizadoEm", "atualizadoPor"}
+    assert set(ETE) - fora_do_mapa <= declarados, (
+        f"campo gravável que a resposta não devolve: {sorted(set(ETE) - fora_do_mapa - declarados)}")
+
+
+def test_o_readyz_tambem_exige_a_migracao_do_schema_de_RESULTADO():
+    """Sem ela o pod fica PRONTO e a lista de obras responde 500.
+
+    A lista faz `SUM(o.capex_terreno)` e as duas irmãs. `/readyz` só olhava `input` e
+    `controle`, então a falta da migração do resultado aparecia como erro numa rota
+    qualquer, longe da causa, com o readiness dizendo que estava tudo bem.
+
+    O esquema de resultado NÃO é fixo (vem de `schema_resultado`), e é por isso que estas
+    entram numa lista própria em vez de `_EXIGIDO`, que escreve o esquema na linha.
+    """
+    from app.infra.db import _EXIGIDO_NO_RESULTADO
+
+    assert ("otim_obra", "capex_modulos_expansao",
+            "ddl_resultado_migracao_02.sql") in _EXIGIDO_NO_RESULTADO
+
+
+def test_as_colunas_que_o_servico_LE_do_resultado_estao_no_gate():
+    """Se a consulta passar a ler outra coluna nova do resultado, ela precisa entrar no
+    gate junto — senão volta a faltar em silêncio."""
+    from app.infra.db import _EXIGIDO_NO_RESULTADO
+
+    fonte = io.open(pathlib.Path("app") / "infra" / "repositorios" / "nivel_detalhe.py",
+                    encoding="utf-8").read()
+    lidas = {c for c in ("capex_terreno", "capex_modulos_iniciais", "capex_modulos_expansao")
+             if f"SUM(o.{c})" in fonte}
+    assert lidas, "a consulta deveria ler as parcelas"
+    no_gate = {c for _t, c, _a in _EXIGIDO_NO_RESULTADO}
+    # As três entram no MESMO ALTER: conferir uma basta, e é o que a lista faz.
+    assert no_gate & lidas, f"nenhuma das colunas lidas está no gate: {sorted(lidas)}"

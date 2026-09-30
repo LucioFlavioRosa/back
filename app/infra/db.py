@@ -172,6 +172,23 @@ _EXIGIDO = [
 #: aceitando qualquer `capex` — e e exatamente isso que a migracao existe para
 #: impedir. As duas tabelas entram separadas de proposito: aplicar em uma e
 #: esquecer a outra e o engano provavel, e ai o nome da que falta e a correcao.
+#: MIGRACOES DO SCHEMA DE RESULTADO, cujo esquema NAO e fixo — ele vem da
+#: configuracao (`schema_resultado`), e por isso estas nao cabem em `_EXIGIDO`, que
+#: escreve o esquema na propria linha.
+#:
+#: POR QUE ELAS ENTRAM NO `/readyz`. O servico LE estas colunas: a lista de obras faz
+#: `SUM(o.capex_terreno)` e as duas irmas. Num banco sem a migracao, o pod fica PRONTO
+#: e quem abre a lista de obras recebe 500 — erro longe da causa, e o readiness dizendo
+#: que esta tudo bem. Quem le "falta a migracao 02 do resultado" resolve em um minuto.
+#:
+#: O motor tambem as ESCREVE, e ali a falta aparece mais tarde ainda: a rodada calcula,
+#: passa pelo portao de qualidade e so falha no INSERT da publicacao. Este gate nao
+#: cobre o motor (ele nao passa por aqui), mas cobre o servico — e e o servico que a
+#: pessoa usa.
+_EXIGIDO_NO_RESULTADO = [
+    ("otim_obra", "capex_modulos_expansao", "ddl_resultado_migracao_02.sql"),
+]
+
 _EXIGIDO_RESTRICAO = [
     ("input", "componentes_subbacias_capex", "capex_e_derivado", "005_capex_derivado.sql"),
     ("input", "componentes_cts_capex", "capex_e_derivado", "005_capex_derivado.sql"),
@@ -288,6 +305,17 @@ async def migracoes_faltando() -> list[str]:
         )
         if not nulavel:
             faltam.append(f"{arquivo} ({schema}.{tabela}.{coluna} ainda e NOT NULL)")
+    _res = config().schema_resultado
+    for tabela, coluna, arquivo in _EXIGIDO_NO_RESULTADO:
+        existe = await buscar_um(
+            "SELECT 1 FROM information_schema.columns"
+            " WHERE table_schema = $1 AND table_name = $2 AND column_name = $3",
+            _res,
+            tabela,
+            coluna,
+        )
+        if not existe:
+            faltam.append(f"{arquivo} (falta {_res}.{tabela}.{coluna})")
     return faltam
 
 

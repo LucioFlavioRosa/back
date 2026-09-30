@@ -313,6 +313,15 @@ class Ete(BaseModel):
     nova: str
     terreno: str
     modulos: str
+    #: O MODULO DE EXPANSAO DA ETE NOVA (migracao 026). Vazios = iguais ao modulo
+    #: inicial.
+    #:
+    #: DECLARAR AQUI NAO E FORMALIDADE: este modelo FILTRA a resposta. Sem os dois
+    #: campos, `cadastro.etes()` os monta e o Pydantic os descarta — a pessoa salva o
+    #: preco, recarrega a ficha, ve vazio, e a proxima edicao manda vazio por cima do
+    #: que estava no banco. Perda silenciosa de dado que ninguem pediu para apagar.
+    capExpMod: str
+    capexExpMod: str
     wacc: str
     atualizadoEm: str
     atualizadoPor: str
