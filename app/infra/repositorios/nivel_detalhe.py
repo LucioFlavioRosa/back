@@ -146,9 +146,20 @@ def _precisa_das_parcelas(l: dict[str, Any]) -> bool:
     preco_unitario` JA INCLUI os modulos de expansao: publicar a parcela ao lado faria
     quem soma a linha contar os mesmos modulos duas vezes.
 
-    O sinal e `preco_unitario` nulo, que a consulta emite justamente quando o grupo tem
-    mais de um preco distinto. As duas parcelas tambem tem de existir: uma ETE sem
-    expansao construida tem um preco so, ainda que o cadastro declare o segundo.
+    O sinal e `preco_unitario` nulo, que a consulta emite quando o grupo NAO tem um preco
+    unico. Basta uma parcela positiva: a ETE nova sem modulos iniciais tem a parcela
+    inicial legitimamente zero, e exigir as duas deixava a linha sem leitura nenhuma.
+
+    POR QUE O `COUNT(DISTINCT)` DA CONSULTA IGNORAR `NULL` E SEGURO AQUI. Ele aplica o
+    preco das outras linhas sobre a `quantidade` somada do grupo, e isso so vale se a
+    linha sem preco nao trouxer quantidade. No caminho FASEADO — o que funde varias obras
+    numa linha — a unica que sai sem preco e o pacote da ETE nova sem modulos iniciais, e
+    a quantidade dele e zero por definicao. Conferido, obra por obra, na revisao de
+    30/09/2026.
+
+    NAO e verdade global: no modo modular a ETE e UMA obra, e com modulos de dois precos
+    ela fica sem unitario tendo quantidade maior que zero. Ali nao ha grupo para ignorar
+    nada — a propria linha fica sem unitario, e e esta funcao que devolve a leitura.
     """
     if l.get("preco_unitario") is not None:
         return False
