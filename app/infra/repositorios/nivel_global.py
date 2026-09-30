@@ -101,7 +101,17 @@ async def painel(run_id: str) -> dict[str, Any]:
     # construiram modulo. Duas unidades diferentes somadas dariam um numero sem
     # significado — nesse caso a quantidade sai sem sufixo.
     cap_ete = await db.buscar_um(
-        f"""SELECT SUM(modulos_construidos * capacidade_modulo)::float8 AS capacidade,
+        # A CAPACIDADE CONSTRUIDA VEM DE `capacidade_instalada`, e nao de
+        # `modulos_construidos x capacidade_modulo` (29/09/2026).
+        #
+        # A multiplicacao supoe que todo modulo tem a mesma capacidade, e a ETE nova pode ter
+        # modulo de expansao com capacidade PROPRIA: num pacote de 150 com expansao de 60, a
+        # conta dava 300 onde ha 210. `capacidade_instalada` ja e a soma real, e `folga` sai
+        # porque a pergunta aqui e quanto foi CONSTRUIDO — a folga da estacao ja existia.
+        #
+        # Onde os modulos sao iguais os dois numeros sao o mesmo, e nenhuma rodada publicada
+        # muda de valor.
+        f"""SELECT SUM(capacidade_instalada - COALESCE(folga_inicial, 0))::float8 AS capacidade,
                    MIN(unidade_capacidade) FILTER (
                        WHERE COALESCE(unidade_capacidade, '') <> '') AS unidade,
                    COUNT(DISTINCT unidade_capacidade) FILTER (

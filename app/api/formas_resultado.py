@@ -571,13 +571,32 @@ class ObraLinha(BaseModel):
     #: Preço de uma unidade do elemento (`unidade`). Com `quantidade`, é a
     #: decomposição do CAPEX: quando a origem manda os dois, eles MANDAM — o motor
     #: recalcula `capex = quantidade × preco_unitario` e avisa se o informado diverge.
+    #:
+    #: `null` QUANDO NÃO EXISTE UM PREÇO SÓ: a ETE nova pode ter módulos iniciais e de
+    #: expansão a preços diferentes, e na linha agrupada isso deixa de ter unitário.
+    #: Nesse caso o dinheiro é lido nas parcelas (`capexTerreno`, `capexExpansao`) — um
+    #: unitário que não multiplica a quantidade é pior do que a falta dele.
     precoUnitario: float | None
-    #: O QUE O CAPEX TEM ALÉM DE `quantidade × precoUnitario` — na ETE, o terreno.
-    #: `null` nas demais obras, onde a conta fecha exata. É residual, e não coluna do
-    #: banco: vale em todos os caminhos da ETE sem depender do nome que o motor deu à
-    #: parcela. Com ele a identidade da linha fecha sempre:
-    #: `quantidade × precoUnitario + capexTerreno = capex`.
+    #: O TERRENO da ETE. `null` nas demais obras, onde a conta fecha exata.
+    #:
+    #: Sai da coluna `otim_obra.capex_terreno` nas rodadas que a têm, e do residual
+    #: (`capex − quantidade × precoUnitario`) nas publicadas antes dela existir.
     capexTerreno: float | None = None
+    #: AS DUAS PARCELAS DE MÓDULO, e SÓ quando a linha tem módulos de dois preços —
+    #: quando `precoUnitario` é `null`. A ETE nova pode ter módulos iniciais e de
+    #: expansão a preços diferentes (29/09/2026).
+    #:
+    #: `null` nas duas quando há um preço só, que é o caso de todo cadastro que deixou
+    #: as colunas de expansão em branco: ali `quantidade × precoUnitario` JÁ INCLUI os
+    #: módulos de expansão, e publicar a parcela ao lado faria quem soma a linha contar
+    #: os mesmos módulos duas vezes.
+    #:
+    #: A identidade da linha, então, é uma das duas — nunca as duas somadas:
+    #:
+    #:   um preço      `quantidade × precoUnitario + capexTerreno = capex`
+    #:   dois preços   `capexIniciais + capexExpansao + capexTerreno = capex`
+    capexIniciais: float | None = None
+    capexExpansao: float | None = None
 
     # ------------------------------------------------- a linha do tempo, em 4 fases
     #

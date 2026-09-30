@@ -17,6 +17,8 @@ from app.dominio.ficha import ETE, ETE_NUM
 from app.dominio.formato import numerico
 from app.infra.db import _EXIGIDO
 from app.infra.repositorios.cadastro import _COLUNAS_ETE_SQL, _MAPA_ETE
+from app.infra.repositorios.nivel_detalhe import (_capex_expansao, _capex_iniciais,
+                                                  _capex_terreno)
 from app.infra.repositorios.pendencias import _ETE, _ETE_NOVA
 
 COLUNAS = ("capacidade_por_modulo_expansao", "capex_por_modulo_expansao")
@@ -105,3 +107,127 @@ def test_o_readyz_recusa_banco_sem_a_migracao():
     """
     exigidas = {(tabela, coluna, migracao) for _esquema, tabela, coluna, migracao in _EXIGIDO}
     assert ("ete_capex", "capex_por_modulo_expansao", MIGRACAO) in exigidas
+
+
+# ------------------------------------------------------- a capacidade que a tela soma
+def test_a_capacidade_construida_NAO_multiplica_modulos_por_capacidade():
+    """`GET /runs/{id}/global` mostra quanto de capacidade de ETE o plano construiu.
+
+    A conta era `SUM(modulos_construidos × capacidade_modulo)`, que supõe todo módulo do
+    mesmo tamanho. A ETE nova pode ter módulo de expansão com capacidade própria: num
+    pacote de 150 com expansão de 60, a multiplicação dava 300 onde há 210.
+    `capacidade_instalada` já é a soma real, publicada pelo motor.
+
+    É um guarda no TEXTO da consulta porque ela não é isolável sem banco. O número em si
+    foi conferido contra as 129 rodadas publicadas do banco de desenvolvimento: as duas
+    fórmulas dão o mesmo valor em todas (pior diferença: 9e-13, ruído de float), o que é o
+    esperado enquanto nenhuma ETE tem módulos de tamanhos diferentes.
+    """
+    fonte = io.open(pathlib.Path("app") / "infra" / "repositorios" / "nivel_global.py",
+                    encoding="utf-8").read()
+    assert "modulos_construidos * capacidade_modulo" not in fonte
+    assert "SUM(capacidade_instalada - COALESCE(folga_inicial, 0))" in fonte
+
+
+# ------------------------------------------------- as três parcelas do CAPEX da ETE
+#
+# Decisão do dono do produto em 29/09/2026: com módulos de dois preços na mesma ETE,
+# `quantidade × unitário` para de fechar o CAPEX, e a obra publica as parcelas.
+def _linha(**kw):
+    base = {"quantidade": None, "preco_unitario": None, "capex": None,
+            "capex_terreno": None, "capex_modulos_iniciais": None,
+            "capex_modulos_expansao": None}
+    return {**base, **kw}
+
+
+def test_o_terreno_vem_da_COLUNA_quando_a_rodada_a_tem():
+    """E não do residual. Com dois preços o residual mistura o terreno com a diferença
+    entre eles: terreno 300.000 + módulo de 500.000 + expansão de 260.000 dá CAPEX de
+    1.060.000, e `1.060.000 − 2 × 500.000` daria 60.000 de "terreno".
+
+    Com dois preços a linha não tem unitário — é isso que a consulta emite —, e aí as
+    duas parcelas de módulo saem e a conta fecha por elas.
+    """
+    l = _linha(quantidade=2, preco_unitario=None, capex=1060000.0,
+               capex_terreno=300000.0, capex_modulos_iniciais=500000.0,
+               capex_modulos_expansao=260000.0)
+    assert _capex_terreno(l) == 300000.0
+    assert _capex_iniciais(l) == 500000.0
+    assert _capex_expansao(l) == 260000.0
+    assert (_capex_terreno(l) + _capex_iniciais(l) + _capex_expansao(l)
+            == pytest.approx(l["capex"])), "a identidade da linha"
+
+
+def test_COM_UM_PRECO_SO_a_tela_nao_ganha_coluna_nenhuma():
+    """O caso de todo cadastro que deixou as colunas de expansão em branco — o fallback
+    que o dono do produto confirmou em 30/09/2026: sem os valores novos, o módulo de
+    expansão é igual ao de construção e nada muda.
+
+    Ali `quantidade × unitário` JÁ INCLUI os módulos de expansão. Publicar a parcela ao
+    lado faria quem soma a linha contar os mesmos módulos duas vezes: 2 × 500.000 de
+    unitário + 500.000 de "expansão" daria 1.500.000 num CAPEX de 1.300.000.
+    """
+    l = _linha(quantidade=2, preco_unitario=500000.0, capex=1300000.0,
+               capex_terreno=300000.0, capex_modulos_iniciais=500000.0,
+               capex_modulos_expansao=500000.0)
+    assert _capex_iniciais(l) is None
+    assert _capex_expansao(l) is None
+    assert _capex_terreno(l) == 300000.0
+    assert (l["quantidade"] * l["preco_unitario"] + _capex_terreno(l)
+            == pytest.approx(l["capex"])), "a identidade de sempre continua fechando"
+
+
+def test_a_ETE_que_NAO_construiu_expansao_tambem_tem_um_preco_so():
+    """Ainda que o cadastro declare o segundo preço: se nenhum módulo de expansão entrou
+    no plano, a linha tem um preço, e as parcelas de módulo não saem."""
+    l = _linha(quantidade=3, preco_unitario=500000.0, capex=1800000.0,
+               capex_terreno=300000.0, capex_modulos_iniciais=1500000.0,
+               capex_modulos_expansao=0.0)
+    assert _capex_iniciais(l) is None and _capex_expansao(l) is None
+
+
+def test_o_terreno_cai_no_RESIDUAL_nas_rodadas_publicadas_antes_da_coluna():
+    """As 129 do banco de desenvolvimento. Nenhuma tem módulos de dois preços, então ali
+    o residual É o terreno — e apagá-lo tiraria a parcela de todas elas."""
+    l = _linha(quantidade=2, preco_unitario=500000.0, capex=1300000.0)
+    assert _capex_terreno(l) == 300000.0
+    assert _capex_expansao(l) is None
+
+
+def test_a_obra_sem_terreno_continua_sem_coluna():
+    """Zero abriria na tela uma coluna que não explica nada. Vale para a parcela que veio
+    da coluna e para a que veio do residual."""
+    assert _capex_terreno(_linha(quantidade=10, preco_unitario=1000.0, capex=10000.0)) is None
+    assert _capex_terreno(_linha(quantidade=10, preco_unitario=1000.0, capex=10000.0,
+                                 capex_terreno=0.0)) is None
+    assert _capex_expansao(_linha(capex_modulos_expansao=0.0)) is None
+
+
+def test_sem_quantidade_nem_coluna_nao_se_inventa_parcela():
+    assert _capex_terreno(_linha()) is None
+    assert _capex_expansao(_linha()) is None
+
+
+def test_o_UNITARIO_da_linha_agrupada_so_existe_se_for_UM_SO():
+    """Era `MAX(preco_unitario)`, com o comentário dizendo que o valor é o mesmo repetido
+    em cada módulo — verdade até a ETE nova poder ter dois preços. `MAX` escolheria o
+    maior, e a tela mostraria `quantidade × unitário` acima do CAPEX da própria linha.
+
+    Guarda no texto da consulta, que não é isolável sem banco. O número foi conferido
+    contra os 342.934 grupos das rodadas publicadas: nenhum tem mais de um preço distinto,
+    e nenhum muda de valor.
+    """
+    fonte = io.open(pathlib.Path("app") / "infra" / "repositorios" / "nivel_detalhe.py",
+                    encoding="utf-8").read()
+    assert "MAX(o.preco_unitario) AS preco_unitario" not in fonte
+    assert "CASE WHEN COUNT(DISTINCT o.preco_unitario) = 1" in fonte
+    # e as parcelas somam no grupo, como o CAPEX
+    for col in ("capex_terreno", "capex_modulos_iniciais", "capex_modulos_expansao"):
+        assert f"SUM(o.{col})" in fonte, col
+
+
+def test_a_forma_da_resposta_declara_a_parcela_de_expansao():
+    """Sem ela no contrato, a tela não tem como fechar a conta quando há dois preços."""
+    from app.api.formas_resultado import ObraLinha
+    for campo in ("capexTerreno", "capexIniciais", "capexExpansao"):
+        assert campo in ObraLinha.model_fields, campo
