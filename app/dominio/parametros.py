@@ -96,6 +96,7 @@ CHAVES_ACEITAS = frozenset(
         "USAR_CTS",
         "ANOS_EXTRA_CONCLUSAO",
         "COBERTURA_SO_RESIDENCIAL",
+        "CTS_NA_COBERTURA",
         "UNIDADE_COBERTURA",
     }
     | CHAVES_DO_JOB
@@ -234,6 +235,26 @@ def montar_params(corpo: dict[str, Any], unidade_id: str, usuario: str) -> dict[
     for origem, destino in DIRETO.items():
         if origem in corpo:
             params[destino] = corpo[origem]
+
+    # A CTS CONTA NA COBERTURA? (29/09/2026)
+    #
+    # A pergunta só existe com `USAR_CTS` ligada: sem CTS não há nó de coletor, e a
+    # resposta não muda nada. Por isso ela NÃO entra no `DIRETO` — ali a chave viajaria
+    # sempre, e duas rodadas idênticas que diferissem só neste campo inútil deixariam de
+    # deduplicar, gastando cluster para produzir o mesmo resultado.
+    #
+    # RECUSA EM VEZ DE IGNORAR quando vem sem CTS: a tela só oferece o botão com CTS
+    # ligada, então um corpo com os dois discordando é erro de quem chama, e aceitar em
+    # silêncio gravaria um pedido que promete um recorte que não aconteceu.
+    _cts_lig = bool(params.get("USAR_CTS", True))
+    if "cts_na_cobertura" in corpo:
+        if not _cts_lig and not bool(corpo["cts_na_cobertura"]):
+            raise ParametrosInvalidos(
+                "Tirar a CTS da cobertura só faz sentido com a CTS ligada na rodada. "
+                "Ligue o uso de CTS ou deixe a opção de cobertura em branco."
+            )
+        if _cts_lig:
+            params["CTS_NA_COBERTURA"] = bool(corpo["cts_na_cobertura"])
 
     # `METAS_COBERTURA` NAO E PRODUZIDO AQUI, e a ausencia e a regra de negocio:
     # as metas vem SEMPRE da base. O unico descarte legitimo e por ANO — meta fora

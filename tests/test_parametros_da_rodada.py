@@ -229,3 +229,58 @@ class TestDataInicio:
     def test_formato_estranho_falha_alto(self):
         with pytest.raises(ParametrosInvalidos):
             mes_ano("janeiro de 2027")
+
+
+class TestCtsNaCobertura:
+    """A CTS conta na COBERTURA? A pergunta só existe com a CTS ligada.
+
+    Pedido do dono do produto em 29/09/2026: com `usar_cts` ligada, a tela oferece escolher
+    se as ligações novas da CTS contam na cobertura. A receita das ligações da CTS não muda
+    — mas a receita TOTAL pode mudar, porque a cobertura alimenta a faixa de paridade, e ele
+    decidiu assim para o produto ter uma cobertura realizada em vez de duas.
+    """
+
+    def test_viaja_quando_a_cts_esta_ligada(self):
+        assert montar(usar_cts=True, cts_na_cobertura=False)["CTS_NA_COBERTURA"] is False
+        assert montar(usar_cts=True, cts_na_cobertura=True)["CTS_NA_COBERTURA"] is True
+
+    def test_A_AUSENCIA_E_A_FORMA_COMPATIVEL_e_o_front_conta_com_isso(self):
+        """O par do teste do front, deste lado — a revisão do Codex apontou que faltava.
+
+        `ausente = conta` é o contrato com o motor, e é por isso que o front OMITE o
+        default em vez de mandar `true` (`simulacao.ts`, `corpoDaRodada`). Sem esta
+        asserção aqui, alguém poderia passar a exigir a chave no backend e o front
+        continuaria omitindo — e a rodada nasceria sem o recorte que o pedido não pediu.
+
+        Também não pode aparecer por conta própria: ela entra no digest, e uma chave que
+        viaja sempre faz um pedido idêntico a uma rodada antiga ter outro digest.
+        """
+        # O caminho do front hoje: quem não mexeu no botão manda um corpo SEM o campo.
+        assert "CTS_NA_COBERTURA" not in montar(usar_cts=True)
+        # E o backend continua aceitando `true` explícito — de um cliente antigo, ou de um
+        # script. Não é erro; só não é o que o front manda, e por isso não deduplica com
+        # rodada anterior à feature.
+        assert montar(usar_cts=True, cts_na_cobertura=True)["CTS_NA_COBERTURA"] is True
+
+    def test_NAO_viaja_quando_ninguem_pediu(self):
+        """Ausente = conta, que é o comportamento das 127 rodadas já publicadas.
+
+        A chave não pode aparecer por conta própria: ela entra no digest da deduplicação, e
+        um campo que viaja sempre faria toda rodada antiga deixar de casar com uma nova
+        idêntica — gastando cluster para produzir o mesmo resultado.
+        """
+        assert "CTS_NA_COBERTURA" not in montar(usar_cts=True)
+
+    def test_SEM_CTS_a_opcao_de_tirar_e_RECUSADA(self):
+        """Erro de quem chama, e não silêncio.
+
+        Sem CTS não há nó de coletor, então "tirar a CTS da cobertura" promete um recorte
+        que não aconteceu. A tela só oferece o botão com a CTS ligada; um corpo com os dois
+        discordando é bug de cliente, e aceitar gravaria um pedido que mente.
+        """
+        with pytest.raises(ParametrosInvalidos, match="CTS ligada"):
+            montar(usar_cts=False, cts_na_cobertura=False)
+
+    def test_SEM_CTS_dizer_que_conta_e_inofensivo(self):
+        """`True` sem CTS não promete nada de errado — só não viaja."""
+        assert "CTS_NA_COBERTURA" not in montar(usar_cts=False, cts_na_cobertura=True)
