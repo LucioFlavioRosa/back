@@ -56,6 +56,12 @@ ETE = {
     "nova": "nova",
     "terreno": "capex_terreno",
     "modulos": "modulos",
+    #: O MODULO DE EXPANSAO DA ETE NOVA (29/09/2026): capacidade e preco proprios.
+    #: `modulos` continua sendo a quantidade INICIAL — ela nao ganhou par, porque
+    #: quantos modulos de expansao serao construidos e decisao do otimizador, e
+    #: nao do cadastro. Vazias = iguais ao modulo inicial.
+    "capExpMod": "capacidade_por_modulo_expansao",
+    "capexExpMod": "capex_por_modulo_expansao",
     "wacc": "wacc",
     #: Prazo e janela da obra da ETE — ver o comentario gemeo na leitura
     #: (`cadastro.py`, MAPA de `etes`). O motor le as tres; faltava a tela poder
@@ -70,7 +76,7 @@ ETE = {
 #: As tres novas sao INTEGER na tabela (ano e quantidade de anos), entao entram
 #: aqui: sem isso `numerico` nao roda e o driver recebe string num campo `integer`.
 ETE_NUM = {"capMod","capexMod","opexMod","tExec","capNom","vazOp","terreno","modulos","wacc",
-            "tPred","anoObrig","proibAte"}
+            "tPred","anoObrig","proibAte","capExpMod","capexExpMod"}
 
 
 def capex(o: dict[str, Any]) -> float | None:

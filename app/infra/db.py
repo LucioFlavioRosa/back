@@ -156,6 +156,15 @@ _EXIGIDO = [
     # INSERT — e uma rodada numa base carregada sem ela faturaria a area do
     # coletor duas vezes.
     ("input", "subbacia_operacional", "receita_faturada_media_mensal_com_cts", "023_receita_com_cts.sql"),
+    # O modulo de expansao da ETE nova. A ficha da ETE passa a ter os dois campos,
+    # e o `PATCH` os grava pelo mapa `ETE`: num banco sem a coluna, quem preencher
+    # o preco do modulo de expansao recebe 500 ao salvar a ficha inteira — e a
+    # perda nao e do campo novo, e da edicao toda. O motor tolera a ausencia (a
+    # coluna vazia e o comportamento de sempre), mas a TELA nao.
+    #
+    # Uma linha so para as duas colunas: elas entram no mesmo ALTER, entao uma sem
+    # a outra nao e estado que a migracao produza.
+    ("input", "ete_capex", "capex_por_modulo_expansao", "026_o_modulo_de_expansao_da_ete.sql"),
 ]
 
 #: Migracao que nao cria tabela nem coluna: a regra vive numa CONSTRAINT, sobre
