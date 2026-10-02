@@ -245,6 +245,26 @@ async def salvar_empresa(
     )
 
 
+@router.put("/unidades/{unidade_id}/sistemas/{sistema_id}", response_model=formas.Gravacao, response_model_exclude_unset=True)
+async def salvar_sistema(
+    unidade_id: str, sistema_id: str, corpo: Corpo, usuario: Usuario
+) -> dict[str, Any]:
+    """Grava o sistema de esgoto: o nome, e a cidade que ele atende.
+
+    ROTA NOVA (01/10/2026). O sistema vinha da carga e nao tinha ficha: aparecia como id
+    e nome dentro das abas de outras fichas, e numa unidade que nao esta no Databricks
+    ficava incriavel — sem sistema nao ha sub-bacia nem ETE, porque e por ele que as duas
+    chegam a unidade.
+
+    `{"sistema": {"nome": "Sarapui", "cidId": "d1c10"}}`. UM SES E UM SISTEMA em varias
+    cidades: chamar de novo com outra cidade ACRESCENTA a cidade, nao substitui. A posse
+    vem da cidade, que vem da empresa, que tem a unidade.
+    """
+    return await cadastro_escrita.salvar_sistema(
+        unidade_id=unidade_id, sistema_id=sistema_id, corpo=corpo, autor=usuario
+    )
+
+
 @router.put("/unidades/{unidade_id}/contrato/{cidade_id}", response_model=formas.Gravacao, response_model_exclude_unset=True)
 async def salvar_contrato(
     unidade_id: str, cidade_id: str, corpo: Corpo, usuario: Usuario

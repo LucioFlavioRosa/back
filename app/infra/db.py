@@ -156,6 +156,15 @@ _EXIGIDO = [
     # INSERT — e uma rodada numa base carregada sem ela faturaria a area do
     # coletor duas vezes.
     ("input", "subbacia_operacional", "receita_faturada_media_mensal_com_cts", "023_receita_com_cts.sql"),
+    # O modulo de expansao da ETE nova. A ficha da ETE passa a ter os dois campos,
+    # e o `PATCH` os grava pelo mapa `ETE`: num banco sem a coluna, quem preencher
+    # o preco do modulo de expansao recebe 500 ao salvar a ficha inteira — e a
+    # perda nao e do campo novo, e da edicao toda. O motor tolera a ausencia (a
+    # coluna vazia e o comportamento de sempre), mas a TELA nao.
+    #
+    # Uma linha so para as duas colunas: elas entram no mesmo ALTER, entao uma sem
+    # a outra nao e estado que a migracao produza.
+    ("input", "ete_capex", "capex_por_modulo_expansao", "026_o_modulo_de_expansao_da_ete.sql"),
 ]
 
 #: Migracao que nao cria tabela nem coluna: a regra vive numa CONSTRAINT, sobre
@@ -163,6 +172,31 @@ _EXIGIDO = [
 #: aceitando qualquer `capex` — e e exatamente isso que a migracao existe para
 #: impedir. As duas tabelas entram separadas de proposito: aplicar em uma e
 #: esquecer a outra e o engano provavel, e ai o nome da que falta e a correcao.
+#: MIGRACOES DO SCHEMA DE RESULTADO, cujo esquema NAO e fixo — ele vem da
+#: configuracao (`schema_resultado`), e por isso estas nao cabem em `_EXIGIDO`, que
+#: escreve o esquema na propria linha.
+#:
+#: POR QUE ELAS ENTRAM NO `/readyz`. O servico LE estas colunas: a lista de obras faz
+#: `SUM(o.capex_terreno)` e as duas irmas. Num banco sem a migracao, o pod fica PRONTO
+#: e quem abre a lista de obras recebe 500 — erro longe da causa, e o readiness dizendo
+#: que esta tudo bem. Quem le "falta a migracao 02 do resultado" resolve em um minuto.
+#:
+#: O motor tambem as ESCREVE, e ali a falta aparece mais tarde ainda: a rodada calcula,
+#: passa pelo portao de qualidade e so falha no INSERT da publicacao. Este gate nao
+#: cobre o motor (ele nao passa por aqui), mas cobre o servico — e e o servico que a
+#: pessoa usa.
+#: AS TRES, E NAO UMA SENTINELA. O comentario daqui dizia que conferir uma bastava porque
+#: a migracao aplica as tres no mesmo ALTER — e a revisao de producao derrubou isso: o
+#: readiness existe justamente para diagnosticar banco DESATUALIZADO OU DIVERGENTE, e
+#: divergencia e o que sobra de DDL aplicado a mao, de restauracao seletiva ou de um
+#: `ALTER` que falhou no meio. Com a sentinela, um banco com so uma das tres passava no
+#: gate e quebrava na lista de obras, que soma as tres.
+_EXIGIDO_NO_RESULTADO = [
+    ("otim_obra", "capex_terreno", "ddl_resultado_migracao_02.sql"),
+    ("otim_obra", "capex_modulos_iniciais", "ddl_resultado_migracao_02.sql"),
+    ("otim_obra", "capex_modulos_expansao", "ddl_resultado_migracao_02.sql"),
+]
+
 _EXIGIDO_RESTRICAO = [
     ("input", "componentes_subbacias_capex", "capex_e_derivado", "005_capex_derivado.sql"),
     ("input", "componentes_cts_capex", "capex_e_derivado", "005_capex_derivado.sql"),
@@ -279,6 +313,17 @@ async def migracoes_faltando() -> list[str]:
         )
         if not nulavel:
             faltam.append(f"{arquivo} ({schema}.{tabela}.{coluna} ainda e NOT NULL)")
+    _res = config().schema_resultado
+    for tabela, coluna, arquivo in _EXIGIDO_NO_RESULTADO:
+        existe = await buscar_um(
+            "SELECT 1 FROM information_schema.columns"
+            " WHERE table_schema = $1 AND table_name = $2 AND column_name = $3",
+            _res,
+            tabela,
+            coluna,
+        )
+        if not existe:
+            faltam.append(f"{arquivo} (falta {_res}.{tabela}.{coluna})")
     return faltam
 
 

@@ -28,9 +28,15 @@ from app.dominio.campos import (
     NAO_MODELADOS,
     OBRAS_CTS,
     OBRAS_DA_CTS,
+    OBRAS_DA_SUBBACIA,
     OBRAS_SUBBACIA,
 )
-from app.dominio.erros import FichaDeOutraUnidade, FichaIncompleta, TopologiaInvalida
+from app.dominio.erros import (
+    FichaDeOutraUnidade,
+    FichaIncompleta,
+    TopologiaInvalida,
+    ValorInvalido,
+)
 from app.dominio.ficha import (
     ETE,
     ETE_NUM,
@@ -109,6 +115,35 @@ async def _registrar(
         ],
     )
     return len(mudancas)
+
+
+def _override_por_indice(override: Any, tabela: str) -> Any:
+    """Normaliza o `obrasOverride`: chave por NOME do componente vira chave por indice.
+
+    O contrato antigo e `{indice: {campo: valor}}`, e os indices vinham do `GET`. Isso
+    exigia que o cliente JA TIVESSE lido a ficha — e uma ficha que acabou de nascer nao
+    tinha sido lida, entao os numeros das obras dela se perdiam no primeiro salvamento
+    (achado da revisao do Codex em 01/10/2026).
+
+    A chave por nome resolve, e sem duplicar vocabulario: o indice SEMPRE foi derivado do
+    nome (`_INDICE_SUBBACIA`/`_INDICE_CTS`), nunca da ordem das linhas. Quem manda
+    `{"Rede coletora": {...}}` esta dizendo a mesma coisa que `{"1": {...}}`, no
+    vocabulario que o motor usa para casar a obra.
+
+    AS DUAS FORMAS CONVIVEM: a tela continua mandando por indice, porque ela leu a ficha.
+    Nome que o vocabulario nao conhece e deixado como esta — quem recusa e
+    `obras_da_ficha`, que e onde a recusa por componente desconhecido mora.
+    """
+    from app.infra.repositorios.cadastro import _INDICE_CTS, _INDICE_SUBBACIA
+
+    if not isinstance(override, dict):
+        return override
+    pos = _INDICE_CTS if "cts" in tabela else _INDICE_SUBBACIA
+    virado: dict[str, Any] = {}
+    for chave, valor in override.items():
+        texto = str(chave)
+        virado[pos.get(texto, texto)] = valor
+    return virado
 
 
 async def _obras_gravadas(
@@ -285,9 +320,15 @@ _DONO = {
     # na propria linha, sem precisar subir por ninguem.
     "empresa": """
         SELECT e.unidade_id FROM {i}.empresa e WHERE e.emp_codigo = $1""",
+    # O `JOIN` COM `subbacia_operacional` GARANTE O TIPO, como o da ETE logo abaixo:
+    # sem ele, um PUT de sub-bacia com id de coletor passava — bastava o coletor
+    # estar na topologia da unidade — e o upsert de `_gravar_coleta` CRIAVA uma sub-bacia
+    # fantasma com id de coletor. Achado pela revisao do Codex em 01/10/2026, ao
+    # conferir a liberacao do nome (que renomeia a linha da topologia pelo mesmo id).
     "sub-bacia": """
         SELECT DISTINCT s.unidade_id
           FROM {i}.sistema_topologia t
+          JOIN {i}.subbacia_operacional o ON o.sub_bacia = t.componente_sistema_id
           JOIN {i}.cidade_sistema cs USING (sistema_id)
           JOIN {i}.cidade_empresa c ON c.cidade_id = cs.cidade_id
           JOIN {i}.empresa s USING (emp_codigo)
@@ -316,6 +357,9 @@ _DONO = {
         SELECT COALESCE(
           (SELECT s.unidade_id
              FROM {i}.sistema_topologia t
+             -- o tipo, como na sub-bacia e na ETE: sem este JOIN, um PUT de CTS
+             -- com id de sub-bacia passava e criava um coletor fantasma
+             JOIN {i}.cts_operacional oc ON oc.cts = t.componente_sistema_id
              JOIN {i}.cidade_sistema cs USING (sistema_id)
              JOIN {i}.cidade_empresa c ON c.cidade_id = cs.cidade_id
              JOIN {i}.empresa s USING (emp_codigo)
@@ -415,13 +459,37 @@ async def salvar_coleta(
     chave = "cts" if e_cts else "sub_bacia"
     tab_obra = "componentes_cts_capex" if e_cts else "componentes_subbacias_capex"
     tipo = "cts" if e_cts else "sub-bacia"
-    await exigir_dona(tipo, ficha_id, unidade_id)
+    # A FICHA QUE EXISTE PASSA PELA POSSE DE SEMPRE; a que nao existe NASCE.
+    #
+    # `exigir_dona` rodava antes de tudo e recusava id desconhecido com 404 — era o
+    # "nao existe no cadastro" que o dono do produto leu. Criar exige outra prova de
+    # posse, porque nao ha ficha para consultar: ver `_criar_ficha_de_componente`.
+    existia = await _ficha_existe(tipo, ficha_id)
+    if existia:
+        await exigir_dona(tipo, ficha_id, unidade_id)
 
     async with db.transacao() as con:
         # O lock SERIALIZA os PUTs da mesma ficha — ele ordena, nao recusa.
         # Sem ele, duas gravacoes simultaneas intercalam o `DELETE`+`INSERT` das
         # obras e a ficha termina com metade de cada uma.
         await con.execute("SELECT pg_advisory_xact_lock(hashtext($1))", ficha_id)
+        # DENTRO DO LOCK, de novo: a checagem de cima e fora dele, e duas criacoes
+        # simultaneas da mesma ficha passariam as duas. Aqui so a primeira cria.
+        nasceu: list[Alteracao] = []
+        if not existia:
+            if await con.fetchrow(
+                f"SELECT 1 FROM {_i()}.{tabela} WHERE {chave} = $1", ficha_id
+            ):
+                # APARECEU NO INTERVALO: outra transacao criou esta ficha entre a
+                # checagem de cima (fora do lock) e agora. Nao se cria de novo — e nao
+                # se grava sem conferir a posse, que foi o que a revisao do Codex pegou:
+                # a ficha pode ter nascido noutra unidade.
+                await exigir_dona(tipo, ficha_id, unidade_id)
+            else:
+                nasceu = await _criar_ficha_de_componente(
+                    con, tipo=tipo, ficha_id=ficha_id, unidade_id=unidade_id,
+                    corpo=corpo, autor=autor,
+                )
         exigir_ficha_inteira(corpo)
         bloco_db = corpo.get("db") or {}
         # GRAVAR A FICHA DE UMA MACRORREGIÃO REFAZ A SOMA.
@@ -439,7 +507,7 @@ async def salvar_coleta(
         # significa: correção de número que veio de fora.
         if e_cts and (frescas := await _somas_de_hoje(con, ficha_id)) is not None:
             bloco_db = frescas
-        mudancas = await _gravar_coleta(
+        mudancas = nasceu + await _gravar_coleta(
             con,
             tabela=tabela,
             chave=chave,
@@ -447,6 +515,13 @@ async def salvar_coleta(
             params=corpo.get("params") or {},
             bloco_db=bloco_db,
         )
+        # O NOME, quando o corpo o traz. Mora na topologia, nao na ficha — ver
+        # `_gravar_nome_do_componente`. Liberado em 01/10/2026.
+        if "nome" in corpo:
+            mudancas += await _gravar_nome_do_componente(
+                con, ficha_id=ficha_id, nome=corpo["nome"], campo=f"{tipo}.nome"
+            )
+
         # `in` e não `or []`: ficha SEM a chave não mexe nas obras; ficha COM a
         # chave e lista vazia apaga todas. São intenções diferentes.
         if "obrasOverride" in corpo:
@@ -457,10 +532,13 @@ async def salvar_coleta(
                 chave=chave,
                 ficha_id=ficha_id,
                 obras=obras_da_ficha(
-                    corpo.get("obrasOverride"),
+                    _override_por_indice(corpo.get("obrasOverride"), tab_obra),
                     gravadas,
                     esperadas=OBRAS_CTS if e_cts else OBRAS_SUBBACIA,
                     rotulo=tipo,
+                    #: a ficha nasceu agora: as obras dela estao vazias, e omitir uma nao
+                    #: apaga nada — ver `obras_da_ficha`
+                    recem_criada=bool(nasceu),
                 ),
                 atual=gravadas,
             )
@@ -508,9 +586,19 @@ async def _diff_da_cidade(
     # (`2045 -> NULL`) a cada gravacao de cidade — enquanto o upsert abaixo
     # preserva o valor. Trilha que afirma o que nao aconteceu e pior que trilha
     # que nao afirma nada.
-    # A CIDADE NAO TEM CAMPO PROPRIO NESTA FICHA: a regua da cobertura e
-    # parametro de rodada, nao da cidade. O que ha aqui sao as metas e as
-    # faixas, comparadas logo abaixo.
+    # O NOME E O UNICO CAMPO PROPRIO DA CIDADE nesta ficha, desde 01/10/2026 — a
+    # regua da cobertura virou parametro de rodada na migracao 019, e por um tempo
+    # a ficha ficou sem campo nenhum. O resto sao as metas e as faixas, comparadas
+    # logo abaixo.
+    if "nome" in cidade:
+        linha = await con.fetch(
+            f"SELECT cidade_name FROM {_i()}.cidade WHERE cidade_id = $1", cidade_id
+        )
+        mudancas += diferencas(
+            {"nome": linha[0]["cidade_name"] if linha else None},
+            {"nome": nome_de_ficha(cidade["nome"], campo="cidade.nome")},
+            origem=REGIONAL,
+        )
 
     if "metas" in corpo:
         antes = {
@@ -563,10 +651,30 @@ async def salvar_contrato(
     apagou na tela — a meta removida continuaria valendo na simulação.
     """
     cidade = corpo.get("cidade") or {}
-    await exigir_dona("cidade", cidade_id, unidade_id)
+    # A CIDADE QUE NAO EXISTE NASCE, e a posse vem da EMPRESA que o corpo nomeia.
+    #
+    # `exigir_dona` responde pela linha que existe; na criacao nao existe. E a cidade
+    # chega a unidade pela empresa (`cidade_empresa` -> `empresa.unidade_id`), entao e a
+    # empresa que prova a posse — a mesma logica do sistema para a sub-bacia.
+    existia = await db.buscar_um(
+        f"SELECT 1 AS existe FROM {_i()}.cidade WHERE cidade_id = $1", cidade_id
+    )
+    if existia:
+        await exigir_dona("cidade", cidade_id, unidade_id)
     async with db.transacao() as con:
         await con.execute("SELECT pg_advisory_xact_lock(hashtext($1))", cidade_id)
-        mudancas = await _diff_da_cidade(con, cidade_id, corpo)
+        nasceu: list[Alteracao] = []
+        if not existia:
+            if await con.fetchrow(
+                f"SELECT 1 FROM {_i()}.cidade WHERE cidade_id = $1", cidade_id
+            ):
+                #: apareceu no intervalo — ver o mesmo trecho em `salvar_coleta`
+                await exigir_dona("cidade", cidade_id, unidade_id)
+            else:
+                nasceu = await _criar_cidade(
+                    con, cidade_id=cidade_id, unidade_id=unidade_id, cidade=cidade
+                )
+        mudancas = nasceu + await _diff_da_cidade(con, cidade_id, corpo)
 
         # A CONCESSAO E ESCRITA NA EMPRESA (`PUT /empresas/{emp_codigo}`), nunca
         # aqui: e a empresa que assina o contrato, e o gatilho
@@ -585,6 +693,18 @@ async def salvar_contrato(
             cidade_id,
             None,
         )
+
+        # O NOME DA CIDADE, quando o corpo o traz. Mora em `input.cidade` — a
+        # entidade —, e nao na ficha operacional. `fator_esgoto.cidade_name` e copia
+        # denormalizada e ja vinha do corpo, logo abaixo; o que faltava era a
+        # entidade, que e de onde todas as abas leem o nome.
+        if "nome" in cidade:
+            novo_nome = nome_de_ficha(cidade["nome"], campo="cidade.nome")
+            await con.execute(
+                f"UPDATE {_i()}.cidade SET cidade_name = $2 WHERE cidade_id = $1",
+                cidade_id,
+                novo_nome,
+            )
         if "metas" in corpo:
             await con.execute(
                 f"DELETE FROM {_i()}.metas_cobertura WHERE cidade_id = $1", cidade_id
@@ -658,7 +778,16 @@ def _nova_paratexto(v: Any) -> Any:
 async def salvar_ete(
     *, unidade_id: str, ete_id: str, corpo: dict[str, Any], autor: str
 ) -> dict[str, Any]:
-    await exigir_dona("ete", ete_id, unidade_id)
+    """PUT da ficha de ETE — e, desde 01/10/2026, a criacao dela.
+
+    A ETE NOVA DO CADASTRO E OUTRA COISA que a coluna `nova` da ficha: aquela diz "esta
+    ETE ainda vai ser construida", e e parametro do motor. Esta e a ficha nascendo no
+    cadastro, porque alguem a acrescentou na planilha. As duas convivem: uma ETE criada
+    aqui normalmente nasce com `nova = Sim`, mas quem decide e quem preenche.
+    """
+    existia = await _ficha_existe("ete", ete_id)
+    if existia:
+        await exigir_dona("ete", ete_id, unidade_id)
     ete = dict(corpo.get("ete") or {})
     if "nova" in ete:
         ete["nova"] = _nova_paratexto(ete["nova"])
@@ -666,6 +795,21 @@ async def salvar_ete(
     async with db.transacao() as con:
         await con.execute("SELECT pg_advisory_xact_lock(hashtext($1))", ete_id)
         mudancas: list[Alteracao] = []
+        if not existia:
+            if await con.fetchrow(
+                f"SELECT 1 FROM {_i()}.ete_capex WHERE ete_id = $1", ete_id
+            ):
+                #: apareceu no intervalo — ver o mesmo trecho em `salvar_coleta`
+                await exigir_dona("ete", ete_id, unidade_id)
+            else:
+                #: o `sisId` vem da raiz do corpo, como na topologia — a ETE chega a
+                #: unidade pelo sistema, e e ele que prova a posse de uma ficha que ainda
+                #: nao existe
+                mudancas += await _criar_ficha_de_componente(
+                    con, tipo="ete", ficha_id=ete_id, unidade_id=unidade_id,
+                    corpo={"nome": ete.get("nome"), "sisId": corpo.get("sisId")},
+                    autor=autor,
+                )
         if presentes:
             colunas = [ETE[k] for k in presentes]
             valores = [
@@ -679,7 +823,11 @@ async def salvar_ete(
                 f"SELECT {', '.join(colunas)} FROM {_i()}.ete_capex WHERE ete_id = $1",
                 ete_id,
             )
-            mudancas = diferencas(
+            # `+=`, E NAO `=`: o nascimento ja pode ter acumulado o nome e o sistema
+            # logo acima, e atribuir aqui os jogava fora. Achado pela revisao do Codex em
+            # 01/10/2026 — a trilha de uma ETE criada pela planilha perdia justamente o
+            # registro de que ela nasceu, porque o front sempre manda campos de ETE.
+            mudancas += diferencas(
                 {k: (linha[ETE[k]] if linha else None) for k in presentes},
                 dict(zip(presentes, valores, strict=True)),
                 origem=REGIONAL,
@@ -693,6 +841,14 @@ async def salvar_ete(
                 ete_id,
                 *valores,
             )
+        # O NOME DA ETE mora na topologia, como o da sub-bacia e o do coletor.
+        # Era `origem: 'un'` na tela — ou seja, a grade DEIXAVA digitar — e o `PUT`
+        # o descartava calado, porque o mapa `ETE` nao tem campo de nome.
+        if "nome" in ete:
+            mudancas += await _gravar_nome_do_componente(
+                con, ficha_id=ete_id, nome=ete["nome"], campo="ete.nome"
+            )
+
         n = await _registrar(
             con,
             tipo="ete",
@@ -708,10 +864,377 @@ async def salvar_ete(
 
 
 # ----------------------------------------------------------------- EMPRESA
+#: As colunas da ficha de empresa que o `PUT` grava — chave do corpo -> coluna.
+#:
+#: Um mapa, e nao dois `if`, pelo mesmo motivo de `ETE` e `COLETA`: o diff, o
+#: `UPDATE` e a trilha saem todos dele, e um campo novo entra num lugar so.
+_EMPRESA = {"nome": "empresa", "fim": "data_fim_concessao"}
+
+
+def nome_de_ficha(valor: Any, *, campo: str) -> str:
+    """O nome que vai para o banco, ou `ValorInvalido` se vier vazio.
+
+    FUNCAO SEPARADA para ser testavel sem banco: a validacao dentro de cada
+    `salvar_*` vive depois do `exigir_dona`, que exige conexao, e um teste da REGRA
+    nao deveria precisar de Postgres de pe.
+
+    NOME VAZIO NAO E CORRECAO, E PERDA. O resto do cadastro aceita celula em branco
+    como "apagar o valor", e para um numero isso e uma correcao legitima — tirar um
+    preco que nao deveria existir. Para o NOME nao ha leitura equivalente: a ficha
+    aparece em varias abas e no desenho do fluxo, e sem nome ela fica inidentificavel
+    em todas. Recusar nomeia o campo (422); aceitar apagaria dado de verdade por
+    causa de uma celula limpa sem intencao.
+
+    UMA FUNCAO PARA OS CINCO NOMES — empresa, cidade, sub-bacia, ETE e coletor —,
+    liberados em 01/10/2026 por decisao do dono do produto: "se mudar pela planilha
+    deve atualizar". Cinco copias da mesma validacao divergiriam, e a mensagem de
+    erro de uma delas deixaria de nomear o campo certo.
+    """
+    nome = str(valor or "").strip()
+    if not nome:
+        raise ValorInvalido(
+            f"{campo} nao pode ficar vazio: o nome identifica a ficha em todo o "
+            "cadastro. Para deixar de usa-la, isso se faz na carga."
+        )
+    return nome
+
+
+#: Onde mora o nome de cada ficha de COMPONENTE — sub-bacia, ETE e coletor.
+#:
+#: Nos tres e a MESMA coluna, `sistema_topologia.componente_sistema_nome`, porque o
+#: id deixou de ser o nome (os ids sao slug, e o coletor tem codigo da origem). A
+#: ficha de cada um nao tem campo de nome: `subbacia_operacional.sub_bacia` e
+#: `cts_operacional.cts` sao as CHAVES, nao nomes.
+_NOME_NA_TOPOLOGIA = "componente_sistema_nome"
+
+
+async def _gravar_nome_do_componente(
+    con: Any, *, ficha_id: str, nome: Any, campo: str
+) -> list[Alteracao]:
+    """Renomeia a sub-bacia, a ETE ou o coletor — a linha dele na topologia.
+
+    SEM LINHA NA TOPOLOGIA NAO HA O QUE NOMEAR, e devolver vazio e o certo: um
+    coletor que a carga nao trouxe como componente nao aparece no fluxo nem tem
+    nome exibido. Criar a linha aqui para guardar um nome inventaria topologia —
+    e topologia e decisao da Regional, tomada no desenho do fluxo.
+    """
+    novo = nome_de_ficha(nome, campo=campo)
+    linha = await con.fetchrow(
+        f"SELECT {_NOME_NA_TOPOLOGIA} FROM {_i()}.sistema_topologia"
+        " WHERE componente_sistema_id = $1",
+        ficha_id,
+    )
+    if linha is None:
+        return []
+    mudancas = diferencas(
+        {"nome": linha[_NOME_NA_TOPOLOGIA]}, {"nome": novo}, origem=REGIONAL
+    )
+    if mudancas:
+        await con.execute(
+            f"UPDATE {_i()}.sistema_topologia SET {_NOME_NA_TOPOLOGIA} = $2"
+            " WHERE componente_sistema_id = $1",
+            ficha_id,
+            novo,
+        )
+    return mudancas
+
+
+#: A ficha de componente que se cria, por tipo: tabela, chave, e as obras de vocabulario.
+#:
+#: As obras vem de `campos`, que e onde a cardinalidade vive — 5 na sub-bacia, 4 no
+#: coletor. A ETE nao tem obra: o "componente de obra" dela e o modulo, que mora na
+#: propria ficha.
+_FICHA_NOVA = {
+    "sub-bacia": ("subbacia_operacional", "sub_bacia", "componentes_subbacias_capex", OBRAS_DA_SUBBACIA),
+    "cts": ("cts_operacional", "cts", "componentes_cts_capex", OBRAS_DA_CTS),
+    "ete": ("ete_capex", "ete_id", None, ()),
+}
+
+
+async def _criar_cidade(
+    con: Any, *, cidade_id: str, unidade_id: str, cidade: dict[str, Any]
+) -> list[Alteracao]:
+    """A cidade nasce: a entidade e o vinculo com a empresa que a opera.
+
+    DUAS LINHAS, e a segunda e que a prende a unidade. `input.cidade` guarda o nome;
+    `cidade_empresa` diz quem a opera, e e por ela que toda consulta chega da cidade a
+    unidade. Sem o vinculo a cidade existiria orfa — invisivel para o cadastro que a
+    criou, e visivel para ninguem.
+
+    O `empCodigo` vem do CORPO e e conferido contra a unidade do caminho: criar cidade na
+    empresa de outra unidade seria a brecha que `exigir_dona` fecha nas fichas que existem.
+    """
+    nome = nome_de_ficha(cidade.get("nome"), campo="cidade.nome")
+    emp = id_ou_nada(cidade.get("empCodigo"))
+    if emp is None:
+        raise ValorInvalido(
+            f"cidade {cidade_id!r} nao existe nesta unidade: para cria-la, o corpo "
+            "precisa trazer `cidade.empCodigo` — e a empresa que diz de que unidade a "
+            "cidade e."
+        )
+    dona = await con.fetchrow(
+        f"SELECT unidade_id FROM {_i()}.empresa WHERE emp_codigo = $1", emp
+    )
+    if dona is None or dona["unidade_id"] != unidade_id:
+        raise FichaDeOutraUnidade(
+            f"a empresa {emp!r} nao e da unidade {unidade_id!r}"
+        )
+    await con.execute(
+        f"INSERT INTO {_i()}.cidade (cidade_id, cidade_name) VALUES ($1, $2)",
+        cidade_id,
+        nome,
+    )
+    await con.execute(
+        f"""INSERT INTO {_i()}.cidade_empresa (cidade_id, emp_codigo) VALUES ($1, $2)
+            ON CONFLICT DO NOTHING""",
+        cidade_id,
+        emp,
+    )
+    return diferencas(
+        {"nome": None, "empresa": None},
+        {"nome": nome, "empresa": emp},
+        origem=REGIONAL,
+    )
+
+
+async def salvar_sistema(
+    *, unidade_id: str, sistema_id: str, corpo: dict[str, Any], autor: str
+) -> dict[str, Any]:
+    """PUT do sistema de esgoto: o nome e as cidades que ele atende.
+
+    ROTA NOVA, de 01/10/2026. O sistema nao tinha ficha nenhuma: ele vinha da carga e
+    aparecia como id e nome DENTRO das abas de outras fichas. Numa unidade que nao esta no
+    Databricks isso o tornava incriavel — e sem sistema nao ha sub-bacia nem ETE, porque e
+    por ele que as duas chegam a unidade.
+
+    UM SES E UM SISTEMA, EM VARIAS CIDADES. `input.sistema` e a entidade; `cidade_sistema`
+    tem uma linha por cidade que ele atende (a base tem 12 sistemas assim, e um deles
+    atravessa empresa). Por isso o corpo traz `cidId` — uma cidade por chamada, e chamar
+    de novo com outra cidade acrescenta, nao substitui.
+
+    A POSSE VEM DA CIDADE, que vem da empresa, que tem a unidade. Mesma corrente das
+    outras fichas.
+    """
+    nome = nome_de_ficha((corpo.get("sistema") or {}).get("nome"), campo="sistema.nome")
+    cidade_id = id_ou_nada((corpo.get("sistema") or {}).get("cidId"))
+    if cidade_id is None:
+        raise ValorInvalido(
+            f"sistema {sistema_id!r}: o corpo precisa trazer `sistema.cidId` — e a cidade "
+            "que diz de que unidade o sistema e."
+        )
+    async with db.transacao() as con:
+        await con.execute("SELECT pg_advisory_xact_lock(hashtext($1))", sistema_id)
+        await _cidade_da_unidade(con, cidade_id, unidade_id)
+        # O SISTEMA QUE JA EXISTE TEM DE SER DESTA UNIDADE.
+        #
+        # `input.sistema` e entidade GLOBAL, e o upsert abaixo renomeia por id. Sem esta
+        # conferencia, a unidade B que reutilizasse um `sistema_id` da unidade A
+        # renomearia o sistema DELA e o ligaria a uma cidade da B — e as leituras que
+        # assumem "um sistema, uma unidade" (`_unidade_do_sistema`) passariam a mentir.
+        #
+        # Achado pela revisao final do Codex em 01/10/2026, no mesmo dia em que esta rota
+        # nasceu. A cidade do corpo ser da unidade NAO bastava: ela nao diz nada sobre o
+        # id que se esta reutilizando.
+        dona = await _unidade_do_sistema(con, sistema_id)
+        if dona is not None and dona != unidade_id:
+            raise FichaDeOutraUnidade(
+                f"o sistema {sistema_id!r} ja existe na unidade {dona!r}"
+            )
+        antes = await con.fetchrow(
+            f"SELECT sistema_name FROM {_i()}.sistema WHERE sistema_id = $1", sistema_id
+        )
+        mudancas = diferencas(
+            {"nome": antes["sistema_name"] if antes else None},
+            {"nome": nome},
+            origem=REGIONAL,
+        )
+        await con.execute(
+            f"""INSERT INTO {_i()}.sistema (sistema_id, sistema_name) VALUES ($1, $2)
+                ON CONFLICT (sistema_id) DO UPDATE SET sistema_name = EXCLUDED.sistema_name""",
+            sistema_id,
+            nome,
+        )
+        # O NOME TAMBEM NA LINHA DA CIDADE: `cidade_sistema` o guarda denormalizado, e e
+        # de la que a hierarquia o le. Deixar as duas em desacordo faria a tela mostrar
+        # um nome e o resultado outro.
+        await con.execute(
+            f"""INSERT INTO {_i()}.cidade_sistema (sistema_id, sistema_name, cidade_id)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (sistema_id, cidade_id) DO UPDATE
+                  SET sistema_name = EXCLUDED.sistema_name""",
+            sistema_id,
+            nome,
+            cidade_id,
+        )
+        n = await _registrar(
+            con,
+            tipo="sistema",
+            ficha_id=sistema_id,
+            unidade_id=unidade_id,
+            autor=autor,
+            mudancas=mudancas,
+        )
+    return {"id": sistema_id, "alteracoesGravadas": n}
+
+
+async def _ficha_existe(tipo: str, ficha_id: str) -> bool:
+    """A ficha ja tem linha na tabela dela?
+
+    FORA da transacao, como `exigir_dona`: a resposta decide QUAL prova de posse pedir, e
+    essa decisao vem antes de abrir a transacao. Dentro do lock ela e refeita, porque
+    duas criacoes simultaneas passariam as duas por esta.
+    """
+    tabela, chave, _, _ = _FICHA_NOVA[tipo]
+    linha = await db.buscar_um(
+        f"SELECT 1 AS existe FROM {_i()}.{tabela} WHERE {chave} = $1", ficha_id
+    )
+    return linha is not None
+
+
+async def _sistema_da_unidade(con: Any, sistema_id: str, unidade_id: str) -> None:
+    """O sistema existe e e desta unidade? Senao, 404 — a mesma regra de `exigir_dona`."""
+    linha = await con.fetchrow(
+        f"""SELECT 1
+              FROM {_i()}.cidade_sistema cs
+              JOIN {_i()}.cidade_empresa c ON c.cidade_id = cs.cidade_id
+              JOIN {_i()}.empresa e USING (emp_codigo)
+             WHERE cs.sistema_id = $1 AND e.unidade_id = $2
+             LIMIT 1""",
+        sistema_id,
+        unidade_id,
+    )
+    if linha is None:
+        raise FichaDeOutraUnidade(
+            f"o sistema {sistema_id!r} nao e da unidade {unidade_id!r}"
+        )
+
+
+async def _cidade_da_unidade(con: Any, cidade_id: str, unidade_id: str) -> None:
+    """A cidade existe e e desta unidade? Mesma regra, outro caminho."""
+    linha = await con.fetchrow(
+        f"""SELECT 1
+              FROM {_i()}.cidade_empresa c
+              JOIN {_i()}.empresa e USING (emp_codigo)
+             WHERE c.cidade_id = $1 AND e.unidade_id = $2
+             LIMIT 1""",
+        cidade_id,
+        unidade_id,
+    )
+    if linha is None:
+        raise FichaDeOutraUnidade(
+            f"a cidade {cidade_id!r} nao e da unidade {unidade_id!r}"
+        )
+
+
+async def _criar_ficha_de_componente(
+    con: Any,
+    *,
+    tipo: str,
+    ficha_id: str,
+    unidade_id: str,
+    corpo: dict[str, Any],
+    autor: str,
+) -> list[Alteracao]:
+    """A ficha nasce: a linha da entidade, a da topologia e as obras de vocabulario.
+
+    TRES INSERCOES, E NENHUMA DELAS OPCIONAL:
+
+      a ENTIDADE    a ficha em si, com a cidade quando ela e conhecida
+      a TOPOLOGIA   sem ela o componente nao existe para o cadastro — `_EXISTE_COMPONENTE`
+                    o recusa, ele nao aparece no fluxo e nao da para coloca-lo em sistema.
+                    Toda CTS do banco tem essa linha (340 de 340), inclusive as livres:
+                    livre e `sistema_id` nulo, nao linha ausente.
+      as OBRAS      5 na sub-bacia, 4 no coletor, com o nome e a unidade de medida e sem
+                    numero nenhum. A razao e a de `_preparar_macrorregiao`: o `PUT` da
+                    ficha sobrepoe campo sobre a obra gravada e NUNCA cria a que falta,
+                    entao uma ficha sem elas nasceria impossivel de gravar.
+
+    `sisId` e opcional na sub-bacia e na ETE? NAO: e por ele que elas chegam a unidade. O
+    coletor e o contrario — ele nasce FORA de sistema, como manda o conceito, e quem
+    responde pela unidade dele e a cidade.
+    """
+    tabela, chave, tab_obra, obras = _FICHA_NOVA[tipo]
+    nome = nome_de_ficha(corpo.get("nome"), campo=f"{tipo}.nome")
+    sistema_id = id_ou_nada(corpo.get("sisId"))
+    cidade_id = id_ou_nada(corpo.get("cidId"))
+
+    if tipo == "cts":
+        if cidade_id is None:
+            raise ValorInvalido(
+                f"{tipo} {ficha_id!r} nao existe nesta unidade: para cria-la, o corpo "
+                "precisa trazer `cidId` — e a cidade que diz de que unidade o coletor e, "
+                "porque ele nasce fora de sistema."
+            )
+        await _cidade_da_unidade(con, cidade_id, unidade_id)
+    else:
+        if sistema_id is None:
+            raise ValorInvalido(
+                f"{tipo} {ficha_id!r} nao existe nesta unidade: para cria-la, o corpo "
+                "precisa trazer `sisId` — e o sistema que diz de que unidade ela e."
+            )
+        await _sistema_da_unidade(con, sistema_id, unidade_id)
+        if cidade_id is not None:
+            await _cidade_da_unidade(con, cidade_id, unidade_id)
+
+    colunas = [chave] + (["cidade_id"] if cidade_id is not None and tipo != "ete" else [])
+    valores = [ficha_id] + ([cidade_id] if cidade_id is not None and tipo != "ete" else [])
+    marcadores = ", ".join(f"${n + 1}" for n in range(len(colunas)))
+    await con.execute(
+        f"INSERT INTO {_i()}.{tabela} ({', '.join(colunas)}) VALUES ({marcadores})",
+        *valores,
+    )
+    await con.execute(
+        f"""INSERT INTO {_i()}.sistema_topologia
+                (componente_sistema_id, {_NOME_NA_TOPOLOGIA}, sistema_id)
+            VALUES ($1, $2, $3)""",
+        ficha_id,
+        nome,
+        sistema_id,
+    )
+    if tab_obra:
+        await con.executemany(
+            f"""INSERT INTO {_i()}.{tab_obra} ({chave}, componente, unidade)
+                VALUES ($1, $2, $3)""",
+            [(ficha_id, obra, medida) for obra, medida in obras],
+        )
+    # A TRILHA REGISTRA O NASCIMENTO, com a convencao de sempre: de nulo para o valor.
+    return diferencas(
+        {"nome": None, "sistema": None},
+        {"nome": nome, "sistema": sistema_id or ""},
+        origem=REGIONAL,
+    )
+
+
+async def _exigir_unidade(con: Any, unidade_id: str) -> None:
+    """A unidade do caminho existe? Senao, 404 — e nao um 500 de chave estrangeira.
+
+    Criar ficha exige a unidade de verdade: `empresa_unidade_id_fkey` aponta para
+    `unidade_regional`, e sem esta checagem um `unidade_id` errado no caminho viraria
+    `ForeignKeyViolation` -> 500 generico, sem dizer o que estava errado.
+    """
+    linha = await con.fetchrow(
+        f"SELECT 1 FROM {_i()}.unidade_regional WHERE unidade_id = $1", unidade_id
+    )
+    if linha is None:
+        raise FichaDeOutraUnidade(f"unidade {unidade_id!r} nao existe")
+
+
 async def salvar_empresa(
     *, unidade_id: str, emp_codigo: str, corpo: dict[str, Any], autor: str
 ) -> dict[str, Any]:
-    """PUT da ficha de empresa: hoje, o fim da concessao.
+    """PUT da ficha de empresa: o nome e o fim da concessao.
+
+    O NOME PASSOU A SER GRAVAVEL em 01/10/2026, por decisao do dono do produto: "se
+    mudar pela planilha deve atualizar". Antes so a carga o escrevia, e a planilha
+    recusava a mudanca com um aviso que mandava usar a tela — onde tambem nao dava.
+
+    Sustenta-se porque a carga do portfolio insere com `ON CONFLICT DO NOTHING`
+    (`dev/carregar_portfolio.py`): empresa que ja existe conserva o nome, entao a
+    correcao feita aqui nao volta atras na carga seguinte. A trilha registra a
+    mudanca com origem `regional`, como qualquer override.
+
+    O upsert toca SO os campos presentes no corpo — um `PUT` que mande apenas
+    `{"fim": ...}` continua valendo e nao mexe no nome.
 
     A CONCESSAO E DA EMPRESA, e este e o unico lugar que a escreve.
     E O UNICO CAMINHO DE ESCRITA do campo. A aba de municipio mostra o ano, mas
@@ -723,28 +1246,68 @@ async def salvar_empresa(
     escreve nesta tabela, e propagar aqui deixaria a cidade com o prazo
     anterior sempre que a empresa chegasse por fora da aplicacao.
     """
-    await exigir_dona("empresa", emp_codigo, unidade_id)
     empresa = corpo.get("empresa") or {}
-    if "fim" not in empresa:
+    presentes = [k for k in _EMPRESA if k in empresa]
+    if not presentes:
         return {"id": emp_codigo, "alteracoesGravadas": 0}
 
-    fim = numerico(empresa.get("fim"), "empresa.fim")
+    valores: list[Any] = []
+    for chave in presentes:
+        if chave == "fim":
+            valores.append(numerico(empresa.get("fim"), "empresa.fim"))
+            continue
+        valores.append(nome_de_ficha(empresa.get("nome"), campo="empresa.nome"))
+
+    colunas = [_EMPRESA[k] for k in presentes]
+    marcadores = ", ".join(f"${i + 3}" for i in range(len(colunas)))
     async with db.transacao() as con:
         await con.execute("SELECT pg_advisory_xact_lock(hashtext($1))", emp_codigo)
         linha = await con.fetchrow(
-            f"SELECT data_fim_concessao FROM {_i()}.empresa WHERE emp_codigo = $1",
+            f"SELECT unidade_id, {', '.join(colunas)} FROM {_i()}.empresa"
+            " WHERE emp_codigo = $1",
             emp_codigo,
         )
+        # A FICHA QUE NAO EXISTE E CRIADA, sob a unidade do CAMINHO.
+        #
+        # Era 404: `exigir_dona` rodava antes de tudo e recusava id desconhecido,
+        # porque "criar ficha nao e papel do wizard". Em 01/10/2026 o dono do produto
+        # mudou a regra — "todas as abas e colunas podem ser criadas e auditadas a
+        # partir da planilha" — depois de acrescentar uma empresa no arquivo, importar,
+        # e ler "e2sup5 nao existe no cadastro — ignorada".
+        #
+        # E a semantica propria do `PUT`: o caminho nomeia o recurso, e pedi-lo com um
+        # id novo e dizer "que exista assim". A unidade vem do CAMINHO e nao do corpo,
+        # para uma empresa nao nascer noutra unidade por engano.
+        #
+        # A ficha que existe NOUTRA unidade continua 404, pela razao que `exigir_dona`
+        # explica: dizer "existe, mas nao e sua" ja conta quais ids existem alhures.
+        if linha is not None and linha["unidade_id"] != unidade_id:
+            raise FichaDeOutraUnidade(
+                f"empresa {emp_codigo!r} nao pertence a unidade {unidade_id!r}"
+            )
+        if linha is None:
+            # SEM NOME NAO SE CRIA: uma empresa so com codigo aparece em cinco abas
+            # como linha em branco, e ninguem sabe o que ela e. ATUALIZAR sem mandar o
+            # nome continua valendo — o que se exige e no nascimento.
+            if "nome" not in empresa:
+                raise ValorInvalido(
+                    f"empresa {emp_codigo!r} nao existe nesta unidade: para cria-la, "
+                    "o corpo precisa trazer `empresa.nome`."
+                )
+            await _exigir_unidade(con, unidade_id)
         mudancas = diferencas(
-            {"fim": linha["data_fim_concessao"] if linha else None},
-            {"fim": fim},
+            {k: (linha[_EMPRESA[k]] if linha else None) for k in presentes},
+            dict(zip(presentes, valores, strict=True)),
             origem=REGIONAL,
         )
+        sets = ", ".join(f"{c} = ${i + 3}" for i, c in enumerate(colunas))
         await con.execute(
-            f"""UPDATE {_i()}.empresa SET data_fim_concessao = $2
-                 WHERE emp_codigo = $1""",
+            f"""INSERT INTO {_i()}.empresa (emp_codigo, unidade_id, {", ".join(colunas)})
+                VALUES ($1, $2, {marcadores})
+                ON CONFLICT (emp_codigo) DO UPDATE SET {sets}""",
             emp_codigo,
-            fim,
+            unidade_id,
+            *valores,
         )
         n = await _registrar(
             con,
@@ -924,7 +1487,22 @@ async def _exigir_empresa_das_macrorregioes(
 
 
 async def _unidade_do_sistema(con: Any, sistema_id: str) -> str | None:
-    linha = await con.fetchrow(
+    """A unidade do sistema — e RECUSA se o dado disser duas.
+
+    Lia so a PRIMEIRA linha de um `SELECT DISTINCT`, e com isso escolhia a dona ao acaso
+    quando o mesmo `sistema_id` estava ligado a cidades de unidades diferentes. Quatro
+    chamadores decidem POSSE com esta resposta — decidir posse por sorte e pior que
+    recusar. Achado pela revisao do Codex em 01/10/2026.
+
+    UM SISTEMA, UMA UNIDADE e invariante medida, nao suposicao: zero sistemas atravessam
+    unidade nas duas bases (a mockada e a real do portfolio). Um SES atende varias
+    CIDADES, e pode atravessar EMPRESA — o Saracuruna atravessa —, mas as empresas dele
+    estao na mesma unidade.
+
+    Entao o dia em que isso for violado e dado sujo, e dado sujo tem de PARAR a gravacao
+    com o nome das unidades envolvidas, para alguem arrumar na origem.
+    """
+    linhas = await con.fetch(
         f"""SELECT DISTINCT s.unidade_id
               FROM {_i()}.cidade_sistema cs
               JOIN {_i()}.cidade_empresa c ON c.cidade_id = cs.cidade_id
@@ -932,7 +1510,14 @@ async def _unidade_do_sistema(con: Any, sistema_id: str) -> str | None:
              WHERE cs.sistema_id = $1""",
         sistema_id,
     )
-    return linha["unidade_id"] if linha else None
+    if len(linhas) > 1:
+        quais = ", ".join(sorted(repr(l["unidade_id"]) for l in linhas))
+        raise TopologiaInvalida(
+            f"O sistema {sistema_id!r} esta ligado a cidades de mais de uma unidade "
+            f"({quais}). Um sistema pertence a uma unidade; enquanto o cadastro disser "
+            "duas, nao da para saber de quem ele e. Corrija na origem."
+        )
+    return linhas[0]["unidade_id"] if linhas else None
 
 
 async def _cts_do_sistema(con: Any, sistema_id: str, exceto: str = "") -> list[str]:

@@ -295,6 +295,11 @@ class Cts(BaseModel):
 
 class Ete(BaseModel):
     id: str
+    #: O NOME DA ETE, de `sistema_topologia.componente_sistema_nome`. Gravavel desde
+    #: 01/10/2026 — e, como os dois campos do modulo de expansao logo abaixo, PRECISA
+    #: estar declarado aqui: este modelo FILTRA a resposta, e sem a linha o nome seria
+    #: descartado depois de gravado. Vazio cai no id, que e o que a tela mostrava antes.
+    nome: str = ""
     cidId: str
     #: O SISTEMA da ETE. A consulta já passava por `cidade_sistema` para achar a
     #: unidade; faltava trazer a coluna, e a tela mostrava "ID Sistema" vazio.
@@ -313,6 +318,15 @@ class Ete(BaseModel):
     nova: str
     terreno: str
     modulos: str
+    #: O MODULO DE EXPANSAO DA ETE NOVA (migracao 026). Vazios = iguais ao modulo
+    #: inicial.
+    #:
+    #: DECLARAR AQUI NAO E FORMALIDADE: este modelo FILTRA a resposta. Sem os dois
+    #: campos, `cadastro.etes()` os monta e o Pydantic os descarta — a pessoa salva o
+    #: preco, recarrega a ficha, ve vazio, e a proxima edicao manda vazio por cima do
+    #: que estava no banco. Perda silenciosa de dado que ninguem pediu para apagar.
+    capExpMod: str
+    capexExpMod: str
     wacc: str
     atualizadoEm: str
     atualizadoPor: str

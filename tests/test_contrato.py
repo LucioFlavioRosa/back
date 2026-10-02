@@ -103,6 +103,10 @@ FORMAS_DO_CONTRATO = {
     # A concessao e da EMPRESA desde 31/08; esta e a rota que a grava, e o
     # gatilho do banco a desce para os municipios dela.
     "PUT /unidades/{}/empresas/{}",
+    #: ROTA NOVA (01/10/2026): o sistema de esgoto passou a ter ficha. Ele vinha da carga e
+    #: aparecia so dentro das abas de outras fichas — numa unidade fora do Databricks
+    #: ficava incriavel, e sem sistema nao ha sub-bacia nem ETE.
+    "PUT /unidades/{}/sistemas/{}",
     "PUT /unidades/{}/contrato/{}",
     "PUT /unidades/{}/etes/{}",
     # A TOPOLOGIA — em que sistema o componente entra, e para onde ele escoa. Ela
@@ -167,7 +171,7 @@ def test_nenhum_endpoint_a_mais():
 def test_a_lista_nao_esta_vazia():
     # Guarda contra o teste passar por não encontrar rota nenhuma — se `_expostas`
     # quebrar com uma mudança do FastAPI, os dois testes acima passariam vazios.
-    assert len(_expostas()) == len(FORMAS_DO_CONTRATO) == 47
+    assert len(_expostas()) == len(FORMAS_DO_CONTRATO) == 48
 
 
 @pytest.mark.parametrize("run_id", ["r1' OR 1=1", "../etc", "com espaco", ""])

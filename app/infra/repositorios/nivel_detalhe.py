@@ -112,18 +112,91 @@ def _mes_depois(aaaa_mm: str | None, meses: int | None) -> str | None:
 
 
 def _capex_terreno(l: dict[str, Any]) -> float | None:
-    """O que o CAPEX tem ALEM de `quantidade x preco_unitario` — na ETE, o terreno.
+    """O terreno da ETE: a COLUNA quando a rodada a tem, e o residual quando nao.
 
-    E residual, e nao coluna: vale em todos os caminhos (pacote da ETE nova, modo
-    modular) sem depender do nome que o motor deu a parcela no `capex_componentes`.
-    Nas demais obras a conta fecha exata e isto sai `None`, que e o que a tela precisa
-    para nao abrir uma coluna de zeros.
+    Era so residual (`capex - quantidade x preco_unitario`), e por uma boa razao: valia em
+    todos os caminhos sem depender do nome que o motor deu a parcela no
+    `capex_componentes` — texto de dicionario nao e contrato.
+
+    O QUE MUDOU EM 29/09/2026. Os modulos iniciais da ETE nova e os de expansao passaram a
+    poder ter PRECOS diferentes, e ai nao existe um `preco_unitario` que multiplique a
+    quantidade: o residual passa a misturar o terreno com a diferenca entre os dois precos.
+    Num pacote de 300.000 de terreno + 1 modulo de 500.000 + 1 de expansao de 260.000, ele
+    dava 60.000 de "terreno". O motor passou a publicar as tres parcelas em COLUNA
+    (`ddl_resultado_migracao_02.sql`), que e contrato.
+
+    O residual fica como fallback das rodadas publicadas ANTES da coluna existir. Nelas
+    nenhuma ETE tem modulos de dois precos, entao ali o residual E o terreno.
     """
+    col = l.get("capex_terreno")
+    if col is not None:
+        return float(col) if abs(float(col)) > 0.01 else None
     q, pu, cap = l.get("quantidade"), l.get("preco_unitario"), l.get("capex")
     if q is None or pu is None or cap is None:
         return None
     resto = float(cap) - float(q) * float(pu)
     return resto if abs(resto) > 0.01 else None
+
+
+def _precisa_das_parcelas(l: dict[str, Any]) -> bool:
+    """A linha ficou SEM leitura do dinheiro, e por isso as parcelas tem de sair?
+
+    E o que decide se as parcelas de modulo saem. Com um preco so — o cadastro inteiro
+    hoje, e o caso de quem deixa as colunas de expansao em branco —, `quantidade x
+    preco_unitario` JA INCLUI os modulos de expansao: publicar a parcela ao lado faria
+    quem soma a linha contar os mesmos modulos duas vezes.
+
+    O sinal e `preco_unitario` nulo, que a consulta emite quando o grupo NAO tem um preco
+    unico. Basta uma parcela positiva: a ETE nova sem modulos iniciais tem a parcela
+    inicial legitimamente zero, e exigir as duas deixava a linha sem leitura nenhuma.
+
+    POR QUE O `COUNT(DISTINCT)` DA CONSULTA IGNORAR `NULL` E SEGURO AQUI. Ele aplica o
+    preco das outras linhas sobre a `quantidade` somada do grupo, e isso so vale se a
+    linha sem preco nao trouxer quantidade. No caminho FASEADO — o que funde varias obras
+    numa linha — a unica que sai sem preco e o pacote da ETE nova sem modulos iniciais, e
+    a quantidade dele e zero por definicao. Conferido, obra por obra, na revisao de
+    30/09/2026.
+
+    NAO e verdade global: no modo modular a ETE e UMA obra, e com modulos de dois precos
+    ela fica sem unitario tendo quantidade maior que zero. Ali nao ha grupo para ignorar
+    nada — a propria linha fica sem unitario, e e esta funcao que devolve a leitura.
+    """
+    if l.get("preco_unitario") is not None:
+        return False
+    ini = l.get("capex_modulos_iniciais") or 0.0
+    exp = l.get("capex_modulos_expansao") or 0.0
+    # QUALQUER UMA DAS DUAS BASTA, e nao as duas (30/09/2026, revisao do Codex).
+    #
+    # Exigir as duas positivas deixava a linha sem leitura nenhuma quando a parcela
+    # inicial e ZERO por ser legitimamente zero — ETE nova com `modulos` em branco, que
+    # sao 69 no cadastro de 09/2026. Sem unitario e sem parcela, a linha mostrava so o
+    # terreno: 300.000 num CAPEX de 1.080.000, com 780.000 desaparecidos.
+    #
+    # A pergunta certa nao e "ha dois precos?", e "falta leitura para o dinheiro desta
+    # linha?". Sem unitario, ela falta — e quem a devolve sao as parcelas.
+    return abs(float(ini)) > 0.01 or abs(float(exp)) > 0.01
+
+
+def _parcela_modulos(l: dict[str, Any], coluna: str) -> float | None:
+    """A parcela de modulos, SO quando a linha nao tem unitario (ver `_precisa_das_parcelas`).
+
+    Com um preco so ela sai `None`: a tela le o dinheiro em `quantidade x unitario`, como
+    sempre leu, e nao ganha coluna nova por uma mudanca que nao mudou nada para ela.
+    """
+    if not _precisa_das_parcelas(l):
+        return None
+    v = l.get(coluna)
+    return float(v) if v is not None and abs(float(v)) > 0.01 else None
+
+
+def _capex_iniciais(l: dict[str, Any]) -> float | None:
+    """Os modulos ao preco de `capex_por_modulo`."""
+    return _parcela_modulos(l, "capex_modulos_iniciais")
+
+
+def _capex_expansao(l: dict[str, Any]) -> float | None:
+    """Os modulos ao preco de `capex_por_modulo_expansao`."""
+    return _parcela_modulos(l, "capex_modulos_expansao")
 
 
 def _fases(l: dict[str, Any]) -> dict[str, Any]:
@@ -256,7 +329,22 @@ async def obras(
                    o.componente, o.responsavel, o.construida,
                    o.cidade, o.no,
                    SUM(o.capex) AS capex, SUM(o.quantidade) AS quantidade, o.unidade,
-                   MAX(o.preco_unitario) AS preco_unitario,
+                   -- O UNITARIO SO EXISTE SE FOR UM SO. Era `MAX(preco_unitario)`, com o
+                   -- comentario acima explicando que o valor e o mesmo repetido em cada
+                   -- modulo — o que deixou de ser verdade em 29/09/2026: a ETE nova pode
+                   -- ter modulos iniciais e de expansao a precos diferentes, e o grupo
+                   -- funde os dois. `MAX` escolheria o maior e a tela mostraria
+                   -- `quantidade x unitario` maior que o CAPEX da propria linha.
+                   --
+                   -- Com precos diferentes o unitario sai NULO e o dinheiro se le nas
+                   -- parcelas. Onde ha um preco so — o cadastro inteiro hoje — o valor e
+                   -- exatamente o que `MAX` devolvia.
+                   CASE WHEN COUNT(DISTINCT o.preco_unitario) = 1
+                        THEN MAX(o.preco_unitario) END AS preco_unitario,
+                   -- AS PARCELAS DO CAPEX DA ETE, somadas no grupo como o CAPEX e.
+                   SUM(o.capex_terreno) AS capex_terreno,
+                   SUM(o.capex_modulos_iniciais) AS capex_modulos_iniciais,
+                   SUM(o.capex_modulos_expansao) AS capex_modulos_expansao,
                    o.data_inicio, o.data_pronta, o.prazo_meses,
                    -- AS QUATRO FASES DA OBRA, na ordem em que acontecem:
                    -- predecessoras -> execucao -> espera da cobranca -> ramp-up.
@@ -308,6 +396,8 @@ async def obras(
                 "anoInicio": int(str(l["data_inicio"])[:4]) if l["data_inicio"] else None,
                 "precoUnitario": l["preco_unitario"],
                 "capexTerreno": _capex_terreno(l),
+                "capexIniciais": _capex_iniciais(l),
+                "capexExpansao": _capex_expansao(l),
                 "dataInicio": l["data_inicio"],
                 **_fases(l),
             }
