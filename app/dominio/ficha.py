@@ -129,6 +129,7 @@ def obras_da_ficha(
     *,
     esperadas: int,
     rotulo: str,
+    recem_criada: bool = False,
 ) -> list[dict[str, Any]]:
     """O que vai para o banco: a linha GRAVADA, com o que o corpo mudou por cima.
 
@@ -151,6 +152,11 @@ def obras_da_ficha(
 
     A recusa por componente OMITIDO no corpo continua: a gravação substitui as
     obras em bloco, a tela não oferece remover obra, logo a omissão não é intenção.
+
+    **A exceção é `recem_criada`** — a ficha que nasceu nesta transação. As obras dela
+    acabaram de ser criadas com o vocabulário e sem número, então omitir não apaga nada;
+    e exigir todas obrigaria quem cria pela planilha a reenviar obras em branco só para
+    provar que não quer apagá-las.
     """
     if isinstance(override, list):
         return override  # forma antiga; os smokes locais ainda a usam
@@ -164,7 +170,15 @@ def obras_da_ficha(
             "/prontidao qual componente falta e corrija o cadastro na origem."
         )
 
-    faltando = sorted(set(atual) - set(override), key=int)
+    # A FICHA QUE ACABOU DE NASCER NAO TEM O QUE PERDER.
+    #
+    # As obras dela foram criadas nesta mesma transacao, com o vocabulario e sem numero
+    # (`_criar_ficha_de_componente`). Omitir uma deixa vazio o que ja estava vazio — e
+    # exigir as cinco obrigaria quem cria pela planilha a reenviar obras em branco so
+    # para provar que nao quer apaga-las, ou a conhecer o vocabulario de cor.
+    #
+    # Fora do nascimento a recusa continua: ali a omissao apagaria trabalho feito.
+    faltando = [] if recem_criada else sorted(set(atual) - set(override), key=int)
     if faltando:
         nomes = ", ".join(atual[i].get("nome") or f"índice {i}" for i in faltando)
         raise ValorInvalido(

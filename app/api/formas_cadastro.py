@@ -295,6 +295,11 @@ class Cts(BaseModel):
 
 class Ete(BaseModel):
     id: str
+    #: O NOME DA ETE, de `sistema_topologia.componente_sistema_nome`. Gravavel desde
+    #: 01/10/2026 — e, como os dois campos do modulo de expansao logo abaixo, PRECISA
+    #: estar declarado aqui: este modelo FILTRA a resposta, e sem a linha o nome seria
+    #: descartado depois de gravado. Vazio cai no id, que e o que a tela mostrava antes.
+    nome: str = ""
     cidId: str
     #: O SISTEMA da ETE. A consulta já passava por `cidade_sistema` para achar a
     #: unidade; faltava trazer a coluna, e a tela mostrava "ID Sistema" vazio.

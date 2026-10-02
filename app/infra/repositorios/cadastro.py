@@ -797,6 +797,13 @@ async def etes(unidade_id: str) -> dict[str, Any]:
     """
     linhas = await db.buscar(
         f"""SELECT e.ete_id, t.componente_sistema_id AS sub,
+                   -- O NOME DA ETE mora na topologia, como o da sub-bacia e o do
+                   -- coletor. O `JOIN` com `sistema_topologia` ja existia (e por ela
+                   -- que a ETE chega a unidade); faltava trazer a coluna. Sem ela a
+                   -- tela mostrava o ID no lugar do nome, e desde que o nome virou
+                   -- gravavel (01/10/2026) isso ficou pior: a pessoa renomeava, o
+                   -- banco gravava, e a ficha recarregada mostrava o id de novo.
+                   t.componente_sistema_nome AS nome,
                    -- A CIDADE DA ETE e a do sistema dela — e o sistema pode estar
                    -- em varias. A ETE nao tem cidade propria no esquema; a
                    -- primeira, em ordem, e o que da para mostrar sem inventar.
@@ -816,6 +823,7 @@ async def etes(unidade_id: str) -> dict[str, Any]:
     for l in linhas:
         e = {
             "id": l["ete_id"],
+            "nome": l["nome"] or l["ete_id"],
             "sub": l["sub"] or "",
             "cidId": l["cidade_id"] or "",
             "sisId": l["sistema_id"] or "",
